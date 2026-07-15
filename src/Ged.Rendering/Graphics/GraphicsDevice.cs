@@ -23,9 +23,22 @@ public sealed class GraphicsDevice : IDisposable
 
     /// <summary>Creates a device on the requested backend (D3D11 default; OpenGL 3.3 for cross-platform/parity).</summary>
     public GraphicsDevice(GraphicsBackend backend)
+        : this(backend, preferWindowingGl: false)
+    {
+    }
+
+    /// <summary>
+    /// Creates a device on the requested backend. Set <paramref name="preferWindowingGl"/>
+    /// for the process-shared off-viewport device that lives on the same thread as the
+    /// windowing-system GL compositor (Avalonia): on Linux/X11 this makes the offscreen GL
+    /// context use GLX to match Avalonia's GLX compositor so the two coexist on one thread
+    /// (an EGL offscreen context left current there breaks Avalonia's glXMakeContextCurrent).
+    /// No effect for D3D11 or on platforms with a single offscreen GL path.
+    /// </summary>
+    public GraphicsDevice(GraphicsBackend backend, bool preferWindowingGl)
     {
         Backend = backend;
-        _device = CreateBackend(backend);
+        _device = CreateBackend(backend, preferWindowingGl);
         IsWarp = _device.IsSoftware;
         Programs = ShaderPrograms.Build(_device);
         Textures = new DefaultTextures(_device);
@@ -62,17 +75,18 @@ public sealed class GraphicsDevice : IDisposable
     /// <summary>True when the device is a software rasterizer (D3D11 WARP or a GL software renderer).</summary>
     public bool IsWarp { get; }
 
-    private static IRenderDevice CreateBackend(GraphicsBackend backend) => backend switch
+    private static IRenderDevice CreateBackend(GraphicsBackend backend, bool preferWindowingGl) => backend switch
     {
         GraphicsBackend.Direct3D11 => new D3D11RenderDevice(),
-        GraphicsBackend.OpenGl => CreateOpenGl(),
+        GraphicsBackend.OpenGl => CreateOpenGl(preferWindowingGl),
         _ => throw new ArgumentOutOfRangeException(nameof(backend), backend, "unknown graphics backend"),
     };
 
-    private static IRenderDevice CreateOpenGl()
+    private static IRenderDevice CreateOpenGl(bool preferWindowingGl)
     {
-        // Platform-selecting headless context: WGL on Windows, EGL (then GLX) on Linux.
-        IGlContext? context = OffscreenGlContext.TryCreate(out string reason);
+        // Platform-selecting headless context: WGL on Windows, EGL (then GLX) on Linux —
+        // GLX first when it must coexist with Avalonia's GLX compositor (preferWindowingGl).
+        IGlContext? context = OffscreenGlContext.TryCreate(out string reason, preferWindowingGl);
         if (context is null)
         {
             throw new InvalidOperationException($"OpenGL 3.3 core backend unavailable: {reason}");
