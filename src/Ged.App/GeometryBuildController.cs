@@ -35,6 +35,12 @@ public sealed class GeometryBuildController
 
     private CancellationTokenSource? _cts;
     private bool _building;
+
+    // The in-flight build's kind + task handle (Fix B): a USER build (interactive Build / Lighting)
+    // preempts a seamless BACKGROUND build (stash-only or live-CSG preview) by cancelling and
+    // awaiting it, but refuses to run alongside another user build. Null task = nothing in flight.
+    private bool _currentBuildIsBackground;
+    private Task? _runningBuild;
     private bool _applying;
     private Ged.Core.Assets.TextureTraitsCache? _traits;
     private Aabb? _dirtyLightRegion;
@@ -56,12 +62,56 @@ public sealed class GeometryBuildController
         _relightTimer.Tick += (_, _) =>
         {
             _relightTimer.Stop();
-            if (PreviewLightingEnabled && LightingDirty && !_building && !GeometryDirty
-                && _session.Document is { } doc && FindGeometry(doc) is { Surfaces.Count: > 0 })
+            switch (DecideRelightTick())
             {
-                _ = CalculateLightingAsync(shadows: false, preview: true);
+                case RelightTickAction.Bake:
+                    _ = CalculateLightingAsync(shadows: false, preview: true);
+                    break;
+                case RelightTickAction.Reschedule:
+                    // A build is in flight (Fix D): retry after it settles instead of dropping the
+                    // pending relight, so the preview never goes permanently stale.
+                    _relightTimer.Start();
+                    break;
             }
         };
+    }
+
+    /// <summary>What the debounced Preview-Lighting relight tick should do (extracted for testability).</summary>
+    internal enum RelightTickAction
+    {
+        /// <summary>Nothing to relight (preview off, not dirty, or geometry not ready) — do NOT reschedule.</summary>
+        None,
+
+        /// <summary>Kick the incremental preview relight now.</summary>
+        Bake,
+
+        /// <summary>A build is in flight — retry the tick after it settles.</summary>
+        Reschedule,
+    }
+
+    /// <summary>
+    /// Decides the debounced Preview-Lighting relight tick (Fix D). Only <see cref="RelightTickAction.Reschedule"/>
+    /// re-arms the timer, and only while a build is in flight — every terminal state returns
+    /// <see cref="RelightTickAction.None"/> so a preview-off / not-dirty tick can never spin.
+    /// </summary>
+    internal RelightTickAction DecideRelightTick()
+    {
+        if (!PreviewLightingEnabled || !LightingDirty)
+        {
+            return RelightTickAction.None;
+        }
+
+        if (_building)
+        {
+            return RelightTickAction.Reschedule;
+        }
+
+        if (GeometryDirty || _session.Document is not { } doc || FindGeometry(doc) is not { Surfaces.Count: > 0 })
+        {
+            return RelightTickAction.None;
+        }
+
+        return RelightTickAction.Bake;
     }
 
     /// <summary>True when brushes/effects changed since the last build.</summary>
@@ -292,7 +342,12 @@ public sealed class GeometryBuildController
             return false;
         }
 
-        _ = BuildAsync(interactive: false);
+        // STASH-ONLY (Fix A): populate the brush-overlay survival/fragment stash WITHOUT mutating the
+        // document. This build fires on a freshly opened level (the merged brush view is the default),
+        // so applying its 0-surface preview geometry would wipe RED's loaded static_geometry + baked
+        // lightmaps moments after open. It compiles exactly as the live-CSG preview does, but skips the
+        // GeometryBuildService.Apply / MarkDirty / dirty-flag mutations.
+        _ = RunBuildAsync(interactive: false, bakeLighting: false, CastShadows, applyToDocument: false);
         return true;
     }
 
@@ -310,9 +365,23 @@ public sealed class GeometryBuildController
     /// </summary>
     public async Task CalculateLightingAsync(bool shadows, bool preview = false)
     {
-        if (_session.Document is not { } doc || _building)
+        if (_session.Document is not { } doc)
         {
             return;
+        }
+
+        if (preview)
+        {
+            // Preview-Lighting auto-relight (debounced / toggle): stay seamless — never queue behind or
+            // interrupt an in-flight build. The relight debounce (Fix D) reschedules until it is free.
+            if (_building)
+            {
+                return;
+            }
+        }
+        else if (!await EnsureCanStartUserBuildAsync())
+        {
+            return; // Fix B: another user build is already running (a message was shown).
         }
 
         if (GeometryDirty || FindGeometry(doc) is not { Surfaces.Count: > 0 })
@@ -321,7 +390,9 @@ public sealed class GeometryBuildController
             return;
         }
 
-        await RelightAsync(doc, shadows, preview);
+        Task relight = RelightAsync(doc, shadows, preview);
+        _runningBuild = relight;
+        await relight;
     }
 
     /// <summary>
@@ -391,15 +462,80 @@ public sealed class GeometryBuildController
         }
     }
 
-    private async Task RunBuildAsync(bool interactive, bool bakeLighting, bool shadows, bool preview = false)
+    /// <summary>
+    /// Fix B: resolves build concurrency for a USER-initiated operation. Returns true when the caller
+    /// may proceed. A seamless BACKGROUND build in flight (stash-only / live-CSG preview) is cancelled
+    /// and awaited first — so its finally cannot clear the new build's state — before the user build
+    /// starts; another USER build in flight is refused with a status message (never a silent dead click).
+    /// </summary>
+    private async Task<bool> EnsureCanStartUserBuildAsync()
     {
-        if (_session.Document is not { } doc || _building)
+        if (!_building)
+        {
+            return true;
+        }
+
+        if (!_currentBuildIsBackground)
+        {
+            _status("A build is already running — wait for it to finish.");
+            return false;
+        }
+
+        _cts?.Cancel();
+        if (_runningBuild is { } running)
+        {
+            try
+            {
+                await running; // let the background build unwind fully before the user build starts
+            }
+            catch
+            {
+                // it was superseded / cancelled — its own handler already logged anything real
+            }
+        }
+
+        return true;
+    }
+
+    private async Task RunBuildAsync(
+        bool interactive, bool bakeLighting, bool shadows, bool preview = false, bool applyToDocument = true)
+    {
+        if (_session.Document is not { } doc)
         {
             return;
         }
 
+        if (interactive)
+        {
+            // User build: preempt a seamless background build, or refuse a second user build (Fix B).
+            if (!await EnsureCanStartUserBuildAsync())
+            {
+                return;
+            }
+        }
+        else if (_building)
+        {
+            // A seamless background build (stash-only / live-CSG preview) never queues behind or
+            // interrupts an in-flight build; it is re-armed by the next edit / stash request.
+            return;
+        }
+
+        Task body = BuildBodyAsync(doc, interactive, bakeLighting, shadows, preview, applyToDocument);
+        _runningBuild = body;
+        await body;
+    }
+
+    /// <summary>
+    /// The build body: compiles on a background thread and (when <paramref name="applyToDocument"/>)
+    /// swaps the result into the document. It ALWAYS populates the brush-overlay stash. The STASH-ONLY
+    /// path (<paramref name="applyToDocument"/> false, from <see cref="EnsureMergedBrushStash"/>) leaves
+    /// the document — its loaded static_geometry + lightmaps — untouched (Fix A).
+    /// </summary>
+    private async Task BuildBodyAsync(
+        EditorDocument doc, bool interactive, bool bakeLighting, bool shadows, bool preview, bool applyToDocument)
+    {
         _building = true;
-        _cts?.Cancel();
+        _currentBuildIsBackground = !interactive;
         _cts = new CancellationTokenSource();
         CancellationToken token = _cts.Token;
 
@@ -470,22 +606,29 @@ public sealed class GeometryBuildController
             }
 
             sw.Stop();
-            if (bakeLighting && !preview)
+
+            if (applyToDocument)
             {
-                LastFullBakeMs = sw.Elapsed.TotalMilliseconds;
+                if (bakeLighting && !preview)
+                {
+                    LastFullBakeMs = sw.Elapsed.TotalMilliseconds;
+                }
+
+                _applying = true;
+                GeometryBuildService.Apply(doc.Rfl, result);
+                doc.MarkDirty();
+                _applying = false;
+                GeometryDirty = false;
+                // A preview build (interactive == false) skips the t-joint SEAL (FixTJoints) and the
+                // surface stage for speed, so the geometry it applies is UNSEALED: it carries thousands
+                // of open t-joint edges that the sealed interactive build closes (dmabrupt: preview 13k
+                // vs sealed 6). That geometry is fine for the viewport/brush-overlay preview but is NOT
+                // authoritative — Check-for-Holes and Save must re-seal it, so record the quality here.
+                GeometryIsPreview = !interactive;
             }
 
-            _applying = true;
-            GeometryBuildService.Apply(doc.Rfl, result);
-            doc.MarkDirty();
-            _applying = false;
-            GeometryDirty = false;
-            // A preview build (interactive == false) skips the t-joint SEAL (FixTJoints) and the
-            // surface stage for speed, so the geometry it applies is UNSEALED: it carries thousands
-            // of open t-joint edges that the sealed interactive build closes (dmabrupt: preview 13k
-            // vs sealed 6). That geometry is fine for the viewport/brush-overlay preview but is NOT
-            // authoritative — Check-for-Holes and Save must re-seal it, so record the quality here.
-            GeometryIsPreview = !interactive;
+            // The brush-overlay stash is the reason EVERY build runs — including the stash-only build
+            // (Fix A), which populates it without touching the document.
             _session.BrushFaceSurvival = result.SurvivingBrushFaces; // brush-overlay clipped-face filter
             // Item 5: index the compiled fragments so partially-clipped faces draw their
             // surviving area (built once per stash). A fresh stash covers every brush, so
@@ -493,7 +636,7 @@ public sealed class GeometryBuildController
             _session.BrushFragments = Ged.Rendering.Scene.BrushFragmentIndex.Build(
                 result.Geometry, result.BrushFaceIdStart, result.SurvivingBrushFaces);
             _session.StaleFragmentBrushUids.Clear();
-            if (bakeLighting)
+            if (applyToDocument && bakeLighting)
             {
                 LightingDirty = false;
                 _dirtyLightRegion = null;
@@ -506,6 +649,15 @@ public sealed class GeometryBuildController
             {
                 Report(result.Report);
                 _showReport(bakeLighting ? "Lighting" : "Build", result.Report);
+            }
+
+            // Fix D: a geometry-only build (no bake) that leaves lighting dirty re-arms the
+            // Preview-Lighting debounce so the live preview re-bakes onto the fresh surfaces
+            // instead of going stale. The debounce no-ops when the geometry has no surfaces yet.
+            if (!bakeLighting && PreviewLightingEnabled && LightingDirty)
+            {
+                _relightTimer.Stop();
+                _relightTimer.Start();
             }
         }
         catch (OperationCanceledException)
@@ -536,6 +688,10 @@ public sealed class GeometryBuildController
         }
 
         _building = true;
+        // Fix B: a preview relight is seamless/background (a user build preempts it); a manual relight
+        // is a user build (a second user build is refused). The bake ignores cancellation, so a preempt
+        // awaits it to completion — correct, just not instant.
+        _currentBuildIsBackground = preview;
         List<Light> lights = Lights(doc);
         RfColor? ambient = FindAmbient(doc);
         Aabb? region = _dirtyLightRegion;
@@ -616,10 +772,23 @@ public sealed class GeometryBuildController
         doc.MarkDirty();
         _applying = false;
         LightingDirty = true;
+
+        // Fix C: with the live preview active, arm the relight debounce so the greyed pages re-bake
+        // automatically — otherwise the preview goes grey and stays grey (OnDocumentChanged is
+        // suppressed here via _applying, so nothing else would schedule it).
+        bool rebake = PreviewLightingEnabled;
+        if (rebake)
+        {
+            _relightTimer.Stop();
+            _relightTimer.Start();
+        }
+
         StateChanged?.Invoke();
         _refreshScene();
-        _status("Lightmaps removed (reset to neutral).");
-        Log?.Invoke("Lighting", $"Lightmaps removed — {lm.Lightmaps.Count} page(s) reset to neutral grey.");
+        string reset = $"Lightmaps removed (reset to neutral).{(rebake ? " Preview Lighting will re-bake." : string.Empty)}";
+        _status(reset);
+        Log?.Invoke("Lighting",
+            $"Lightmaps removed — {lm.Lightmaps.Count} page(s) reset to neutral grey.{(rebake ? " Preview Lighting will re-bake." : string.Empty)}");
     }
 
     /// <summary>Builds (if needed) then reports hole/leak locations.</summary>
