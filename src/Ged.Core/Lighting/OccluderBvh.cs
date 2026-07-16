@@ -37,14 +37,16 @@ public sealed class OccluderBvh
         public readonly Vec3 Min;
         public readonly Vec3 Max;
         public readonly int Left;   // child node index, or -1 for a leaf
+        public readonly int Right;  // right child node index (only valid when Left >= 0)
         public readonly int Start;  // leaf: first triangle index
         public readonly int Count;  // leaf: triangle count
 
-        public Node(Vec3 min, Vec3 max, int left, int start, int count)
+        public Node(Vec3 min, Vec3 max, int left, int right, int start, int count)
         {
             Min = min;
             Max = max;
             Left = left;
+            Right = right;
             Start = start;
             Count = count;
         }
@@ -105,7 +107,7 @@ public sealed class OccluderBvh
 
         if (count <= LeafSize)
         {
-            nodes[nodeIndex] = new Node(mn, mx, -1, start, count);
+            nodes[nodeIndex] = new Node(mn, mx, -1, -1, start, count);
             return nodeIndex;
         }
 
@@ -116,9 +118,13 @@ public sealed class OccluderBvh
         Array.Sort(index, start, count, Comparer<int>.Create(
             (a, b) => centroid[a].Component(axis).CompareTo(centroid[b].Component(axis))));
 
+        // Nodes are appended pre-order, so the right subtree's root is NOT at left+1 (the
+        // left subtree occupies a variable span of nodes between them). Capture BOTH child
+        // indices explicitly — assuming right == left+1 only holds when the left child is a
+        // single leaf, which silently orphaned every deeper right subtree (missed shadows).
         int left = BuildRange(nodes, index, centroid, boxMin, boxMax, start, mid);
-        BuildRange(nodes, index, centroid, boxMin, boxMax, mid, end);
-        nodes[nodeIndex] = new Node(mn, mx, left, 0, 0);
+        int right = BuildRange(nodes, index, centroid, boxMin, boxMax, mid, end);
+        nodes[nodeIndex] = new Node(mn, mx, left, right, 0, 0);
         return nodeIndex;
     }
 
@@ -180,7 +186,7 @@ public sealed class OccluderBvh
             else if (sp + 2 <= stack.Length)
             {
                 stack[sp++] = node.Left;
-                stack[sp++] = node.Left + 1;
+                stack[sp++] = node.Right;
             }
         }
 
