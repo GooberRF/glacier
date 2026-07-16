@@ -19,8 +19,9 @@
 **Glacier** — GED, short for **Glacier EDitor** — is a clean-room reimplementation of the
 Red Faction `.rfl` level editor, built in .NET 8 + Avalonia. It targets **stock-RED editor
 parity** and **Alpine Faction editor parity**, then layers **modern editing conveniences**
-on top of both — real gizmos, unlimited undo that survives save, live CSG preview, a full
-UV unwrap editor, and one-click packaging.
+on top of both — real gizmos, unlimited undo that survives save, live CSG preview, link
+graph, detailed layer view and object outliners, one-click packaging, prefabs, dependency
+explorer, and full Lua scripting workflow support.
 
 ## Highlights
 
