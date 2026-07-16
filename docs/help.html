@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glacier — Help &amp; Feature Reference</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f8fa;
+    --bg-elev: #ffffff;
+    --sidebar: #eef1f5;
+    --text: #1c2230;
+    --muted: #5a6478;
+    --accent: #2f6fed;
+    --accent-soft: #e5edff;
+    --border: #d9dee7;
+    --code-bg: #eef1f5;
+    --code-text: #24406e;
+    --table-stripe: #f2f4f8;
+    --kbd-bg: #ffffff;
+    --kbd-border: #c3cad6;
+    --shadow: 0 1px 3px rgba(20, 30, 50, .08), 0 8px 24px rgba(20, 30, 50, .05);
+    --note-bg: #fff7e6;
+    --note-border: #f0c674;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d;
+      --bg-elev: #1b1f27;
+      --sidebar: #171b22;
+      --text: #dfe4ec;
+      --muted: #98a2b5;
+      --accent: #6ea0ff;
+      --accent-soft: #23304d;
+      --border: #2b313c;
+      --code-bg: #232833;
+      --code-text: #a9c6ff;
+      --table-stripe: #1f242d;
+      --kbd-bg: #262c37;
+      --kbd-border: #3a4250;
+      --shadow: 0 1px 3px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+      --note-bg: #2a2410;
+      --note-border: #6b5a24;
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f7f8fa; --bg-elev: #ffffff; --sidebar: #eef1f5; --text: #1c2230; --muted: #5a6478;
+    --accent: #2f6fed; --accent-soft: #e5edff; --border: #d9dee7; --code-bg: #eef1f5;
+    --code-text: #24406e; --table-stripe: #f2f4f8; --kbd-bg: #ffffff; --kbd-border: #c3cad6;
+    --note-bg: #fff7e6; --note-border: #f0c674;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #14171d; --bg-elev: #1b1f27; --sidebar: #171b22; --text: #dfe4ec; --muted: #98a2b5;
+    --accent: #6ea0ff; --accent-soft: #23304d; --border: #2b313c; --code-bg: #232833;
+    --code-text: #a9c6ff; --table-stripe: #1f242d; --kbd-bg: #262c37; --kbd-border: #3a4250;
+    --note-bg: #2a2410; --note-border: #6b5a24;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .layout { display: flex; align-items: flex-start; max-width: 1180px; margin: 0 auto; }
+
+  /* Sidebar table of contents */
+  nav.toc {
+    position: sticky;
+    top: 0;
+    flex: 0 0 264px;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 26px 18px 40px;
+    background: var(--sidebar);
+    border-right: 1px solid var(--border);
+    font-size: 14px;
+  }
+  nav.toc .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  nav.toc .brand .glyph {
+    width: 30px; height: 30px; border-radius: 8px; flex: 0 0 auto;
+    background: linear-gradient(135deg, #7db3ff, #2f6fed);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.25);
+  }
+  nav.toc .brand strong { font-size: 17px; letter-spacing: .2px; }
+  nav.toc .tagline { color: var(--muted); font-size: 12.5px; margin: 0 0 18px; }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; counter-reset: sec; }
+  nav.toc ol li { margin: 1px 0; }
+  nav.toc ol li a {
+    display: block; padding: 6px 10px; border-radius: 7px; color: var(--text);
+    counter-increment: sec;
+  }
+  nav.toc ol li a::before { content: counter(sec) ".  "; color: var(--muted); }
+  nav.toc ol li a:hover { background: var(--accent-soft); text-decoration: none; }
+
+  main { flex: 1 1 auto; min-width: 0; padding: 40px clamp(20px, 5vw, 60px) 96px; }
+
+  header.hero { margin-bottom: 8px; }
+  header.hero h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -.3px; }
+  header.hero p.lede { color: var(--muted); font-size: 17px; margin: 0 0 8px; max-width: 62ch; }
+
+  section { scroll-margin-top: 20px; padding-top: 26px; }
+  section > h2 {
+    font-size: 23px; margin: 8px 0 14px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--border); letter-spacing: -.2px;
+  }
+  h3 { font-size: 18px; margin: 26px 0 8px; }
+  h4 { font-size: 15px; margin: 18px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  p { margin: 10px 0; }
+  ul, ol.body { margin: 10px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  strong { font-weight: 650; }
+
+  code {
+    font-family: "SF Mono", "Cascadia Code", Consolas, "Roboto Mono", monospace;
+    font-size: .88em; background: var(--code-bg); color: var(--code-text);
+    padding: 1.5px 6px; border-radius: 5px;
+  }
+
+  kbd {
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace; font-size: .82em;
+    background: var(--kbd-bg); border: 1px solid var(--kbd-border);
+    border-bottom-width: 2px; border-radius: 6px; padding: 1px 7px; white-space: nowrap;
+  }
+
+  .card {
+    background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px;
+    padding: 4px 22px 14px; margin: 16px 0; box-shadow: var(--shadow);
+  }
+
+  .note {
+    background: var(--note-bg); border: 1px solid var(--note-border);
+    border-radius: 10px; padding: 12px 16px; margin: 16px 0; font-size: 14.5px;
+  }
+  .note strong { color: var(--text); }
+
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 16px 0; }
+  .grid2 .tile { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
+  .grid2 .tile h4 { margin: 0 0 4px; color: var(--accent); text-transform: none; letter-spacing: 0; font-size: 15px; }
+  .grid2 .tile p { margin: 4px 0 0; font-size: 14px; color: var(--muted); }
+
+  .table-wrap { overflow-x: auto; margin: 14px 0; border: 1px solid var(--border); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  th { background: var(--sidebar); font-weight: 650; position: sticky; top: 0; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:nth-child(even) { background: var(--table-stripe); }
+  td.key { white-space: nowrap; width: 1%; }
+
+  .hk-cat { font-size: 15px; margin: 22px 0 6px; color: var(--accent); }
+
+  footer {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 13.5px;
+  }
+
+  .toc-toggle { display: none; }
+  @media (max-width: 860px) {
+    nav.toc { display: none; }
+    main { padding: 24px 18px 72px; }
+    header.hero h1 { font-size: 25px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <div class="brand"><span class="glyph" aria-hidden="true"></span><strong>Glacier</strong></div>
+    <p class="tagline">Level editor for Red Faction — help &amp; feature reference</p>
+    <ol>
+      <li><a href="#start">Getting started</a></li>
+      <li><a href="#interface">The interface</a></li>
+      <li><a href="#viewports">Viewports &amp; cameras</a></li>
+      <li><a href="#modes">Editing modes</a></li>
+      <li><a href="#brushes">Brush editing &amp; operators</a></li>
+      <li><a href="#prefabs">Prefabs, groups &amp; layers</a></li>
+      <li><a href="#tomesh">To-Mesh conversion</a></li>
+      <li><a href="#objects">Objects &amp; events</a></li>
+      <li><a href="#textures">Textures &amp; UV</a></li>
+      <li><a href="#build">Geometry building</a></li>
+      <li><a href="#lighting">Lighting</a></li>
+      <li><a href="#scripting">Scripting (Lua)</a></li>
+      <li><a href="#playtest">Playtesting</a></li>
+      <li><a href="#io">Import &amp; export</a></li>
+      <li><a href="#hotkeys">Keyboard shortcuts</a></li>
+      <li><a href="#faq">Troubleshooting &amp; FAQ</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <h1>Glacier Help &amp; Feature Reference</h1>
+      <p class="lede">Glacier is a modern, from-scratch level editor for Red Faction (2001)
+      <code>.rfl</code> levels — a clean-room reimplementation (not stock <code>RED.exe</code>)
+      that aims for stock-RED editor parity, Alpine Faction parity, and a layer of modern
+      conveniences. This reference is fully offline; every link here jumps within the page.</p>
+      <p class="lede" style="font-size:15px">Need a hand or want to share your work? Join the
+      community on <a href="https://discord.gg/factionfiles">Discord</a> (also on the Help menu).</p>
+    </header>
+
+    <!-- 1 -->
+    <section id="start">
+      <h2>1. Getting started</h2>
+      <p>The first time you launch Glacier a short <strong>first-run wizard</strong> helps you
+      point the editor at your game files. Nothing here redistributes game assets — Glacier reads
+      textures, meshes and <code>.tbl</code> tables directly from your own Red Faction install.</p>
+
+      <h3>The first-run wizard</h3>
+      <ul>
+        <li><strong>Red Faction install</strong> — the folder whose <code>.vpp</code> packfiles hold
+        the stock textures, meshes and tables. Optional: you can set it later in Settings, but
+        textures and meshes will not resolve until it is set. Glacier probes common Steam/GOG and
+        Wine locations automatically and reports how many VPPs it found.</li>
+        <li><strong>Alpine Faction launcher</strong> — <code>AlpineFactionLauncher.exe</code>, the
+        one executable play-tests run through. Glacier auto-detects it from the <code>af://</code>
+        protocol registration; otherwise browse to it. It may live
+        outside the Red Faction folder.</li>
+        <li><strong>Camera scheme</strong> — pick the navigation style you prefer (you can change it
+        any time from the View menu). See <a href="#viewports">Viewports &amp; cameras</a>.</li>
+      </ul>
+
+      <h3>Mounting game data</h3>
+      <p>Once the install folder is set, Glacier mounts its VPP packfiles as a read-only virtual file
+      system. <code>alpinefaction.vpp</code> is mounted <em>above</em> the base VPPs,
+      so Alpine assets supersede stock ones exactly as the game resolves them. Use
+      <em>Tools ▸ Reload Textures</em> / <em>Reload Meshes</em> to rescan without restarting.</p>
+
+      <div class="note"><strong>Alpine Faction</strong> unlocks Alpine-only editor features, and
+      multiplayer play-test launching runs through its launcher.</div>
+    </section>
+
+    <!-- 2 -->
+    <section id="interface">
+      <h2>2. The interface</h2>
+      <p>The workspace is a docked layout around a central viewport grid. Panels can be moved,
+      floated, stacked into tabs and reset from <em>View ▸ Reset Viewport Layout</em>.</p>
+
+      <h3>Docked panels</h3>
+      <div class="grid2">
+        <div class="tile"><h4>Outliner</h4><p>Every object and brush grouped by type with counts,
+        per-type and per-item show/hide, Jump To and View From. Sorted by name.</p></div>
+        <div class="tile"><h4>Properties</h4><p>Context inspector for the current selection — brushes,
+        faces, objects, events, lights, room effects, movers and more.</p></div>
+        <div class="tile"><h4>Textures</h4><p>The texture browser: categories, filters, current
+        texture, favourites, tiled preview and per-category assignment.</p></div>
+        <div class="tile"><h4>Object palette</h4><p>Entities, clutter, items and event types,
+        organised into category trees with hover mesh previews.</p></div>
+        <div class="tile"><h4>Link graph</h4><p>An interactive node-graph editor of triggers, events,
+        movers and their links — draggable, box-selectable, pan/zoom navigable.</p></div>
+        <div class="tile"><h4>Dependency graph</h4><p>What references what: textures, meshes and
+        assets used across the level, for packaging and cleanup.</p></div>
+        <div class="tile"><h4>Layers</h4><p>Organise brushwork and objects into layers with
+        show/hide/lock and solidity handling.</p></div>
+        <div class="tile"><h4>Statistics</h4><p>Budget bars versus engine limits plus geometry
+        counts, refreshed after every build and on demand.</p></div>
+        <div class="tile"><h4>Build output</h4><p>The compile report — rooms, portals, faces,
+        vertices, surfaces, lightmap pages, UIDs, timing and warnings.</p></div>
+        <div class="tile"><h4>Script console</h4><p>A Lua REPL with history and colour-coded output;
+        see <a href="#scripting">Scripting</a>.</p></div>
+      </div>
+
+      <h3>Menus &amp; the command palette</h3>
+      <p>Everything lives on the menu bar (File, Edit, Select, View, Tools, Geometry, Level, Scripts,
+      Help) and most commands are also on the toolbar. Press <kbd>Ctrl+Shift+P</kbd> for the
+      <strong>command palette</strong> — a fuzzy search over every command that shows its bound key
+      and runs it through the same dispatcher the menus use.</p>
+    </section>
+
+    <!-- 3 -->
+    <section id="viewports">
+      <h2>3. Viewports &amp; cameras</h2>
+      <p>The viewport grid can show 1, 2 or 4 panes (cycle with <kbd>F6</kbd>, maximise the active
+      pane with <kbd>Tab</kbd>). Each pane is independently a perspective 3D view or a top / front /
+      side orthographic view.</p>
+
+      <h3>Camera schemes</h3>
+      <div class="grid2">
+        <div class="tile"><h4>RED Classic</h4><p>Stock RED navigation: numpad pitch / heading / slide,
+        <kbd>A</kbd>/<kbd>Z</kbd> dolly, <kbd>+</kbd>/<kbd>-</kbd> ortho zoom, mouse-look on drag.</p></div>
+        <div class="tile"><h4>Modern FPS</h4><p>WASD fly with mouse-look and a Shift speed boost —
+        the default, familiar from modern editors and games.</p></div>
+        <div class="tile"><h4>Orbit</h4><p>Tumble and dolly around the selection or a focus point,
+        good for inspecting a piece of geometry from all sides.</p></div>
+        <div class="tile"><h4>UnrealEd</h4><p>The UnrealEd-style mouse-button navigation many level
+        designers already have in muscle memory.</p></div>
+      </div>
+
+      <div class="note"><strong>Continuous camera movement uses fixed held keys.</strong> The
+      pitch / heading / slide / move-up-down / zoom / ortho-zoom motions are driven per-frame while
+      you hold the key (numpad and <kbd>A</kbd>/<kbd>Z</kbd>/<kbd>+</kbd>/<kbd>-</kbd>). These are
+      <em>not</em> rebindable — they appear in Settings ▸ Input for reference, and they are not
+      offered in the command palette because a single click cannot reproduce a held movement.</div>
+
+      <h3>Per-viewport view options</h3>
+      <p>Each pane has its own options dropdown. Choices that apply to any view include
+      <strong>Show Event Arrows</strong> (directional-event facing arrows, on by default),
+      <strong>Show Links</strong>, <strong>Show Path Node Connections</strong>,
+      <strong>Show Gizmo</strong> and <strong>Show Annotations</strong>. Perspective-only options
+      include <strong>Draw Decals</strong> (project decal textures onto geometry; off by default),
+      <strong>Draw Sky</strong> (draw the sky room like in-game), <strong>Show Fog</strong>,
+      <strong>Room Rendering</strong> (scope which rooms draw) and <strong>Portal Faces</strong>
+      (don't draw / see-thru / non-see-thru).</p>
+    </section>
+
+    <!-- 4 -->
+    <section id="modes">
+      <h2>4. Editing modes</h2>
+      <p>Glacier edits at several granularities. Switch modes from the toolbar, the View/mode
+      hotkeys, or the palette.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Mode</th><th>What you edit</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Brush</strong></td><td>Whole brushes: create, move, clip, boolean, set brush type (solid / portal / detail).</td></tr>
+          <tr><td><strong>Face</strong></td><td>Individual faces: extrude, bevel, texture and UV tools (the Texture/UV tab lives here).</td></tr>
+          <tr><td><strong>Vertex</strong></td><td>Individual vertices: move, snap, weld.</td></tr>
+          <tr><td><strong>Edge</strong></td><td>Edges: bevel, extrude, collapse, loop / ring select, convert to faces or vertices.</td></tr>
+          <tr><td><strong>Object</strong></td><td>Placed objects and events: move, rotate, link, inspect, reorient, snap to camera.</td></tr>
+          <tr><td><strong>Group</strong></td><td>Named groups of brushes and objects, moved and edited as a unit.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- 5 -->
+    <section id="brushes">
+      <h2>5. Brush editing &amp; operators</h2>
+      <p>Brushes are the solid geometry of a level. Each brush carries a <strong>type</strong> that
+      the compiler honours:</p>
+      <ul>
+        <li><strong>Solid</strong> — ordinary world geometry that walls off space and casts shadows.</li>
+        <li><strong>Portal</strong> — a see-through boundary that splits rooms for visibility and
+        culling.</li>
+        <li><strong>Detail</strong> — decoration that does not carve the world BSP, so it never
+        creates new rooms or leaks.</li>
+      </ul>
+      <p>Boolean and construction operators available on brushes and selections include
+      <strong>boolean</strong> (subtract / intersect), <strong>clip</strong>, <strong>carve</strong>,
+      <strong>fuse</strong>, <strong>stretch</strong>, <strong>bend</strong>, <strong>twist</strong>,
+      <strong>mirror</strong>, <strong>n-gon split</strong> and <strong>bridge</strong>. The
+      interactive <strong>Draw Brush</strong> tool builds a brush in three stages (base outline,
+      then height) with live grid snapping.</p>
+      <div class="note"><strong>Increment-based transforms.</strong> Move (<kbd>M</kbd>), rotate
+      (<kbd>R</kbd>) and scale (<kbd>S</kbd>) work by the grid / rotation / scale increment for
+      RED-parity precision. Hold <kbd>Alt</kbd> during a mouse drag to temporarily invert the magnet
+      snap state (snap ↔ free).</p></div>
+    </section>
+
+    <!-- 6 -->
+    <section id="prefabs">
+      <h2>6. Prefabs, groups &amp; layers</h2>
+      <h3>Prefabs</h3>
+      <p>A prefab is a reusable, <strong>parametric instance</strong>: save a selection of brushes
+      and objects as a prefab, then place instances of it. Instances remember their source, so when
+      you update the prefab you can <strong>propagate</strong> the change to every placed instance
+      (with a prompt before overwriting instances you have modified locally). Prefabs live in your
+      prefab library, browsable with thumbnails.</p>
+      <h3>Groups</h3>
+      <p>Groups bind brushes and objects into a named unit you can select and move together, import
+      and export as <code>.rfg</code> files, and drag-drop into the viewport.</p>
+      <h3>Layers</h3>
+      <p>Layers organise the level for authoring — show, hide and lock whole layers, with correct
+      handling of brush solidity so hiding a layer never changes the compiled result.</p>
+    </section>
+
+    <!-- 7 -->
+    <section id="tomesh">
+      <h2>7. To-Mesh conversion</h2>
+      <p><strong>Convert To Mesh Object</strong> turns selected brushwork into a static mesh object,
+      matching the stock mesh-export behaviour. The To-Mesh dialog exposes the two toggles the
+      conversion previously hard-wired, so you can control how faces and materials are emitted. Use
+      it for decorative geometry that should render as a mesh rather than carve the world.</p>
+    </section>
+
+    <!-- 8 -->
+    <section id="objects">
+      <h2>8. Objects &amp; events</h2>
+      <p>Objects are everything that is not world geometry: entities, items, clutter, lights,
+      triggers, movers, particle emitters, ambient sounds, decals, cutscene path nodes, room effects
+      and the full catalogue of <strong>events</strong> (148 event types).</p>
+
+      <h3>Inspectors</h3>
+      <p>The Properties panel shows a purpose-built inspector for each kind — events (with their
+      typed fields and schema), lights, ambient sounds, coronas, meshes (including a per-slot texture
+      override editor) and <strong>Room Effects</strong> (sky / liquid / ambient-light, with the full
+      liquid-property field set). Multi-selection edits apply across the selection with mixed-value
+      handling. Every edit is a single undo step.</p>
+
+      <h3>Links &amp; the link graph</h3>
+      <p>Wire triggers to events to movers by linking objects (<kbd>K</kbd> to link, <kbd>Shift+K</kbd>
+      to break). The <strong>Link Graph</strong> panel visualises and edits these connections as a
+      node graph; node positions persist per level in a sidecar next to the <code>.rfl</code>.</p>
+
+      <h3>Movers, keyframes &amp; cutscenes</h3>
+      <p>Movers animate along keyframe paths; cutscenes drive the camera along path nodes. Copy and
+      paste preserve every field, and fresh UIDs are assigned to clones so nothing collides.</p>
+    </section>
+
+    <!-- 9 -->
+    <section id="textures">
+      <h2>9. Textures &amp; UV</h2>
+      <h3>Browser &amp; library</h3>
+      <p>The texture browser lists everything mounted from the game data plus your custom
+      subdirectories (shown as <em>Custom - &lt;dir&gt;</em> categories), with filters, favourites,
+      tiled preview and display-size control. Supported formats include TGA (incl. 8-bit greyscale),
+      VBM, <strong>DDS (DXT1/3/5)</strong>, PNG, JPG and ATX (frame 0), resolved through the same
+      supersede chain the game uses.</p>
+
+      <h3>Mapping &amp; UV</h3>
+      <p>From the Texture/UV tab (in Face mode) apply <strong>Box</strong> (<kbd>Ctrl+Q</kbd>),
+      <strong>Planar</strong> and <strong>Cylinder</strong> (<kbd>Ctrl+W</kbd>) mapping, set
+      pixels-per-meter, copy/paste UVs, and flip. <strong>Verify Textures</strong> (Tools menu)
+      reports faces whose textures are missing from the mounted data before you build or
+      package.</p>
+      <div class="note"><strong>Planar map is a toolbar button, not a hotkey.</strong> In the RED
+      Classic preset <kbd>Ctrl+E</kbd> is Extrude in Face mode, so Planar map has no key — use the
+      Texture/UV panel button.</div>
+
+      <h3>UV Unwrap editor</h3>
+      <p>The <strong>UV Unwrap</strong> editor (Texture/UV panel ▸ <em>UV Unwrap…</em>) opens a 2D
+      view of the selected faces' UV layout over their tiled texture. Every edit — including one
+      completed gizmo drag — commits as a single undo step.</p>
+      <ul>
+        <li><strong>Selection modes</strong> — choose <strong>Vertices</strong>,
+        <strong>Edges</strong> or <strong>Faces</strong> from the toolbar; the stored selection
+        survives a mode switch. Click to pick, or drag a <strong>rubber-band box</strong> — hold
+        <kbd>Ctrl</kbd> to add and <kbd>Alt</kbd> to remove.</li>
+        <li><strong>Transform gizmo</strong> — hold <kbd>M</kbd> (move), <kbd>R</kbd> (rotate) or
+        <kbd>S</kbd> (scale) with a non-empty selection to show a <strong>2D gizmo</strong> at the
+        selection centroid: drag the axis arrows or centre square (move), the rotation ring
+        (rotate), or the axis boxes and centre/corner handle (per-axis vs uniform scale). The
+        arrow keys still nudge by the increments while the key is held. With <strong>Grid Snap</strong>
+        (<kbd>G</kbd>) on, a move lands the selection's centroid on the grid step and a rotation
+        snaps to the Rotate° step; with it off both are continuous.</li>
+        <li><strong>Increment selectors</strong> — the <strong>Rotate°</strong> and
+        <strong>Grid</strong> toolbar controls are preset dropdowns with free entry, matching the
+        main window's rotate/grid pickers; <strong>Move</strong> and <strong>Scale</strong> stay
+        free-entry boxes.</li>
+        <li><strong>Layout tools</strong> — <strong>Flip V/H</strong>, <strong>Align</strong>
+        (<kbd>Shift+V</kbd> / <kbd>Shift+H</kbd>), <strong>Auto Unwrap</strong> (planar-project and
+        pack the faces into the tile), <strong>Fit UVs</strong> (scale the selection to fill the
+        base tile), decal-vs-texture display (<kbd>D</kbd> / <kbd>T</kbd>), Show Tiled, and
+        <strong>Print → TGA</strong>.</li>
+        <li><strong>Navigation</strong> — wheel or <kbd>Shift</kbd>+right-drag to zoom,
+        <kbd>Shift</kbd>+left-drag or middle-drag to pan, and <strong>Fit View</strong> to reframe.</li>
+      </ul>
+    </section>
+
+    <!-- 10 -->
+    <section id="build">
+      <h2>10. Geometry building</h2>
+      <p>Building compiles your brushwork into the room/portal BSP the engine renders. Run it from
+      <em>Geometry ▸ Build Geometry</em> (<kbd>Space</kbd> in RED Classic, <kbd>Ctrl+B</kbd> in
+      Modern).</p>
+
+      <h3>Build Method</h3>
+      <div class="grid2">
+        <div class="tile"><h4>Shared BSP (default)</h4><p>RED's authentic single accumulated shared
+        BSP — the RED-faithful method, on by default. Measured equal-or-better than Incremental on
+        every corpus level.</p></div>
+        <div class="tile"><h4>Incremental</h4><p>Glacier's own modern accumulator. Fully functional
+        and selectable from <em>Geometry ▸ Build Method</em> — nothing is removed.</p></div>
+      </div>
+
+      <h3>Check for Holes &amp; the build report</h3>
+      <p><strong>Check for Holes</strong> looks for leaks — gaps where the world is not sealed. The
+      <strong>build report</strong> (Build Output panel) lists rooms, sub-rooms, portals, faces,
+      vertices, surfaces, lightmap pages, UIDs, elapsed time and any <strong>warnings</strong>. The
+      warnings are textual; <strong>hole-leak findings are click-to-navigate</strong> — click one to
+      frame the leak in the viewport.</p>
+    </section>
+
+    <!-- 11 -->
+    <section id="lighting">
+      <h2>11. Lighting</h2>
+      <p>Glacier bakes lightmaps from your placed lights. Run a bake from <em>Build ▸ Calculate
+      Lightmaps</em> (<kbd>L</kbd>) or the combined maps-and-light command. The <strong>Preview
+      Lighting</strong> toggle re-bakes small levels with the exact CPU kernel for an accurate
+      in-editor preview.</p>
+
+      <h3>Lightmap Method</h3>
+      <p>The <em>Level ▸ Lightmap Method</em> flyout stays open while you toggle options. Pick one
+      base method, then layer on any modifiers:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Option</th><th>What it does &amp; when to use it</th></tr></thead>
+        <tbody>
+          <tr><td><strong>RED Classic</strong> <em>(default)</em></td><td>The stock direct-lighting
+          bake. Fast, faithful to how original levels look. Use it for RED-parity and as your
+          baseline.</td></tr>
+          <tr><td><strong>Bounced — 1 / 2 Bounces</strong></td><td>Adds one or two passes of indirect
+          light, so light spills realistically into shadowed areas. Use for softer, more natural
+          interiors; two bounces is slower but fills deep spaces better.</td></tr>
+          <tr><td><strong>Ambient Occlusion</strong></td><td>Darkens creases, corners and contact
+          points to add depth. Use to make geometry read more solidly without moving any lights.</td></tr>
+          <tr><td><strong>Soft Shadows</strong></td><td>Softens shadow edges instead of hard stock
+          edges. Use for a gentler, higher-quality look, especially on large open shadows.</td></tr>
+          <tr><td><strong>High-Resolution Lightmaps</strong></td><td>Raises lightmap texel density so
+          fine detail and small light cookies resolve crisply. Use on hero areas; it costs lightmap
+          pages and bake time.</td></tr>
+          <tr><td><strong>Seam Blend (cross-room)</strong></td><td>Blends lightmaps across room
+          boundaries so a surface that spans a doorway is continuous. Use to kill visible seams at
+          portals (mirrors Alpine's smooth-lights).</td></tr>
+          <tr><td><strong>Corner Leak Fix</strong></td><td>Uses own-room ambient plus an edge-aware
+          shadow bias to stop light bleeding through corners. Use when you see bright leaks at wall
+          junctions.</td></tr>
+          <tr><td><strong>Smooth Gutter Normals</strong></td><td>Welds and angle-averages gutter
+          normals so shading is smooth across lightmap gutters. Use to remove faceting artefacts on
+          curved or beveled surfaces.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- 12 -->
+    <section id="scripting">
+      <h2>12. Scripting (Lua)</h2>
+      <p>Glacier embeds a <strong>Lua</strong> scripting engine exposed as a safe, versioned facade
+      over the editor. Open the <strong>Script Console</strong> (a REPL) or the <strong>Script
+      Editor</strong> window (syntax highlighting, Run / Dry-Run / Run-Selection). Scripts live in
+      the portable <code>scripts\</code> library beside the app, and ship with an example gallery
+      (array grids, spiral stairs, mass texture replace, and more).</p>
+      <ul>
+        <li><strong>One run = one undo step.</strong> The whole run is a single undo transaction:
+        success commits one undo node; an error or a Dry-Run rolls everything back, so a failed
+        script leaves the level untouched.</li>
+        <li><strong>Auto-registered commands.</strong> A user script with a
+        <code>--@name</code>/<code>--@id</code> header registers itself as a command in the palette
+        and Scripts menu, optionally bindable to a key with <code>--@key</code>.</li>
+        <li><strong>Sandbox limits.</strong> No file, network or process access; runaway loops are
+        bounded by an instruction budget and a timeout; destructive operations require an explicit
+        allow-destructive opt-in and are disabled in Dry-Run.</li>
+      </ul>
+      <div class="note"><strong>Lua <code>ops.playtest</code> is editor-only.</strong> It drives the
+      interactive editor's Alpine launch flow, so it is a no-op outside a running editor session.
+      The full API — <code>level</code>, <code>selection</code>, <code>assets</code>,
+      <code>ops</code>, <code>lint</code>, <code>log</code>, <code>rng</code> — is documented in
+      <code>docs/SCRIPTING-API.md</code>, also reachable from the Scripts menu.</div>
+    </section>
+
+    <!-- 13 -->
+    <section id="playtest">
+      <h2>13. Playtesting</h2>
+      <p>Launch straight into your level through Alpine Faction. <em>Play Level</em> (<kbd>F7</kbd>)
+      and <em>Play Level from Camera</em> (<kbd>F8</kbd>) start single-player; <em>Play in Multi</em>
+      (<kbd>F9</kbd>) and <em>Play in Multi from Camera</em> (<kbd>F10</kbd>) start a multiplayer
+      session. The "from Camera" variants drop you in at the current viewport camera position.</p>
+      <p>Play-tests run through <code>AlpineFactionLauncher.exe</code>. On Linux the launch goes
+      through a configurable template (default <code>wine {exe} {args}</code>) so the Windows launcher
+      runs under Wine or Proton; staging paths flow through the VFS mount unchanged.</p>
+    </section>
+
+    <!-- 14 -->
+    <section id="io">
+      <h2>14. Import &amp; export</h2>
+      <h3>Importing meshes</h3>
+      <p><em>File ▸ Import Mesh</em> brings in <strong>OBJ</strong>, <strong>FBX</strong>,
+      <strong>glTF/GLB</strong> and <strong>DAE</strong> geometry, with a scale/axis/winding wizard.
+      Import as one brush per material group, or as a batched static mesh object.</p>
+      <h3>Exporting</h3>
+      <p>Export the level or a selection to <strong>OBJ</strong>, <strong>glTF</strong> and
+      <strong>VRML</strong>, or convert selections to mesh objects.</p>
+      <h3>Packaging</h3>
+      <p>The <strong>VPP packfile builder</strong> (<em>File ▸ Create Level Packfile</em>) collects
+      your level and its referenced assets into a distributable <code>.vpp</code>, using the
+      dependency scan to find what the level needs.</p>
+      <div class="note"><strong>RFL versions.</strong> Glacier loads <code>.rfl</code> files from
+      versions <strong>180–305</strong> and always <strong>saves version 305</strong> (Alpine RED
+      format). Opening a pre-Alpine (&lt;300) level shows a non-blocking informational notice.</div>
+    </section>
+
+    <!-- 15 -->
+    <section id="hotkeys">
+      <h2>15. Keyboard shortcuts</h2>
+      <p>Two presets ship: <strong>RED Classic</strong> (stock RED keys plus the Alpine additions)
+      and <strong>Modern</strong>. Every binding is rebindable in <em>Settings ▸ Input</em> — the one
+      exception is continuous camera movement, which uses fixed held keys (see
+      <a href="#viewports">Viewports &amp; cameras</a>). A blank cell means no default key in that
+      preset. Mouse transforms: <kbd>M</kbd>+arrows move, <kbd>R</kbd>+arrows rotate, <kbd>S</kbd>
+      scales; <kbd>M</kbd>+drag moves in the view plane, <kbd>N</kbd>+drag along the dominant axis.</p>
+
+      <h3 class="hk-cat">App</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>About Glacier</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Command Palette</td><td class="key"><kbd>Ctrl+Shift+P</kbd></td><td class="key"><kbd>Ctrl+Shift+P</kbd></td></tr>
+          <tr><td>Help Topics</td><td class="key"><kbd>F1</kbd></td><td class="key"><kbd>F1</kbd></td></tr>
+          <tr><td>Settings…</td><td class="key"></td><td class="key"><kbd>Ctrl+,</kbd></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Brush</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Clip</td><td class="key"><kbd>X</kbd></td><td class="key"></td></tr>
+          <tr><td>Clip (two-point plane)</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Create Brush</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Draw Brush</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Move Brush Centers</td><td class="key"><kbd>Ctrl+D</kbd></td><td class="key"></td></tr>
+          <tr><td>Reorient</td><td class="key"><kbd>O</kbd></td><td class="key"></td></tr>
+          <tr><td>Snap Cutter To Camera</td><td class="key"><kbd>B</kbd></td><td class="key"></td></tr>
+          <tr><td>Snap To Grid</td><td class="key"><kbd>Ctrl+G</kbd></td><td class="key"></td></tr>
+          <tr><td>Stretch (numeric)</td><td class="key"><kbd>D</kbd></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Build</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Build Geometry</td><td class="key"><kbd>Space</kbd></td><td class="key"><kbd>Ctrl+B</kbd></td></tr>
+          <tr><td>Calculate Lighting</td><td class="key"><kbd>Shift+L</kbd></td><td class="key"><kbd>Shift+L</kbd></td></tr>
+          <tr><td>Calculate Lighting (No Shadows)</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Calculate Lightmaps</td><td class="key"><kbd>L</kbd></td><td class="key"><kbd>L</kbd></td></tr>
+          <tr><td>Calculate Maps and Light</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Calculate Maps and Light (No Shadows)</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Calculate Nav Paths</td><td class="key"><kbd>Shift+Space</kbd></td><td class="key"></td></tr>
+          <tr><td>Remove Lightmaps</td><td class="key"></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Camera</h3>
+      <p style="font-size:14px;color:var(--muted);margin:6px 0">The continuous-movement rows
+      (Bank / Heading / Pitch / Slide / Move / Zoom / Ortho Zoom) are fixed held keys and are not
+      rebindable.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Bank Left</td><td class="key"><kbd>Numpad7</kbd></td><td class="key"></td></tr>
+          <tr><td>Bank Right</td><td class="key"><kbd>Numpad9</kbd></td><td class="key"></td></tr>
+          <tr><td>Frame Selection</td><td class="key"><kbd>Ctrl+T</kbd></td><td class="key"><kbd>F</kbd></td></tr>
+          <tr><td>Go To Player Start</td><td class="key"><kbd>Home</kbd></td><td class="key"><kbd>Home</kbd></td></tr>
+          <tr><td>Heading Left</td><td class="key"><kbd>Numpad4</kbd></td><td class="key"></td></tr>
+          <tr><td>Heading Right</td><td class="key"><kbd>Numpad6</kbd></td><td class="key"></td></tr>
+          <tr><td>Move Down</td><td class="key"><kbd>NumpadEnter</kbd></td><td class="key"></td></tr>
+          <tr><td>Move Up</td><td class="key"><kbd>NumpadPlus</kbd></td><td class="key"></td></tr>
+          <tr><td>Orient To World Axis</td><td class="key"><kbd>C</kbd></td><td class="key"></td></tr>
+          <tr><td>Ortho Zoom In</td><td class="key"><kbd>Plus</kbd></td><td class="key"></td></tr>
+          <tr><td>Ortho Zoom Out</td><td class="key"><kbd>Minus</kbd></td><td class="key"></td></tr>
+          <tr><td>Pitch Down</td><td class="key"><kbd>Numpad2</kbd></td><td class="key"></td></tr>
+          <tr><td>Pitch Up</td><td class="key"><kbd>Numpad8</kbd></td><td class="key"></td></tr>
+          <tr><td>Slide Left</td><td class="key"><kbd>Numpad1</kbd></td><td class="key"></td></tr>
+          <tr><td>Slide Right</td><td class="key"><kbd>Numpad3</kbd></td><td class="key"></td></tr>
+          <tr><td>Teleport To XYZ</td><td class="key"><kbd>T</kbd></td><td class="key"></td></tr>
+          <tr><td>Toggle Scroll Mode</td><td class="key"><kbd>End</kbd></td><td class="key"></td></tr>
+          <tr><td>Zoom In</td><td class="key"><kbd>A</kbd></td><td class="key"></td></tr>
+          <tr><td>Zoom Out</td><td class="key"><kbd>Z</kbd></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Edge</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Edge Bevel</td><td class="key"><kbd>B</kbd></td><td class="key"></td></tr>
+          <tr><td>Edge Collapse</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Edge Extrude</td><td class="key"><kbd>Ctrl+E</kbd></td><td class="key"></td></tr>
+          <tr><td>Edges → Faces</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Edges → Vertices</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Select Edge Loop</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Select Edge Ring</td><td class="key"></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Edit</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Copy</td><td class="key"><kbd>Ctrl+C</kbd></td><td class="key"><kbd>Ctrl+C</kbd></td></tr>
+          <tr><td>Cut</td><td class="key"><kbd>Ctrl+X</kbd></td><td class="key"><kbd>Ctrl+X</kbd></td></tr>
+          <tr><td>Delete</td><td class="key"><kbd>Delete</kbd></td><td class="key"><kbd>Delete</kbd></td></tr>
+          <tr><td>Level Properties</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Morph</td><td class="key"><kbd>Ctrl+M</kbd></td><td class="key"></td></tr>
+          <tr><td>Paste</td><td class="key"><kbd>Ctrl+V</kbd></td><td class="key"><kbd>Ctrl+V</kbd></td></tr>
+          <tr><td>Properties</td><td class="key"><kbd>Ctrl+P</kbd></td><td class="key"><kbd>F2</kbd></td></tr>
+          <tr><td>Redo</td><td class="key"><kbd>Ctrl+Y</kbd></td><td class="key"><kbd>Ctrl+Y</kbd></td></tr>
+          <tr><td>Undo</td><td class="key"><kbd>Ctrl+Z</kbd></td><td class="key"><kbd>Ctrl+Z</kbd></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Face</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Bevel</td><td class="key"><kbd>B</kbd></td><td class="key"></td></tr>
+          <tr><td>Extrude</td><td class="key"><kbd>Ctrl+E</kbd></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">File</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Create Level Packfile</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Export Level as OBJ…</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Export Level as glTF…</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Export Selection To Mesh…</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Export as VRML…</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Import Mesh…</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>New Level</td><td class="key"><kbd>Ctrl+N</kbd></td><td class="key"><kbd>Ctrl+N</kbd></td></tr>
+          <tr><td>Open Dialogue Text</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Open…</td><td class="key"><kbd>Ctrl+O</kbd></td><td class="key"><kbd>Ctrl+O</kbd></td></tr>
+          <tr><td>Play Level</td><td class="key"><kbd>F7</kbd></td><td class="key"></td></tr>
+          <tr><td>Play Level from Camera</td><td class="key"><kbd>F8</kbd></td><td class="key"></td></tr>
+          <tr><td>Play in Multi</td><td class="key"><kbd>F9</kbd></td><td class="key"><kbd>F9</kbd></td></tr>
+          <tr><td>Play in Multi from Camera</td><td class="key"><kbd>F10</kbd></td><td class="key"><kbd>F10</kbd></td></tr>
+          <tr><td>Save</td><td class="key"><kbd>Ctrl+S</kbd></td><td class="key"><kbd>Ctrl+S</kbd></td></tr>
+          <tr><td>Save As…</td><td class="key"></td><td class="key"><kbd>Ctrl+Shift+S</kbd></td></tr>
+          <tr><td>Save Selection As Prefab…</td><td class="key"></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Grid</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Cycle Grid Brightness</td><td class="key"><kbd>\</kbd></td><td class="key"><kbd>\</kbd></td></tr>
+          <tr><td>Grid Size Down</td><td class="key"><kbd>[</kbd></td><td class="key"><kbd>[</kbd></td></tr>
+          <tr><td>Grid Size Up</td><td class="key"><kbd>]</kbd></td><td class="key"><kbd>]</kbd></td></tr>
+          <tr><td>Rotation Step Down</td><td class="key"><kbd>Shift+[</kbd></td><td class="key"></td></tr>
+          <tr><td>Rotation Step Up</td><td class="key"><kbd>Shift+]</kbd></td><td class="key"></td></tr>
+          <tr><td>Toggle Snap (Magnet)</td><td class="key"></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Mode</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Brush Mode</td><td class="key"><kbd>Shift+B</kbd></td><td class="key"><kbd>1</kbd></td></tr>
+          <tr><td>Edge Mode</td><td class="key"><kbd>Shift+E</kbd></td><td class="key"><kbd>Shift+E</kbd></td></tr>
+          <tr><td>Face Mode</td><td class="key"><kbd>Shift+F</kbd></td><td class="key"><kbd>2</kbd></td></tr>
+          <tr><td>Group Mode</td><td class="key"><kbd>Shift+G</kbd></td><td class="key"><kbd>6</kbd></td></tr>
+          <tr><td>Object Mode</td><td class="key"><kbd>Shift+O</kbd></td><td class="key"><kbd>5</kbd></td></tr>
+          <tr><td>Texture / UV Tools (Face)</td><td class="key"><kbd>Shift+T</kbd></td><td class="key"><kbd>4</kbd></td></tr>
+          <tr><td>Vertex Mode</td><td class="key"><kbd>Shift+V</kbd></td><td class="key"><kbd>3</kbd></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Object</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Back Link</td><td class="key"><kbd>Ctrl+K</kbd></td><td class="key"></td></tr>
+          <tr><td>Break Link</td><td class="key"><kbd>Shift+K</kbd></td><td class="key"></td></tr>
+          <tr><td>Convert To Mesh Object</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Cycle Nav Connection</td><td class="key"><kbd>J</kbd></td><td class="key"></td></tr>
+          <tr><td>Edit Links</td><td class="key"><kbd>Ctrl+L</kbd></td><td class="key"></td></tr>
+          <tr><td>Link</td><td class="key"><kbd>K</kbd></td><td class="key"></td></tr>
+          <tr><td>Place At Cursor</td><td class="key"><kbd>P</kbd></td><td class="key"></td></tr>
+          <tr><td>Reorient Object</td><td class="key"><kbd>O</kbd></td><td class="key"></td></tr>
+          <tr><td>Snap To Camera</td><td class="key"><kbd>Shift+S</kbd></td><td class="key"></td></tr>
+          <tr><td>Staple To Face</td><td class="key"><kbd>S</kbd></td><td class="key"></td></tr>
+          <tr><td>Waypoint List</td><td class="key"><kbd>Ctrl+W</kbd></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Scripts</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Focus Script Console</td><td class="key"></td><td class="key"><kbd>Ctrl+OemTilde</kbd></td></tr>
+          <tr><td>New Script…</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Reload Scripts Library</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Run Script File…</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Script Editor…</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Scripting API Reference</td><td class="key"></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Selection</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Grow Selection</td><td class="key"><kbd>Shift+S</kbd></td><td class="key"></td></tr>
+          <tr><td>Invert Selection</td><td class="key"><kbd>I</kbd></td><td class="key"><kbd>Ctrl+I</kbd></td></tr>
+          <tr><td>Select All</td><td class="key"></td><td class="key"><kbd>Ctrl+A</kbd></td></tr>
+          <tr><td>Select By UID</td><td class="key"><kbd>U</kbd></td><td class="key"><kbd>U</kbd></td></tr>
+          <tr><td>Select Same Texture</td><td class="key"><kbd>Shift+D</kbd></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Texture</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Apply Texture</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Box Map</td><td class="key"><kbd>Ctrl+Q</kbd></td><td class="key"></td></tr>
+          <tr><td>Copy UVs</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Cylinder Map</td><td class="key"><kbd>Ctrl+W</kbd></td><td class="key"></td></tr>
+          <tr><td>Flip Map X</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Flip Map Y</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Grow Faces To Brush</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Paste UVs</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Pick Texture (eyedropper)</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Planar Map</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Reselect Previous Faces</td><td class="key"><kbd>Backspace</kbd></td><td class="key"></td></tr>
+          <tr><td>Snap Map To Grid</td><td class="key"><kbd>Ctrl+G</kbd></td><td class="key"></td></tr>
+          <tr><td>UV Unwrap Editor</td><td class="key"></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Tools</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Clear Annotations</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Library Health Report</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Reload Meshes</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Reload Textures</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Ruler (measure)</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Select Tool</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Verify All Textures</td><td class="key"></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Transform</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Gizmo Local/World</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Move Gizmo</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Move Tool</td><td class="key"><kbd>M</kbd></td><td class="key"><kbd>G</kbd></td></tr>
+          <tr><td>Rotate Gizmo</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Rotate Tool</td><td class="key"><kbd>R</kbd></td><td class="key"><kbd>R</kbd></td></tr>
+          <tr><td>Scale Gizmo</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Toggle Gizmo</td><td class="key"></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">View</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>1 Pane</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>2 Panes</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>4 Panes</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Cycle Pane Layout</td><td class="key"><kbd>F6</kbd></td><td class="key"></td></tr>
+          <tr><td>Cycle Pane Layout (Back)</td><td class="key"><kbd>Shift+F6</kbd></td><td class="key"></td></tr>
+          <tr><td>Don't Draw Portal Faces</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Draw Non-see-thru Portal Faces</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Draw See-thru Portal Faces</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Isolate Selection</td><td class="key"></td><td class="key"><kbd>Shift+I</kbd></td></tr>
+          <tr><td>Maximize Viewport</td><td class="key"><kbd>Tab</kbd></td><td class="key"><kbd>Tab</kbd></td></tr>
+          <tr><td>Reset Viewport Layout</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Show Annotations</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Toggle Backface Culling</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Toggle Global/Local Coords</td><td class="key"><kbd>G</kbd></td><td class="key"></td></tr>
+          <tr><td>Toggle Show All Ranges</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Toggle Show Links</td><td class="key"></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="hk-cat">Visibility</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
+        <tbody>
+          <tr><td>Hide All But Clutter/Entities</td><td class="key"><kbd>X</kbd></td><td class="key"></td></tr>
+          <tr><td>Hide All Objects</td><td class="key"><kbd>W</kbd></td><td class="key"></td></tr>
+          <tr><td>Hide Selected</td><td class="key"><kbd>H</kbd></td><td class="key"><kbd>H</kbd></td></tr>
+          <tr><td>Invert Hidden</td><td class="key"><kbd>Ctrl+H</kbd></td><td class="key"></td></tr>
+          <tr><td>Lock Selected</td><td class="key"><kbd>Q</kbd></td><td class="key"></td></tr>
+          <tr><td>Unhide All Brushes</td><td class="key"><kbd>Shift+H</kbd></td><td class="key"></td></tr>
+          <tr><td>Unhide All But Clutter/Entities</td><td class="key"><kbd>Shift+X</kbd></td><td class="key"></td></tr>
+          <tr><td>Unhide All Objects</td><td class="key"><kbd>Shift+W</kbd></td><td class="key"><kbd>Alt+H</kbd></td></tr>
+          <tr><td>Unlock All</td><td class="key"><kbd>Shift+Q</kbd></td><td class="key"></td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- 16 -->
+    <section id="faq">
+      <h2>16. Troubleshooting &amp; FAQ</h2>
+
+      <h4>Textures and meshes show as missing / pink</h4>
+      <p>The Red Faction install folder is not set or does not contain the expected VPPs. Set it in
+      <em>Settings ▸ General</em>, then <em>Tools ▸ Reload Textures</em>. <em>Verify All Textures</em>
+      lists exactly which faces are unresolved.</p>
+
+      <h4>Play-testing does nothing / can't find the launcher</h4>
+      <p>Play-tests run through <code>AlpineFactionLauncher.exe</code>. Point Glacier at it in
+      Settings (it is auto-detected from the <code>af://</code> protocol registration). On Linux,
+      check the launch template (default <code>wine {exe} {args}</code>).</p>
+
+      <h4>Linux: Glacier won't start after extracting the tar.gz</h4>
+      <p>The tar.gz is packaged on Windows, which cannot preserve the Unix executable bit. After
+      extracting, run <code>chmod +x Glacier</code> once, then launch it. The AppImage does not need
+      this — it is already executable.</p>
+
+      <h4>My build has a leak / open edges</h4>
+      <p>Run <em>Check for Holes</em>. Hole-leak findings in the build report are click-to-navigate —
+      click one to frame the leak. Confirm surrounding brushes are Solid (not Detail) and that the
+      shell is sealed.</p>
+
+      <h4>An old level won't save the way it loaded</h4>
+      <p>Glacier loads RFL versions 180–305 and always saves version 305 (Alpine RED format). Opening
+      a pre-Alpine level is fine — it is upgraded on save.</p>
+
+      <h4>A camera key won't rebind</h4>
+      <p>Continuous camera movement (pitch / heading / slide / move / zoom / ortho zoom) uses fixed
+      held keys by design and is not rebindable. Everything else is rebindable in
+      <em>Settings ▸ Input</em>.</p>
+
+      <h4>Where are my settings stored?</h4>
+      <p>Next to the app when its folder is writable (portable). If the folder is read-only (e.g.
+      installed under Program Files), Glacier falls back to your user profile and shows a one-time
+      notice — nothing is lost.</p>
+
+      <h4>Where can I get help or share levels?</h4>
+      <p>Join the community on <a href="https://discord.gg/factionfiles">Discord</a>.</p>
+
+      <footer>
+        Glacier is © Chris "Goober" Parsons. See LICENSE and licensing-info.txt.
+      </footer>
+    </section>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Ged.Scripting</RootNamespace>
+    <AssemblyName>Ged.Scripting</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Lua scripting engine — pure managed (netstandard2.0), zero native payload, BSD-3-Clause.
+         See licensing-info.txt §1.11. Chosen per docs/internal/SCRIPTING-PLAN.md (owner decision). -->
+    <PackageReference Include="MoonSharp" Version="2.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ged.Core\Ged.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ged.App.Tests" />
+    <InternalsVisibleTo Include="Ged.Core.Tests" />
+  </ItemGroup>
+
+</Project>

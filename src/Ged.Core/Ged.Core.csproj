@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Ged.Core</RootNamespace>
+    <AssemblyName>Ged.Core</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="StbImageSharp" Version="2.30.15" />
+    <!-- Assimp (native, BSD-3) via the MIT Silk.NET binding: FBX / glTF / DAE mesh import. -->
+    <PackageReference Include="Silk.NET.Assimp" Version="2.22.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The raw selection primitives on EditorDocument/BrushEditor are internal so that only
+         SelectionRouter (this assembly) can mutate selection. Test assemblies drive those
+         primitives + the router directly. -->
+    <InternalsVisibleTo Include="Ged.Core.Tests" />
+    <InternalsVisibleTo Include="Ged.App.Tests" />
+    <InternalsVisibleTo Include="Ged.Rendering.Tests" />
+  </ItemGroup>
+
+</Project>

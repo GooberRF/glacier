@@ -1,0 +1,33 @@
+# Build output
+bin/
+obj/
+TestResults/
+*.user
+*.suo
+.vs/
+
+# Rider / IDE
+.idea/
+*.DotSettings.user
+
+# Generated simulation reports
+artifacts/
+out/
+*.report.html
+/tests/artifacts/
+
+# Packaging output (tools/package.ps1)
+dist/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Research items
+/research/
+/docs/research
+/docs/internal
+
+.mcp.json
+CLAUDE.md
+.claude/

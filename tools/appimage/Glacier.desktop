@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Glacier
+GenericName=Level Editor
+Comment=Level editor for Red Faction (2001) .rfl levels
+Exec=Glacier
+Icon=Glacier
+Categories=Graphics;3DGraphics;
+Terminal=false
+StartupWMClass=Glacier
+Keywords=RedFaction;RFL;Level;Editor;GED;Glacier;

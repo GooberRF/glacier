@@ -1,0 +1,79 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Ged.App</RootNamespace>
+    <!-- Item 7: the product is Glacier; the executable carries the product name while the
+         namespaces / project files keep the GED code name. -->
+    <AssemblyName>Glacier</AssemblyName>
+    <Product>Glacier</Product>
+    <AssemblyTitle>Glacier</AssemblyTitle>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Item 3: the glacier "G" icon. ApplicationIcon sets the .exe icon shown in Explorer /
+         taskbar; the same .ico is embedded as an AvaloniaResource below for Window.Icon. -->
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+
+    <!-- 1.0.0 — initial beta release (semver starts here). InformationalVersion gets the
+         git short-sha appended by the target below (best-effort; falls back to the bare
+         version off a checkout). Disable the SDK's automatic full-sha SourceRevisionId
+         append so the short sha from the target below is the one that ships. -->
+    <Version>1.0.0</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <!-- Stamp InformationalVersion as "1.0.0+<git-short-sha>" when git is available. -->
+  <Target Name="SetGitShaInformationalVersion" BeforeTargets="GetAssemblyVersion;CoreCompile">
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse --short HEAD"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitShortSha" />
+      <Output TaskParameter="ExitCode" PropertyName="GitExitCode" />
+    </Exec>
+    <PropertyGroup Condition="'$(GitExitCode)' == '0' and '$(GitShortSha)' != ''">
+      <InformationalVersion>$(Version)+$(GitShortSha)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.2.1" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.1" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.1" />
+    <PackageReference Include="Dock.Avalonia" Version="11.2.0" />
+    <PackageReference Include="Dock.Model.Mvvm" Version="11.2.0" />
+    <!-- Script Editor code surface + Lua syntax highlighting (pure managed, MIT). §1.10 -->
+    <PackageReference Include="Avalonia.AvaloniaEdit" Version="11.2.0" />
+    <!-- Read the af:// protocol registration to auto-detect AlpineFactionLauncher.exe from the
+         Windows registry (item 6). Guarded by OperatingSystem.IsWindows(); no-op on Linux. -->
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ged.Rendering\Ged.Rendering.csproj" />
+    <ProjectReference Include="..\Ged.Scripting\Ged.Scripting.csproj" />
+  </ItemGroup>
+
+  <!-- Ship the portable scripts library (examples + generated Lua stub) next to the exe so
+       AppPaths.ScriptsDirectory finds them on first run. -->
+  <ItemGroup>
+    <Content Include="..\..\scripts\**\*.lua" Link="scripts\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Item 3: embed the icon so Window.Icon resolves via avares:// even under single-file publish.
+       AppIcon.png is the committed source-of-truth art; tools/make-icon.ps1 regenerates the .ico. -->
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\AppIcon.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ged.App.Tests" />
+  </ItemGroup>
+
+  <!-- Ship the license texts next to the exe so the About dialog can display them. -->
+  <ItemGroup>
+    <Content Include="..\..\licensing-info.txt" Link="licensing-info.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,7 @@
+newmtl stone
+Ka 1.000 1.000 1.000
+Kd 0.800 0.800 0.800
+Ks 0.000 0.000 0.000
+d 1.0
+illum 1
+map_Kd rck_default01.tga

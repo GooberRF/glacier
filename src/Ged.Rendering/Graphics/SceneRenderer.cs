@@ -1,0 +1,353 @@
+using System.Numerics;
+using Ged.Rendering.Picking;
+using Ged.Rendering.Rhi;
+using Ged.Rendering.Scene;
+
+namespace Ged.Rendering.Graphics;
+
+/// <summary>
+/// Draws a <see cref="GpuScene"/> into a render target for a given camera and
+/// render mode, and runs the id-buffer pick pass. All targets (swapchain,
+/// offscreen readback, pick) and both live and offscreen rendering share this one
+/// code path, which issues every GPU operation through the <see cref="IRenderContext"/>.
+/// </summary>
+public sealed class SceneRenderer : IDisposable
+{
+    private readonly GraphicsDevice _gd;
+    private readonly IGpuBuffer _frameCb;
+    private readonly IGpuBuffer _drawCb;
+
+    public SceneRenderer(GraphicsDevice gd)
+    {
+        _gd = gd;
+        _frameCb = gd.CreateConstantBuffer(160);
+        _drawCb = gd.CreateConstantBuffer(96);
+    }
+
+    /// <summary>The background clear color (dark editor grey).</summary>
+    public Vector4 ClearColor { get; set; } = new(0.10f, 0.11f, 0.13f, 1f);
+
+    /// <summary>Distance-fog settings for the world/mesh passes (off by default).</summary>
+    public FogSettings Fog { get; set; } = FogSettings.Off;
+
+    /// <summary>
+    /// When false (default) the solid world + single-sided mesh passes back-face cull
+    /// (RED parity). When true they render both faces. Transparent passes (sky, liquid,
+    /// alpha), wireframe, double-sided (0x20) mesh triangles and picking never cull.
+    /// </summary>
+    public bool DisableBackfaceCulling { get; set; }
+
+    /// <summary>Animation clock (seconds) driving in-shader UV scroll (liquid surfaces).</summary>
+    public float Time { get; set; }
+
+    private IRenderContext Ctx => _gd.Context;
+
+    internal void Render(
+        Camera camera,
+        RenderMode mode,
+        GpuScene scene,
+        IRenderTarget target)
+    {
+        IRenderContext ctx = Ctx;
+        ctx.SetRenderTarget(target);
+        ctx.ClearColor(target, ClearColor);
+        ctx.ClearDepth(target);
+
+        UpdateFrame(camera, mode.GlobalAlpha(), mode.ShaderBranch(), Fog);
+        BindConstants();
+        BindSampler();
+
+        bool wire = mode.IsWireframe();
+        bool cull = !wire && !DisableBackfaceCulling;
+
+        // Opaque world: back-face culled (RED parity) unless wireframe / culling disabled.
+        ctx.SetRasterizerState(wire ? _gd.RasterWireframe
+            : cull ? _gd.RasterSolidCull
+            : _gd.RasterSolid);
+        SetProgram(_gd.Programs.World, pick: false);
+        SetDepth(write: true);
+        SetBlend(mode == RenderMode.SeeThrough);
+        foreach (GpuBatch b in scene.Batches)
+        {
+            if (b.Pass == RenderPass.Opaque)
+            {
+                DrawBatch(b);
+            }
+        }
+
+        DrawMeshes(scene, mode, pick: false, cull);
+
+        // Transparent passes (sky, liquid, alpha) with depth writes off — never back-face
+        // culled (blended surfaces are commonly authored to be seen from both sides).
+        ctx.SetRasterizerState(wire ? _gd.RasterWireframe : _gd.RasterSolid);
+        SetProgram(_gd.Programs.World, pick: false);
+        SetDepth(write: false);
+        foreach (RenderPass pass in new[] { RenderPass.Sky, RenderPass.Liquid, RenderPass.Alpha })
+        {
+            SetBlend(pass != RenderPass.Sky || mode == RenderMode.SeeThrough);
+            foreach (GpuBatch b in scene.Batches)
+            {
+                if (b.Pass == pass)
+                {
+                    DrawBatch(b);
+                }
+            }
+        }
+
+        // Debug geometry.
+        ctx.SetRasterizerState(_gd.RasterSolid);
+        DrawLines(scene);
+        DrawBillboards(scene, pick: false);
+    }
+
+    /// <summary>Renders the id-buffer and reads back the pick under a pixel.</summary>
+    internal PickId RenderPick(Camera camera, GpuScene scene, IPickTarget target, int px, int py)
+    {
+        IRenderContext ctx = Ctx;
+        ctx.SetRenderTarget(target);
+        ctx.ClearColor(target, Vector4.Zero);
+        ctx.ClearDepth(target);
+
+        UpdateFrame(camera, 1f, 0, FogSettings.Off);
+        BindConstants();
+        BindSampler();
+
+        // Picking must use the SAME cull state as the solid world pass: with back-face
+        // culling enabled (default), a click on a back-facing polygon rasterizes nothing
+        // for that face, so the pick falls through to whatever is behind it. Disabling
+        // culling restores pick-the-backface. The pick pass always rasterizes solid (no
+        // wireframe), so the cull decision is just the culling toggle.
+        bool cull = !DisableBackfaceCulling;
+        ctx.SetRasterizerState(cull ? _gd.RasterSolidCull : _gd.RasterSolid);
+        SetDepth(write: true);
+        SetBlend(false);
+
+        SetProgram(_gd.Programs.World, pick: true);
+        foreach (GpuBatch b in scene.Batches)
+        {
+            // Opaque world plus any drawn portal faces (pickable only when drawn).
+            if (b.Pass == RenderPass.Opaque || b.IsPortal)
+            {
+                DrawBatch(b, bindTextures: false);
+            }
+        }
+
+        // DrawMeshes applies the per-mesh double-sided (V3M 0x20) exception itself, so
+        // double-sided triangles stay pickable from both sides even when culling is on.
+        DrawMeshes(scene, RenderMode.JustTextures, pick: true, cull);
+        DrawBillboards(scene, pick: true);
+
+        return PickId.Decode(target.ReadPick(px, py));
+    }
+
+    private void DrawMeshes(GpuScene scene, RenderMode mode, bool pick, bool cull)
+    {
+        if (scene.Meshes.Count == 0)
+        {
+            return;
+        }
+
+        IRenderContext ctx = Ctx;
+        SetProgram(_gd.Programs.Mesh, pick);
+        SetDepth(write: true);
+        SetBlend(!pick && mode == RenderMode.SeeThrough);
+        ctx.SetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        int stride = Scene.MeshVertex.SizeInBytes;
+        bool wire = mode.IsWireframe();
+
+        foreach (GpuMesh m in scene.Meshes)
+        {
+            // Cull single-sided meshes with the solid pass; the 0x20 double-sided draw
+            // and wireframe/pick always render both faces.
+            ctx.SetRasterizerState(wire ? _gd.RasterWireframe
+                : cull && !m.DoubleSided ? _gd.RasterSolidCull
+                : _gd.RasterSolid);
+            UpdateDraw(m.World, Vector4.One, m.PickId, hasLightmap: false);
+            ctx.SetVertexBuffer(m.VertexBuffer, stride);
+            ctx.SetIndexBuffer(m.IndexBuffer);
+            if (!pick)
+            {
+                ctx.SetTexture(0, m.Diffuse);
+            }
+
+            ctx.DrawIndexed(m.IndexCount);
+        }
+    }
+
+    private void DrawBatch(GpuBatch b, bool bindTextures = true)
+    {
+        IRenderContext ctx = Ctx;
+        UpdateDraw(Matrix4x4.Identity, b.Tint, 0, b.HasLightmap, b.Scroll);
+        ctx.SetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        ctx.SetVertexBuffer(b.VertexBuffer, Scene.WorldVertex.SizeInBytes);
+        ctx.SetIndexBuffer(b.IndexBuffer);
+        if (bindTextures)
+        {
+            ctx.SetTexture(0, b.Diffuse);
+            ctx.SetTexture(1, b.Lightmap);
+        }
+
+        ctx.DrawIndexed(b.IndexCount);
+    }
+
+    private void DrawBillboards(GpuScene scene, bool pick)
+    {
+        // Normal billboards depth-TEST (no write) against the scene so glyphs behind geometry are
+        // hidden like the objects they mark.
+        DrawBillboardSet(
+            scene.BillboardIndexCount, scene.BillboardVertexBuffer, scene.BillboardIndexBuffer,
+            scene.ParticleGroups, pick, _gd.DepthNoWrite);
+
+        // On-top billboards (transform-drag indicator labels) draw with the depth test disabled so
+        // they are never occluded — matching the gizmo overlay lines. Excluded from the pick pass.
+        if (!pick)
+        {
+            DrawBillboardSet(
+                scene.BillboardOnTopIndexCount, scene.BillboardOnTopVertexBuffer, scene.BillboardOnTopIndexBuffer,
+                scene.OnTopGroups, pick: false, _gd.DepthNoTest);
+        }
+    }
+
+    private void DrawBillboardSet(
+        int atlasIndexCount,
+        IGpuBuffer? atlasVb,
+        IGpuBuffer? atlasIb,
+        IReadOnlyList<TexturedBillboardGroup> groups,
+        bool pick,
+        IDepthStencilState depthState)
+    {
+        if (atlasIndexCount == 0 && groups.Count == 0)
+        {
+            return;
+        }
+
+        IRenderContext ctx = Ctx;
+        SetProgram(_gd.Programs.Billboard, pick);
+        ctx.SetDepthStencilState(depthState);
+        SetBlend(!pick);
+        UpdateDraw(Matrix4x4.Identity, Vector4.One, 0, hasLightmap: false);
+
+        int stride = Scene.BillboardVertex.SizeInBytes;
+        ctx.SetPrimitiveTopology(PrimitiveTopology.TriangleList);
+
+        // Object-glyph billboards (+ particles with an unresolved bitmap): icon atlas.
+        if (atlasIndexCount > 0)
+        {
+            ctx.SetTexture(0, _gd.Textures.Icons);
+            ctx.SetVertexBuffer(atlasVb!, stride);
+            ctx.SetIndexBuffer(atlasIb!);
+            ctx.DrawIndexed(atlasIndexCount);
+        }
+
+        // Particle / label billboards textured with each authored bitmap (or inline label bitmap).
+        foreach (TexturedBillboardGroup g in groups)
+        {
+            if (g.IndexCount == 0)
+            {
+                continue;
+            }
+
+            ctx.SetTexture(0, g.Texture);
+            ctx.SetVertexBuffer(g.VertexBuffer, stride);
+            ctx.SetIndexBuffer(g.IndexBuffer);
+            ctx.DrawIndexed(g.IndexCount);
+        }
+    }
+
+    /// <summary>
+    /// Draws an ad-hoc line list (selection highlight) over whatever is already
+    /// in the currently bound target — no clear. Call immediately after
+    /// <see cref="Render"/> and before Present.
+    /// </summary>
+    internal void DrawOverlayLines(Camera camera, IGpuBuffer? vertexBuffer, int vertexCount, bool onTop = false)
+    {
+        if (vertexCount == 0)
+        {
+            return;
+        }
+
+        IRenderContext ctx = Ctx;
+        UpdateFrame(camera, 1f, 0, FogSettings.Off);
+        BindConstants();
+        ctx.SetRasterizerState(_gd.RasterSolid);
+        SetProgram(_gd.Programs.Line, pick: false);
+        // onTop = draw with depth test disabled so the gizmo is never occluded by geometry
+        // in front of the selection (item 12); otherwise depth-test against the scene.
+        ctx.SetDepthStencilState(onTop ? _gd.DepthNoTest : _gd.DepthNoWrite);
+        SetBlend(true);
+        UpdateDraw(Matrix4x4.Identity, Vector4.One, 0, hasLightmap: false);
+
+        ctx.SetPrimitiveTopology(PrimitiveTopology.LineList);
+        ctx.SetVertexBuffer(vertexBuffer!, Scene.LineVertex.SizeInBytes);
+        ctx.Draw(vertexCount);
+    }
+
+    private void DrawLines(GpuScene scene)
+    {
+        if (scene.LineVertexCount == 0)
+        {
+            return;
+        }
+
+        IRenderContext ctx = Ctx;
+        SetProgram(_gd.Programs.Line, pick: false);
+        SetDepth(write: false);
+        SetBlend(true);
+        UpdateDraw(Matrix4x4.Identity, Vector4.One, 0, hasLightmap: false);
+
+        ctx.SetPrimitiveTopology(PrimitiveTopology.LineList);
+        ctx.SetVertexBuffer(scene.LineVertexBuffer!, Scene.LineVertex.SizeInBytes);
+        ctx.Draw(scene.LineVertexCount);
+    }
+
+    private void SetProgram(IShaderProgram program, bool pick) => Ctx.SetProgram(program, pick);
+
+    private void SetDepth(bool write) =>
+        Ctx.SetDepthStencilState(write ? _gd.DepthDefault : _gd.DepthNoWrite);
+
+    private void SetBlend(bool alpha) =>
+        Ctx.SetBlendState(alpha ? _gd.BlendAlpha : _gd.BlendOpaque);
+
+    private void BindSampler() => Ctx.SetSampler(0, _gd.Sampler);
+
+    private void BindConstants()
+    {
+        IRenderContext ctx = Ctx;
+        ctx.SetConstantBuffer(0, _frameCb);
+        ctx.SetConstantBuffer(1, _drawCb);
+    }
+
+    private void UpdateFrame(Camera camera, float globalAlpha, int modeBranch, FogSettings fog)
+    {
+        var frame = new FrameConstants
+        {
+            ViewProj = camera.ViewProjectionMatrix,
+            CameraRight = new Vector4(camera.Right, 0f),
+            CameraUp = new Vector4(camera.Up, 0f),
+            CameraPos = new Vector4(camera.Position, 1f),
+            Params = new Vector4(globalAlpha, 2.0f, modeBranch, Time),
+            FogColor = new Vector4(fog.Color, fog.Enabled ? 1f : 0f),
+            FogParams = new Vector4(fog.Start, fog.End, 0f, 0f),
+        };
+        Ctx.UpdateConstantBuffer(_frameCb, in frame);
+    }
+
+    private void UpdateDraw(Matrix4x4 world, Vector4 tint, uint pickId, bool hasLightmap, Vector2 scroll = default)
+    {
+        var draw = new DrawConstants
+        {
+            World = world,
+            Tint = tint,
+            PickId = pickId,
+            HasLightmap = hasLightmap ? 1u : 0u,
+            Scroll = scroll,
+        };
+        Ctx.UpdateConstantBuffer(_drawCb, in draw);
+    }
+
+    public void Dispose()
+    {
+        _drawCb.Dispose();
+        _frameCb.Dispose();
+    }
+}

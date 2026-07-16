@@ -1,0 +1,335 @@
+================================================================================
+Glacier (GED) — Licensing Information
+================================================================================
+
+GED (Glacier) itself is distributed under the MIT License (see LICENSE),
+Copyright (c) 2026 Chris "Goober" Parsons. The Glacier name is not licensed
+under the MIT license — see README.
+
+This file records the license of every third-party dependency bundled with or
+linked by GED, and the provenance of any code adapted from other projects. It
+is kept current with every dependency change, in the same commit that adds or
+removes the dependency. The third-party components below are licensed under
+their own terms (MIT / BSD / Apache-2.0 / zlib / public-domain class); those
+notices are required and remain unchanged, and the terms in LICENSE do not
+affect them.
+
+All third-party runtime/build dependencies are permissive
+(MIT / BSD / Apache-2.0 / zlib / public-domain class), which imposes no
+obligation that conflicts with GED's own distribution terms (see LICENSE).
+
+Versions below are the resolved versions from `dotnet list <proj> package
+--include-transitive` for the four shipping projects (src/Ged.Core,
+src/Ged.Rendering, src/Ged.Scripting, src/Ged.App). The two test projects
+(tests/Ged.Core.Tests, tests/Ged.Rendering.Tests) do NOT ship;
+their extra packages are listed separately in §1.11.
+
+--------------------------------------------------------------------------------
+1. Third-party libraries (NuGet) — shipped (managed assemblies)
+--------------------------------------------------------------------------------
+
+1.1  Avalonia                    MIT        UI toolkit (Ged.App)
+  - Avalonia                            11.2.1
+  - Avalonia.Desktop                    11.2.1
+  - Avalonia.Themes.Fluent              11.2.1
+  - Avalonia.Controls.ProportionalStackPanel  11.2.0
+  - Avalonia.Controls.Recycling         11.2.0
+  - Avalonia.Controls.Recycling.Model   11.2.0
+  - Avalonia.FreeDesktop                11.2.1  (Linux desktop integration)
+  - Avalonia.MarkupExtension            11.2.0
+  - Avalonia.Native                     11.2.1  (ships libAvaloniaNative.dylib — macOS only)
+  - Avalonia.Remote.Protocol            11.2.1  (design-time previewer transport)
+  - Avalonia.Skia                       11.2.1  (Skia 2D backend adapter)
+  - Avalonia.Win32                      11.2.1  (Windows backend — the shipped win-x64 path)
+  - Avalonia.X11                        11.2.1  (Linux backend)
+  - Avalonia.Angle.Windows.Natives      2.1.22045.20230930  (ships av_libglesv2.dll — see §1.12)
+  - Avalonia.BuildServices              0.0.29  (build-time only; not shipped at runtime)
+  - MicroCom.Runtime                    0.11.0  (COM interop helper used by the Win32 backend)
+  https://github.com/AvaloniaUI/Avalonia  (MIT License)
+  The ProportionalStackPanel / Recycling / MarkupExtension helper packages and
+  MicroCom.Runtime are by the same author community and are MIT-licensed.
+  Avalonia.Angle.Windows.Natives repackages Google's ANGLE (see §1.12 for the
+  native binary's license).
+
+1.2  Dock.Avalonia                MIT        Docking layout (Ged.App shell)
+  - Dock.Avalonia                       11.2.0  (DockControl + Fluent dock theme)
+  - Dock.Model.Mvvm                     11.2.0  (MVVM dock factory / dockable models)
+  - Dock.Model                          11.2.0  (core dock model, pulled in transitively)
+  - Dock.Settings                       11.2.0  (dock settings, pulled in transitively)
+  https://github.com/wieslawsoltes/Dock  (MIT License)
+  Provides the rearrangeable/floatable panel layout around the viewport grid.
+
+1.3  CommunityToolkit.Mvvm        MIT        MVVM primitives (ObservableObject, etc.)
+  - CommunityToolkit.Mvvm               8.0.0
+  https://github.com/CommunityToolkit/dotnet  (MIT License)
+  Pulled in transitively by Dock.Model.Mvvm (Dock's MVVM dockable base types
+  derive from CommunityToolkit's ObservableObject). GED's own shell code does not
+  use the CommunityToolkit source generators directly, but the assembly ships as a
+  transitive dependency of Dock, so it is listed here as a shipped dependency.
+
+1.4  Skia / HarfBuzz (Avalonia render + text backends)  MIT (bindings)
+  - SkiaSharp                           2.88.8  (managed Skia binding — MIT)
+  - SkiaSharp.NativeAssets.Win32        2.88.8  (ships libSkiaSharp.dll — see §1.12)
+  - SkiaSharp.NativeAssets.Linux        2.88.8  (ships libSkiaSharp.so — non-win RIDs)
+  - SkiaSharp.NativeAssets.macOS        2.88.8  (ships libSkiaSharp.dylib — non-win RIDs)
+  - SkiaSharp.NativeAssets.WebAssembly  2.88.8  (wasm RID — not shipped for desktop)
+  - HarfBuzzSharp                       7.3.0.2 (managed HarfBuzz binding — MIT)
+  - HarfBuzzSharp.NativeAssets.Win32    7.3.0.2 (ships libHarfBuzzSharp.dll — see §1.12)
+  - HarfBuzzSharp.NativeAssets.Linux    7.3.0.2 (ships libHarfBuzzSharp.so — non-win RIDs)
+  - HarfBuzzSharp.NativeAssets.macOS    7.3.0.2 (ships libHarfBuzzSharp.dylib — non-win RIDs)
+  - HarfBuzzSharp.NativeAssets.WebAssembly 7.3.0.3-preview.2.2 (wasm RID — not shipped)
+  https://github.com/mono/SkiaSharp  (MIT License — managed bindings)
+  The managed SkiaSharp/HarfBuzzSharp bindings are MIT. Their *native* payloads
+  (Skia, HarfBuzz) are separate upstream projects with their own licenses and ARE
+  redistributed with GED — see §1.12. Avalonia renders all 2D UI through Skia, and
+  shapes text through HarfBuzz, so these are on the shipped path.
+
+1.5  Silk.NET                     MIT        Direct3D 11 / DXGI / HLSL / OpenGL / math bindings
+  - Silk.NET.Direct3D11                 2.22.0  (Ged.Rendering)
+  - Silk.NET.DXGI                       2.22.0
+  - Silk.NET.Direct3D.Compilers         2.22.0  (D3DCompile — runtime HLSL compilation)
+  - Silk.NET.OpenGL                     2.22.0  (OpenGL 3.3-core cross-platform backend — L2)
+  - Silk.NET.Maths                      2.22.0  (camera view/projection math)
+  - Silk.NET.Core                       2.22.0  (pulled in transitively)
+  (Silk.NET.SDL/GLFW windowing bindings are NOT referenced)
+  https://github.com/dotnet/Silk.NET  (MIT License)
+  Thin P/Invoke bindings over the OS Direct3D 11 and OpenGL runtimes; NO native
+  binaries are redistributed for either. D3D11/DXGI/d3dcompiler ship with Windows;
+  the OpenGL backend loads the system opengl32.dll (Windows) / libGL (Linux/Mesa)
+  through a raw WGL / EGL / GLX context, so no GL native payload is bundled and the
+  single-file publish stays clean. Silk.NET.OpenGL is pure managed bindings. The
+  Linux offscreen (headless-test) context is created by GED's own raw P/Invokes to
+  the system libEGL.so.1 / libGL.so.1 / libX11.so.6 (Mesa / X11) — these are
+  system-provided, P/Invoked only, and NOT redistributed (exactly like D3D11 on
+  Windows), so they add no new dependency or license obligation.
+
+1.6  Silk.NET.Assimp             MIT        Assimp binding — generic mesh import (Ged.Core)
+  - Silk.NET.Assimp                     2.22.0
+  https://github.com/dotnet/Silk.NET  (MIT License)
+  The managed P/Invoke binding for the Open Asset Import Library (Assimp). Used by
+  Ged.Core/IO/Mesh/Import/AssimpImporter for FBX / glTF / GLB / DAE import. OBJ is
+  handled by GED's own native ObjImporter and does not require Assimp. The native
+  Assimp binary is redistributed — see §1.12.
+
+1.7  StbImageSharp               Public     PNG/JPEG decoding (Ged.Core/IO/Tex)
+                                 Domain     C# port of Sean Barrett's stb_image.
+  - StbImageSharp                       2.30.15
+  https://github.com/StbSharp/StbImageSharp  (Public Domain / MIT dual)
+  Used for .png/.jpg/.jpeg decode only. TGA, VBM, DDS/BCn, and ATX decoders are
+  GED's own implementations (see §2), so stb is not on the TGA/DDS path. Pure
+  managed C#; no native binary.
+
+1.8  Microsoft / System runtime packages   MIT   (transitive .NET BCL/interop bits)
+  - Microsoft.CSharp                          4.7.0
+  - Microsoft.DotNet.PlatformAbstractions     3.1.6
+  - Microsoft.Extensions.DependencyModel      8.0.0
+  - System.IO.Pipelines                       8.0.0
+  - System.Memory                             4.5.5
+  - System.Numerics.Vectors                   4.5.0
+  - System.Runtime.CompilerServices.Unsafe    6.0.0
+  - System.Text.Encodings.Web                 8.0.0
+  - System.Text.Json                          8.0.0
+  - Tmds.DBus.Protocol                        0.20.0  (Linux D-Bus, via Avalonia.FreeDesktop)
+  https://github.com/dotnet/runtime  (MIT License)  — for the System.*/Microsoft.* packages
+  https://github.com/tmds/Tmds.DBus  (MIT License)  — for Tmds.DBus.Protocol
+  Standard .NET Base Class Library / interop packages pulled in transitively.
+  In a self-contained win-x64 publish the .NET 8 runtime itself is also bundled;
+  it is likewise MIT (https://github.com/dotnet/runtime).
+
+1.9  MoonSharp                    BSD-3-Clause  Lua scripting engine (Ged.Scripting)
+  - MoonSharp                            2.0.0
+  https://github.com/moonsharp-devs/moonsharp  (BSD-3-Clause)
+  A Lua 5.2 interpreter written entirely in C# — pure managed (netstandard2.0), no
+  native payload, so the single-file self-contained publish and cross-platform story
+  are unaffected. Referenced only by src/Ged.Scripting (the swappable engine glue);
+  Ged.Core's script facade has no engine dependency. Powers the in-editor Script
+  Console + Script Editor and the user scripts library. Chosen per docs/SCRIPTING-PLAN.md
+  (owner decision: Lua over the Jint fallback). Full verbatim license text:
+
+    Copyright (c) 2014-2016, Marco Mastropaolo
+    All rights reserved.
+
+    Parts of the string library are based on the KopiLua project (https://github.com/NLua/KopiLua)
+    Copyright (c) 2012 LoDC
+
+    Visual Studio Code debugger code is based on code from Microsoft vscode-mono-debug project (https://github.com/Microsoft/vscode-mono-debug).
+    Copyright (c) Microsoft Corporation - released under MIT license.
+
+    Remote Debugger icons are from the Eclipse project (https://www.eclipse.org/).
+    Copyright of The Eclipse Foundation
+
+    The MoonSharp icon is (c) Isaac, 2014-2015
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice, this
+      list of conditions and the following disclaimer.
+
+    * Redistributions in binary form must reproduce the above copyright notice,
+      this list of conditions and the following disclaimer in the documentation
+      and/or other materials provided with the distribution.
+
+    * Neither the name of the {organization} nor the names of its
+      contributors may be used to endorse or promote products derived from
+      this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+    DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+    FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+    SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+    OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+1.10  AvaloniaEdit                MIT        Code editor control (Ged.App Script Editor)
+  - Avalonia.AvaloniaEdit               11.2.0
+  https://github.com/AvaloniaUI/AvaloniaEdit  (MIT License)
+  A pure-managed code-editor control (the Avalonia port of AvalonEdit) hosting the
+  Script Editor's Lua code surface with line numbers and syntax highlighting. No
+  native payload. Lua highlighting uses AvaloniaEdit's own .xshd grammar (defined
+  inline in ScriptEditorWindow), so no separate TextMate grammar package is required.
+
+1.11  Test-only packages (NOT shipped — test projects only)
+  - Microsoft.NET.Test.Sdk               17.11.1   MIT   (https://github.com/microsoft/vstest)
+  - Microsoft.CodeCoverage               17.11.1   MIT
+  - Microsoft.TestPlatform.ObjectModel   17.11.1   MIT
+  - Microsoft.TestPlatform.TestHost      17.11.1   MIT
+  - xunit                                2.9.2     Apache-2.0  (https://github.com/xunit/xunit)
+  - xunit.runner.visualstudio            2.8.2     Apache-2.0
+  - xunit.assert / xunit.core / xunit.extensibility.core /
+    xunit.extensibility.execution        2.9.2     Apache-2.0
+  - xunit.abstractions                   2.0.3     Apache-2.0
+  - xunit.analyzers                      1.16.0    Apache-2.0
+  - Newtonsoft.Json                      13.0.1    MIT   (https://github.com/JamesNK/Newtonsoft.Json)
+  - System.Reflection.Metadata           1.6.0     MIT
+  These are referenced only by tests/Ged.Core.Tests and tests/Ged.Rendering.Tests
+  and are not part of any shipped build.
+
+--------------------------------------------------------------------------------
+1.12  Native binaries redistributed (self-contained publish payload)
+--------------------------------------------------------------------------------
+
+A self-contained publish copies per-RID native libraries into
+runtimes/<rid>/native/. For the shipped win-x64 target the following native
+binaries are redistributed with GED. Each managed binding above is MIT, but the
+*native* code has its own upstream license, recorded here:
+
+  win-x64/native/Assimp64.dll        BSD-3-Clause  Open Asset Import Library (Assimp) 5.4.1
+                                                   via Ultz.Native.Assimp 5.4.1
+                                                   https://github.com/assimp/assimp
+                                                   Copyright (c) 2006-2024, assimp team.
+                                                   Ultz.Native.Assimp is the Silk.NET team's
+                                                   native-binary packaging of it.
+
+  win-x64/native/libSkiaSharp.dll    BSD-3-Clause  Skia 2D graphics library (Google)
+                                                   via SkiaSharp.NativeAssets.Win32 2.88.8
+                                                   https://github.com/google/skia
+                                                   Avalonia's entire 2D UI is rendered by Skia.
+
+  win-x64/native/libHarfBuzzSharp.dll  MIT         HarfBuzz text-shaping engine ("Old MIT"
+                                     (Old MIT)     license, SPDX: MIT)
+                                                   via HarfBuzzSharp.NativeAssets.Win32 7.3.0.2
+                                                   https://github.com/harfbuzz/harfbuzz
+
+  win-x64/native/av_libglesv2.dll    BSD-3-Clause  ANGLE (Almost Native Graphics Layer Engine),
+                                                   Google's GLES-over-Direct3D layer that Skia
+                                                   uses for GPU rendering on Windows
+                                                   via Avalonia.Angle.Windows.Natives 2.1.22045.20230930
+                                                   https://github.com/google/angle
+
+For the shipped linux-x64 target the redistributed natives are:
+
+  linux-x64/native/libSkiaSharp.so       BSD-3-Clause  Skia (Google) via SkiaSharp.NativeAssets.Linux 2.88.8
+  linux-x64/native/libHarfBuzzSharp.so   MIT (Old MIT) HarfBuzz via HarfBuzzSharp.NativeAssets.Linux 7.3.0.2
+  linux-x64/native/libassimp.so.5        BSD-3-Clause  Open Asset Import Library (Assimp) 5.4.1 via
+                                                       Ultz.Native.Assimp 5.4.1 (the Silk.NET team's native
+                                                       packaging). Silk.NET.Assimp's Linux name resolver loads
+                                                       the versioned "libassimp.so.5" specifically.
+  (No av_libglesv2 / ANGLE on Linux: Avalonia's Skia uses the system GL/EGL there, not ANGLE.)
+
+Other runtime IDs present in runtimes/ (shipped only if that RID is targeted):
+  win-arm64/, win-x86/ : same four natives (win-x86 uses Assimp32.dll).
+  linux-arm/, linux-arm64/ : libSkiaSharp.so (BSD-3-Clause), libHarfBuzzSharp.so (MIT),
+                        libassimp.so.5 (BSD-3-Clause).
+  osx*/               : libSkiaSharp.dylib (BSD-3-Clause), libHarfBuzzSharp.dylib (MIT),
+                        libassimp.5.dylib (BSD-3-Clause), libAvaloniaNative.dylib (Avalonia, MIT).
+No Direct3D 11 / DXGI / d3dcompiler natives are redistributed — those ship with
+Windows and are only P/Invoked by the Silk.NET bindings (§1.5).
+
+--------------------------------------------------------------------------------
+1.13  Linux packaging (AppImage) — shipped runtime, build tool, first-party assets
+--------------------------------------------------------------------------------
+
+The Linux AppImage (dist/Glacier-<version>-linux-x86_64.AppImage, produced by
+tools/package.ps1 via tools/appimage/build-appimage.sh) adds two format components
+that the tar.gz and win-x64 zip do NOT contain:
+
+  AppImage type-2 runtime   MIT     The small ELF (~0.9 MB) embedded at the head of the
+  (embedded in .AppImage)           .AppImage that mounts the embedded squashfs and launches
+                                    the app. appimagetool embeds it from the official AppImage
+                                    project. SHIPPED as part of the .AppImage artifact only.
+                                    https://github.com/AppImage/type2-runtime  (MIT)
+
+  appimagetool              n/a     BUILD TOOL — NOT shipped, so it carries no redistribution
+                                    obligation on the product. It is fetched once into the
+                                    packaging host's home directory (never committed to the
+                                    repo) to assemble the AppImage.
+                                    https://github.com/AppImage/appimagetool
+
+The AppImage's desktop entry (tools/appimage/Glacier.desktop), launcher script
+(tools/appimage/AppRun), and application icon (Glacier.png, derived at build time from
+src/Ged.App/Assets/AppIcon.png) are FIRST-PARTY GED assets under GED's own license
+(LICENSE); §2b documents the icon-art provenance. No third-party desktop/icon
+assets are used.
+
+--------------------------------------------------------------------------------
+2. Adapted source code
+--------------------------------------------------------------------------------
+
+Portions of GED's Red Faction file-format code (RFL/RFG binary layout knowledge,
+the geometry/brush/object data model, and reader/writer logic in
+Ged.Core/IO and Ged.Core/Model) are derived from and inspired by REDUX
+("The RED User eXperience Toolkit"), Copyright (c) 2025 Chris "Goober" Parsons,
+distributed under the MIT License (https://github.com/GooberRF/redux). REDUX is
+by the same author as GED; its code is reused and adapted directly under MIT.
+
+Format layouts were additionally cross-checked against the community RFL/RFG
+Kaitai Struct specifications, reverse engineered by Rafał Harabień (Open
+Faction), wardd64 (Unity Faction), and Chris "Goober" Parsons (Alpine Faction
+/ REDUX).
+
+Alpine Faction (MPL-2.0) was used strictly as a *specification* for the Alpine
+RFL section layouts and semantics, and for the ATX animated-texture descriptor
+schema, the texture supercede chain, and the "Custom - <dir>" texture-category
+behaviour. No Alpine Faction source code was copied; the layouts and semantics
+were reimplemented from the documented field descriptions and format headers.
+
+The DDS/BCn (BC1/BC2/BC3) block decoder, the TGA decoder, and the VBM decoder in
+Ged.Core/IO/Tex are GED's own from-scratch implementations following the publicly
+documented S3TC/DXT, Targa, and Volition-bitmap layouts. GED deliberately does NOT
+depend on BCnEncoder.NET: a small built-in decoder keeps the dependency surface
+minimal. The V3M/V3C mesh and VPP packfile knowledge is adapted from REDUX
+(MIT, above) and the community format specs; the VPP padding rules were confirmed
+empirically and against the RF.exe loader.
+
+--------------------------------------------------------------------------------
+2b. Object-icon assets (provenance)
+--------------------------------------------------------------------------------
+
+GED ships its OWN original object-icon set: the icons drawn in the viewport for
+lights, triggers, events, regions, etc. are procedurally rasterized from simple
+strokes/shapes at startup by Ged.Rendering.Graphics.IconAtlas. No copyrighted
+game art is copied or distributed; these are authored line/shape drawings and are
+covered by GED's own license (LICENSE).
+
+The optional Settings ▸ Viewport toggle "Use original object icons (from game
+files)" (default OFF) instead composites RED's *original* icon bitmaps
+(Icon_Light.tga, Icon_Trigger.tga, the Alpine Icon_AFNote.tga / Icon_AFCorona.tga
+/ Icon_EAX.tga, etc.) into the atlas. Those bitmaps are read at runtime FROM THE
+USER'S OWN GAME FILES through the VFS (ui.vpp / alpinefaction.vpp) — exactly the
+same way GED reads any level texture. GED never ships or redistributes RED's icon
+bitmaps. Icons that fail to resolve fall back per-icon to GED's own drawn cell.

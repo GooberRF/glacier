@@ -1,0 +1,14 @@
+#!/bin/sh
+# Glacier AppImage entry point (first-party). Resolve the AppDir this script lives in,
+# then run the self-contained Glacier binary FROM ITS OWN DIRECTORY so the portable
+# beside-the-binary layout (scripts/, README.md, LICENSE, licensing-info.txt) resolves.
+#
+# The AppImage mount is READ-ONLY, so AppPaths' write probe on the mount fails and all
+# user data lands in the profile fallback (XDG base dirs):
+#   settings.cfg / keymap.cfg / prefabs/  -> ~/.config/Glacier
+#   logs/ / cache/ / recovery/            -> ~/.local/share/Glacier
+# That is expected and correct for a read-only single-file distribution.
+HERE="$(dirname "$(readlink -f "$0")")"
+BINDIR="$HERE/usr/bin"
+cd "$BINDIR" || exit 1
+exec "$BINDIR/Glacier" "$@"

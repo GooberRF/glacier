@@ -1,0 +1,20 @@
+# GED test fixture: a square pyramid (5 vertices, 6 triangles) with UVs.
+# Base is the y=0 square, apex at (0,2,0). Asymmetric in Y for axis tests.
+mtllib pyramid.mtl
+v -1 0 -1
+v 1 0 -1
+v 1 0 1
+v -1 0 1
+v 0 2 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+vt 0.5 0.5
+usemtl stone
+f 1/1 2/2 3/3
+f 1/1 3/3 4/4
+f 1/1 5/5 2/2
+f 2/2 5/5 3/3
+f 3/3 5/5 4/4
+f 4/4 5/5 1/1

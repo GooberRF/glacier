@@ -1,0 +1,45 @@
+# Normalize line endings for text; auto-detect
+* text=auto
+
+# Shell scripts, the AppImage AppRun, and .desktop entries must stay LF: they run under
+# bash / inside the read-only AppImage mount, where CRLF breaks the shebang and the
+# FreeDesktop parsers. Pin them regardless of core.autocrlf on the checkout host.
+*.sh                  text eol=lf
+*.desktop             text eol=lf
+tools/appimage/AppRun text eol=lf
+
+# Explicit text types
+*.cs           text diff=csharp
+*.csproj       text
+*.sln          text
+*.props        text
+*.targets      text
+*.md           text
+*.txt          text
+*.json         text
+*.xml          text
+*.axaml        text
+*.editorconfig text
+
+# Binary game/asset formats — never touch
+*.rfl  binary
+*.rfg  binary
+*.vpp  binary
+*.v3m  binary
+*.v3c  binary
+*.v3d  binary
+*.vcm  binary
+*.mvf  binary
+*.vfx  binary
+*.vbm  binary
+*.rfa  binary
+*.tga  binary
+*.dds  binary
+*.peg  binary
+*.tbl  binary
+*.png  binary
+*.ico  binary
+*.jpg  binary
+*.jpeg binary
+*.wav  binary
+*.ogg  binary

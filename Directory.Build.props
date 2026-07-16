@@ -1,0 +1,37 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+  </PropertyGroup>
+
+  <!-- Assembly / package metadata set centrally so the shipped Glacier.exe VersionInfo
+       carries them. Company is the org (FactionFiles); the assembly's LegalCopyright comes
+       from Copyright. Product/ProductName stays "Glacier" (set per-project in Ged.App.csproj,
+       since the executable carries the product name while the code tree keeps Ged/GED).
+       Without an explicit Company the .NET SDK falls back to the assembly name, which is why
+       the exe previously reported CompanyName=Glacier. -->
+  <PropertyGroup>
+    <Company>FactionFiles</Company>
+    <Copyright>Copyright (c) 2026 Chris "Goober" Parsons</Copyright>
+  </PropertyGroup>
+
+  <!-- Shipping-build source-path hygiene (owner-PC scrub for distributed beta builds).
+       The single-file publish (tools/package.ps1 sets PublishSingleFile=true) bundles the
+       managed assemblies; without this, each assembly's PE debug directory embeds the
+       packager's local .pdb path (e.g. C:\path\to\repo\obj\...\X.pdb), and source-file
+       paths would leak into any embedded PDB, [CallerFilePath] strings and exception stack
+       traces. PathMap rewrites the repo-root prefix to a neutral "/_/" token so none of the
+       packager's local filesystem layout ships inside the binary. Scoped to the single-file
+       publish so ordinary local Debug/Release builds keep real paths for debugging.
+       DebugType=portable keeps the .pdb external (package.ps1 strips it before packaging), so
+       no full-path .pdb ships and no debug symbols ride inside the bundle. -->
+  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+</Project>
