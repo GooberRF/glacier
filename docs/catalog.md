@@ -38,8 +38,7 @@ Throughout, features fall into three families: **stock** (Red Faction RED.exe pa
   Alpine RED, which stamps v305 on every save. A v305 source re-saves byte-identically (apart
   from the header timestamp); a pre-305 source upgrades once and every save after that is
   byte-stable.
-- **Compatibility check** reports which Alpine-specific features a level uses — purely
-  informational; the save is always v305.
+- **Compatibility check** reports which Alpine-specific features a level uses.
 - **`.rfg` group save/load** with full UID remap and intra-import link repair.
 - **Autosave** (toggle + interval), deferred while a viewport drag is in progress, with a
   crash-recovery restore prompt on next launch.

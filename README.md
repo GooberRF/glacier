@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>A modern, from-scratch level editor for Red Faction (2001).</b>
+  <b>A modern level editor for Red Faction (2001).</b>
 </p>
 
 <p align="center">
@@ -24,8 +24,8 @@ UV unwrap editor, and one-click packaging.
 
 ## Highlights
 
-- **Reads every RFL** — opens every stock version (`0xB4`–`0xC8`) and every Alpine version
-  (`300`–`305`) with a byte-preserving round-trip.
+- **Reads all RF1 RFLs** — opens every stock version (`0xB4`–`0xC8`) and every Alpine
+  version (`300`–`305`) with a byte-preserving round-trip.
 - **RED-authentic geometry & lighting** — the full compile pipeline (time-ordered brush
   booleans → portal chopping → room building → t-joint fixing → lightmap UV) plus a
   multithreaded, byte-exact lightmap baker (point / spot / tube, shadows) that reproduces
