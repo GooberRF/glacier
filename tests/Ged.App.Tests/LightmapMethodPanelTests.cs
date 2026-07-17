@@ -31,11 +31,12 @@ public sealed class LightmapMethodPanelTests
         flyout.ShowAt(button);
         Assert.True(flyout.IsOpen);
 
-        // Set the base to Bounced ×2, then toggle three modifiers — all without reopening.
+        // Set the base to Bounced ×2, then toggle modifiers — all without reopening.
         panel.Toggle("bounce2", true);
         panel.Toggle("leak", true);
         panel.Toggle("gutters", true);
         panel.Toggle("ao", true);
+        panel.Toggle("movershadows", false); // turn the default-ON option OFF
 
         // The flyout must STILL be open: a toggle never dismisses the picker.
         Assert.True(flyout.IsOpen, "the picker must stay open across multiple toggles");
@@ -45,6 +46,7 @@ public sealed class LightmapMethodPanelTests
         Assert.True(panel.IsChecked("leak"));
         Assert.True(panel.IsChecked("gutters"));
         Assert.True(panel.IsChecked("ao"));
+        Assert.False(panel.IsChecked("movershadows")); // toggled OFF from its default ON
         Assert.False(panel.IsChecked("red"));
 
         // The last committed method composes every selection (base + all three modifiers).
@@ -54,6 +56,7 @@ public sealed class LightmapMethodPanelTests
         Assert.True(final.CornerLeakFix);
         Assert.True(final.SmoothGutters);
         Assert.True(final.AmbientOcclusion);
+        Assert.False(final.MoverShadows);
 
         flyout.Hide();
         window.Close();
@@ -100,6 +103,7 @@ public sealed class LightmapMethodPanelTests
         Assert.True(panel.IsChecked("leak"));
         Assert.True(panel.IsChecked("gutters"));
         Assert.True(panel.IsChecked("seam"));
+        Assert.True(panel.IsChecked("movershadows")); // default ON, reflected in the checkbox
         Assert.Empty(committed); // a silent external refresh, not a user edit
 
         window.Close();

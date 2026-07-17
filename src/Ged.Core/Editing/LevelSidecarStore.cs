@@ -132,6 +132,7 @@ public static class LevelSidecarStore
                 SeamBlend = m.SeamBlend,
                 CornerLeakFix = m.CornerLeakFix,
                 SmoothGutters = m.SmoothGutters,
+                MoverShadows = m.MoverShadows,
             };
         }
 
@@ -176,6 +177,7 @@ public static class LevelSidecarStore
                 SeamBlend = l.SeamBlend,
                 CornerLeakFix = l.CornerLeakFix,
                 SmoothGutters = l.SmoothGutters,
+                MoverShadows = l.MoverShadows,
             };
         }
 
@@ -244,6 +246,11 @@ public static class LevelSidecarStore
 
         [JsonPropertyName("smoothGutters")]
         public bool SmoothGutters { get; set; }
+
+        // Default true so a sidecar written before this option (no "moverShadows" key) loads with the
+        // app default ON, not a spurious OFF; an explicit false in newer sidecars still round-trips.
+        [JsonPropertyName("moverShadows")]
+        public bool MoverShadows { get; set; } = true;
     }
 
     private sealed class AnnotationDto

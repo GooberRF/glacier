@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
@@ -75,5 +76,30 @@ public sealed class ProgressOverlayTests
         ProgressOverlay overlay = Mount(svc);
         // Informational only — it must never take a hit or steal focus from the viewport beneath.
         Assert.False(overlay.IsHitTestVisible);
+    }
+
+    [AvaloniaFact]
+    public void Overlay_Raises_ActiveChanged_Only_When_The_Operation_Set_Crosses_Empty()
+    {
+        // The shell rehosts this stack in a native popup over the D3D11 viewport HWND and opens/closes
+        // it from ActiveChanged. That must fire exactly once on empty→non-empty and once on
+        // non-empty→empty — never on the intermediate overlaps — so the popup does not churn.
+        var svc = new OperationProgressService();
+        ProgressOverlay overlay = Mount(svc);
+
+        var events = new List<bool>();
+        overlay.ActiveChanged += active => events.Add(active);
+
+        OperationProgress a = svc.Begin("Building geometry"); // empty → non-empty: raise true
+        Dispatcher.UIThread.RunJobs();
+        OperationProgress b = svc.Begin("Check for Holes");   // still non-empty: no raise
+        Dispatcher.UIThread.RunJobs();
+
+        a.Dispose(); // still one live op: no raise
+        Dispatcher.UIThread.RunJobs();
+        b.Dispose(); // non-empty → empty: raise false
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(new[] { true, false }, events);
     }
 }

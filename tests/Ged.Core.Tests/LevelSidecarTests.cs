@@ -28,7 +28,7 @@ public sealed class LevelSidecarTests
     {
         var s = new LevelSidecar { Version = 1 };
         s.Graph.Set(7, 1.5, -2.25);
-        s.Lighting = new LightingMethod { Base = LightingBase.Bounced, Bounces = 2, AmbientOcclusion = true, SoftShadows = true, CornerLeakFix = true, SmoothGutters = true };
+        s.Lighting = new LightingMethod { Base = LightingBase.Bounced, Bounces = 2, AmbientOcclusion = true, SoftShadows = true, CornerLeakFix = true, SmoothGutters = true, MoverShadows = false };
         s.Annotations.Add(new Annotation { Id = 3, A = new Vec3(0, 0, 0), B = new Vec3(3, 4, 0), Label = "hall" });
 
         LevelSidecar back = LevelSidecarStore.Deserialize(LevelSidecarStore.Serialize(s));
@@ -43,9 +43,22 @@ public sealed class LevelSidecarTests
         Assert.True(back.Lighting.SoftShadows);
         Assert.True(back.Lighting.CornerLeakFix);
         Assert.True(back.Lighting.SmoothGutters);
+        Assert.False(back.Lighting.MoverShadows); // explicit OFF round-trips (default is ON)
         Assert.Single(back.Annotations);
         Assert.Equal("hall", back.Annotations[0].Label);
         Assert.Equal(5f, back.Annotations[0].Distance, 4); // 3-4-5
+    }
+
+    /// <summary>A sidecar written before the "Movers cast shadows" option (no "moverShadows" key) loads
+    /// with the option ON — the app default — never a spurious OFF.</summary>
+    [Fact]
+    public void Legacy_Sidecar_Without_MoverShadows_Defaults_On()
+    {
+        const string legacy = "{\"version\":1,\"lighting\":{\"method\":\"RedClassic\",\"cornerLeakFix\":true}}";
+        LevelSidecar back = LevelSidecarStore.Deserialize(legacy);
+        Assert.NotNull(back.Lighting);
+        Assert.True(back.Lighting!.CornerLeakFix);
+        Assert.True(back.Lighting.MoverShadows);
     }
 
     [Fact]

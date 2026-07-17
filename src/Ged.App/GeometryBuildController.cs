@@ -186,6 +186,28 @@ public sealed class GeometryBuildController
     /// (incremental relight, remove-lightmaps, hole check).</summary>
     public Action<string, string>? Log { get; set; }
 
+    /// <summary>
+    /// Optional unified-notification sink (status bar + Log + bottom-right toast). Set by the shell so
+    /// build refusals and failures surface as toasts at the user's configured level. When null (headless
+    /// / tests) those messages fall back to the plain <c>status</c> callback, so existing status assertions
+    /// still hold. Like <see cref="Log"/>, it is an injected hook, not a hard dependency.
+    /// </summary>
+    public Action<Ged.App.Services.NotificationSeverity, string>? Notify { get; set; }
+
+    /// <summary>Routes a user-facing message through the notification sink when one is wired (status bar +
+    /// Log + toast), else the plain status callback.</summary>
+    private void Status(Ged.App.Services.NotificationSeverity severity, string message)
+    {
+        if (Notify is { } notify)
+        {
+            notify(severity, message);
+        }
+        else
+        {
+            _status(message);
+        }
+    }
+
     /// <summary>Item 3: registers a long-running operation with the progress overlay — (name) →
     /// a disposable handle the run reports progress against and disposes when it finishes. Set by
     /// the shell; null in headless/test contexts.</summary>
@@ -323,8 +345,9 @@ public sealed class GeometryBuildController
         StateChanged?.Invoke();
     }
 
-    /// <summary>Compiles the level on a background thread and swaps in the result (no lighting bake).</summary>
-    public Task BuildAsync(bool interactive = true) => RunBuildAsync(interactive, bakeLighting: false, CastShadows);
+    /// <summary>Compiles the level on a background thread and swaps in the result (no lighting bake).
+    /// Returns true when the build ran, false when a user build was refused (another in flight).</summary>
+    public Task<bool> BuildAsync(bool interactive = true) => RunBuildAsync(interactive, bakeLighting: false, CastShadows);
 
     /// <summary>
     /// "Draw unmerged brushwork" OFF shows the MERGED result, which the brush overlay can only
@@ -351,11 +374,14 @@ public sealed class GeometryBuildController
         return true;
     }
 
-    /// <summary>Calculate Lightmaps: full geometry build incl. the surface/atlas layout, no lighting bake.</summary>
-    public Task CalculateLightmapsAsync() => RunBuildAsync(interactive: true, bakeLighting: false, shadows: false);
+    /// <summary>Calculate Lightmaps: full geometry build incl. the surface/atlas layout, no lighting bake.
+    /// Returns true when it ran, false when refused (another user build in flight).</summary>
+    public Task<bool> CalculateLightmapsAsync() => RunBuildAsync(interactive: true, bakeLighting: false, shadows: false);
 
-    /// <summary>Calculate Maps and Light: full geometry build + a lighting bake (with or without shadows).</summary>
-    public Task CalculateMapsAndLightAsync(bool shadows) => RunBuildAsync(interactive: true, bakeLighting: true, shadows);
+    /// <summary>Calculate Maps and Light: full geometry build + a lighting bake (with or without shadows).
+    /// Returns true when it ran, false when refused (another user build in flight). The pre-save
+    /// rebuild consumes this to decide whether the save may proceed.</summary>
+    public Task<bool> CalculateMapsAndLightAsync(bool shadows) => RunBuildAsync(interactive: true, bakeLighting: true, shadows);
 
     /// <summary>
     /// Calculate Lighting: bake lighting. If geometry is dirty it recompiles first;
@@ -363,11 +389,11 @@ public sealed class GeometryBuildController
     /// known light region changed (range-overlap), else a full relight.
     /// <paramref name="preview"/> keeps the cheap RED Classic method (Preview Lighting).
     /// </summary>
-    public async Task CalculateLightingAsync(bool shadows, bool preview = false)
+    public async Task<bool> CalculateLightingAsync(bool shadows, bool preview = false)
     {
         if (_session.Document is not { } doc)
         {
-            return;
+            return false;
         }
 
         if (preview)
@@ -376,23 +402,23 @@ public sealed class GeometryBuildController
             // interrupt an in-flight build. The relight debounce (Fix D) reschedules until it is free.
             if (_building)
             {
-                return;
+                return false;
             }
         }
         else if (!await EnsureCanStartUserBuildAsync())
         {
-            return; // Fix B: another user build is already running (a message was shown).
+            return false; // Fix B: another user build is already running (a message was shown).
         }
 
         if (GeometryDirty || FindGeometry(doc) is not { Surfaces.Count: > 0 })
         {
-            await RunBuildAsync(interactive: true, bakeLighting: true, shadows, preview);
-            return;
+            return await RunBuildAsync(interactive: true, bakeLighting: true, shadows, preview);
         }
 
         Task relight = RelightAsync(doc, shadows, preview);
         _runningBuild = relight;
         await relight;
+        return true;
     }
 
     /// <summary>
@@ -477,7 +503,7 @@ public sealed class GeometryBuildController
 
         if (!_currentBuildIsBackground)
         {
-            _status("A build is already running — wait for it to finish.");
+            Status(Ged.App.Services.NotificationSeverity.Warning, "A build is already running — wait for it to finish.");
             return false;
         }
 
@@ -497,12 +523,12 @@ public sealed class GeometryBuildController
         return true;
     }
 
-    private async Task RunBuildAsync(
+    private async Task<bool> RunBuildAsync(
         bool interactive, bool bakeLighting, bool shadows, bool preview = false, bool applyToDocument = true)
     {
         if (_session.Document is not { } doc)
         {
-            return;
+            return false;
         }
 
         if (interactive)
@@ -510,19 +536,20 @@ public sealed class GeometryBuildController
             // User build: preempt a seamless background build, or refuse a second user build (Fix B).
             if (!await EnsureCanStartUserBuildAsync())
             {
-                return;
+                return false;
             }
         }
         else if (_building)
         {
             // A seamless background build (stash-only / live-CSG preview) never queues behind or
             // interrupts an in-flight build; it is re-armed by the next edit / stash request.
-            return;
+            return false;
         }
 
         Task body = BuildBodyAsync(doc, interactive, bakeLighting, shadows, preview, applyToDocument);
         _runningBuild = body;
         await body;
+        return true; // the build ran (success or a caught failure — the caller checks the dirty flags)
     }
 
     /// <summary>
@@ -666,7 +693,7 @@ public sealed class GeometryBuildController
         }
         catch (Exception ex)
         {
-            _status($"Build failed: {ex.Message}");
+            Status(Ged.App.Services.NotificationSeverity.Error, $"Build failed: {ex.Message}");
             CrashHandler.LogNonFatal("geometry-build", ex);
         }
         finally
@@ -736,8 +763,9 @@ public sealed class GeometryBuildController
         }
         catch (Exception ex)
         {
-            _status($"Relight failed: {ex.Message}");
-            Log?.Invoke("Lighting", $"Relight failed: {ex.Message}");
+            // Routes to status + Log + toast when the shell wires Notify (the Log tag becomes "Error");
+            // falls back to the plain status callback headless.
+            Status(Ged.App.Services.NotificationSeverity.Error, $"Relight failed: {ex.Message}");
         }
         finally
         {

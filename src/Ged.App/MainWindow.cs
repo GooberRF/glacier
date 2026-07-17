@@ -6,6 +6,8 @@ using System.Linq;
 using System.Numerics;
 using System.Threading.Tasks;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Primitives.PopupPositioning;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -75,6 +77,12 @@ public sealed partial class MainWindow : Window, IEditorHost
 
     /// <summary>Item 3: tracks in-flight operations for the bottom-right viewport progress overlay.</summary>
     private readonly Services.OperationProgressService _progress = new();
+
+    /// <summary>The bottom-right toast stack — a full-window, input-transparent overlay above the dock.</summary>
+    private readonly Controls.ToastHost _toastHost = new();
+
+    /// <summary>The unified notification layer (status bar + Log + toast). Assigned in the constructor.</summary>
+    private readonly Services.NotificationService _notifications;
 
     private readonly TextBlock _statusMode = MakeStatus("Mode: —");
     private readonly TextBlock _statusGrid = MakeStatus("Grid: —");
@@ -201,6 +209,16 @@ public sealed partial class MainWindow : Window, IEditorHost
         _buildController.UseSharedBspBuild = _settings.UseSharedBspBuild; // Geometry menu "Build method" (persisted)
         SyncLightingMethodToController(); // feature 1: seed the bake method from the global default
 
+        // Unified notifications: every Notify hits the status bar + Log always, and additionally raises
+        // a bottom-right toast when its severity passes the user's configured threshold. Build refusals
+        // and failures route through it (the controller's Notify hook), so they surface as toasts too.
+        _notifications = new Services.NotificationService(
+            () => (Services.ToastLevel)_settings.ToastLevel,
+            (_, message) => _dispatcher.ShowMessage(message),
+            (severity, message) => LogOperation(Services.NotificationService.Tag(severity), message),
+            (severity, message) => Dispatcher.UIThread.Post(() => _toastHost.Show(severity, message)));
+        _buildController.Notify = _notifications.Notify;
+
         InitScripting(); // build the scripting service + console before the dock layout references it
         Content = BuildLayout();
         BindCommands();
@@ -211,10 +229,12 @@ public sealed partial class MainWindow : Window, IEditorHost
 
         _dispatcher.Message += msg => Dispatcher.UIThread.Post(() => _statusMessage.Text = msg);
 
-        // SelectionRouter dropped an out-of-mode selection: a subtle status-bar hint (the
-        // status line is overwritten in place — never a toast storm, even during a marquee).
-        _session.SelectionDropped += kind => Dispatcher.UIThread.Post(() =>
-            _statusMessage.Text = $"{kind} can't be selected in this mode — switch mode or Ctrl+click its chip.");
+        // SelectionRouter dropped an out-of-mode selection: a low-severity Hint. It always reaches the
+        // status bar (overwritten in place) + Log; it only toasts at the "Everything" level, and even
+        // then coalescing collapses a marquee's repeats into one "×N" card — never a toast storm.
+        _session.SelectionDropped += kind => _notifications.Notify(
+            Services.NotificationSeverity.Hint,
+            $"{kind} can't be selected in this mode — switch mode or Ctrl+click its chip.");
 
         AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
         AddHandler(DragDrop.DropEvent, OnDrop);
@@ -366,11 +386,20 @@ public sealed partial class MainWindow : Window, IEditorHost
         DockPanel.SetDock(status, AvDock.Bottom);
         root.Children.Add(status);
 
-        // Item 3: the progress overlay floats over the viewport grid, pinned bottom-right. A Grid
-        // stacks it above the viewports without affecting their layout (it is hit-test invisible).
+        // Item 3: the progress overlay floats over the viewport grid, pinned bottom-right. On the
+        // default Direct3D 11 backend each pane is a native child HWND that paints above every
+        // Avalonia-drawn layer in the same region, so the card stack is rehosted in a native top-level
+        // Popup (which paints ABOVE native children — the airspace escape the app's menus already rely
+        // on) rather than an in-Grid overlay the HWND would hide. The popup opens/closes in step with
+        // the overlay's active state; Avalonia keeps it pinned to the host's bottom-right as the window
+        // moves/resizes and the dock re-lays-out (built-in PopupOpenState tracking — see BuildOverlayPopup).
         var viewportHost = new Grid();
         viewportHost.Children.Add(_viewportGrid);
-        viewportHost.Children.Add(new Controls.ProgressOverlay(_progress));
+
+        var progressOverlay = new Controls.ProgressOverlay(_progress);
+        Popup progressPopup = BuildOverlayPopup(progressOverlay, viewportHost, inset: 14);
+        progressOverlay.ActiveChanged += open => progressPopup.IsOpen = open;
+        viewportHost.Children.Add(progressPopup);
 
         var factory = new DockFactory(
             viewportHost, _outliner, _properties, _history, _modePanel, _palette,
@@ -380,8 +409,46 @@ public sealed partial class MainWindow : Window, IEditorHost
         var dock = new DockControl { Factory = factory, Layout = factory.CreateLayout() };
         factory.InitLayout(dock.Layout!);
         root.Children.Add(dock);
-        return root;
+
+        // The toast stack is likewise rehosted in a native top-level Popup, anchored to the window's
+        // content area so toasts stay visible over a MAXIMIZED viewport pane (whose native HWND would
+        // otherwise own the bottom-right corner). Its surface has no background, so only the cards are
+        // hit-testable; the popup is non-activating and never takes focus, so a click dismisses a card
+        // without pulling focus off the main window. It is open while cards are present.
+        var shell = new Grid();
+        shell.Children.Add(root);
+
+        Popup toastPopup = BuildOverlayPopup(_toastHost, shell, inset: 16);
+        _toastHost.VisualCardsChanged += () => toastPopup.IsOpen = _toastHost.HasVisibleCards;
+        shell.Children.Add(toastPopup);
+        return shell;
     }
+
+    /// <summary>
+    /// Builds a native top-level <see cref="Popup"/> that pins <paramref name="content"/> to the
+    /// bottom-right corner of <paramref name="target"/> with a fixed <paramref name="inset"/>. Native
+    /// popups paint ABOVE the Direct3D 11 viewport child HWNDs (the airspace escape the app's menus and
+    /// flyouts already rely on), so an overlay hosted this way is visible on every backend. The popup is
+    /// non-activating and never takes focus, so it informs / dismisses without disturbing the viewport
+    /// or the main window's focus. Position tracking is Avalonia's own: while open, a popup follows the
+    /// window's <c>PositionChanged</c> and the target's <c>LayoutUpdated</c>, and re-runs placement when
+    /// these offsets change (verified against Popup's PopupOpenState in 11.2.1), so the card never
+    /// drifts on a window move/resize or a dock-layout change.
+    /// </summary>
+    private static Popup BuildOverlayPopup(Control content, Control target, double inset) => new()
+    {
+        Child = content,
+        PlacementTarget = target,
+        Placement = PlacementMode.AnchorAndGravity,
+        PlacementAnchor = PopupAnchor.BottomRight,
+        PlacementGravity = PopupGravity.TopLeft,
+        HorizontalOffset = -inset, // inset left from the target's right edge
+        VerticalOffset = -inset,   // inset up from the target's bottom edge
+        IsLightDismissEnabled = false,       // open/close is driven by content presence, not click-away
+        Focusable = false,                   // never grabs keyboard focus
+        TakesFocusFromNativeControl = false, // never yanks focus off the viewport HWND when it opens
+        WindowManagerAddShadowHint = false,  // the cards carry their own shadow
+    };
 
     private Menu BuildMenu()
     {
@@ -1139,11 +1206,21 @@ public sealed partial class MainWindow : Window, IEditorHost
         }
     }
 
-    private async Task SaveAsync(bool saveAs)
+    /// <summary>
+    /// Saves the level RED-style: writing NEVER bakes lighting or recompiles geometry — the level is
+    /// serialized exactly as it was last built, so stale compiled geometry / stale lightmaps are the
+    /// author's to rebuild (Geometry ▸ Build, Build ▸ Calculate Lighting), just like stock RED. The SOLE
+    /// exception is GED's unsealed live-CSG preview geometry, which the seal guard re-seals with a
+    /// geometry-only build before writing. Returns true when the file was written, false when the save
+    /// was cancelled (no path chosen) OR aborted by the seal guard (a build is in flight, or the re-seal
+    /// did not complete) — callers such as the playtest launcher use the result to abort a
+    /// save-before-launch flow.
+    /// </summary>
+    private async Task<bool> SaveAsync(bool saveAs)
     {
         if (Document is null)
         {
-            return;
+            return false;
         }
 
         string? path = Document.Path;
@@ -1161,7 +1238,7 @@ public sealed partial class MainWindow : Window, IEditorHost
 
         if (path is null)
         {
-            return;
+            return false;
         }
 
         // GED writes Alpine v305 always (Goober's format policy) — there is no version
@@ -1178,23 +1255,48 @@ public sealed partial class MainWindow : Window, IEditorHost
             || Document.IsDirty
             || (_buildController is { GeometryDirty: true } or { GeometryIsPreview: true } or { LightingDirty: true });
 
-        // Build-and-save: if the brushes changed since the last compile, refresh the
-        // geometry so the saved level plays with current geometry (architecture §4.2).
-        // The bake-before-save policy extends to lighting: a light/property edit
-        // re-bakes so the saved lightmaps match the current lights.
+        // RED-style save (owner decision — "RED-style + seal guard"). Writing NEVER bakes lighting or
+        // recompiles geometry: stock RED serializes exactly what was last built, and Glacier now matches.
+        // Stale compiled geometry / stale lightmaps are the author's to rebuild (Geometry ▸ Build,
+        // Build ▸ Calculate Lighting); a merely-dirty save proceeds as-is, nudged by a Hint.
         //
-        // A PREVIEW-quality build (GeometryIsPreview) also triggers a rebuild: the live-CSG /
-        // merged-stash preview skips the t-joint seal, so its geometry is unsealed (thousands of
-        // open edges). Persisting it would ship a level that sparkles/leaks in-game. Re-seal first.
-        if (_buildController is { GeometryDirty: true } or { GeometryIsPreview: true })
+        // The ONE exception is GED's live-CSG / merged-stash PREVIEW: it applied UNSEALED geometry into
+        // the document (a state RED never has — the fast path skips the t-joint seal, leaving thousands
+        // of open edges), so persisting it would ship a level that sparkles / leaks in-game. The SEAL
+        // GUARD re-seals that with a geometry-only build (no lighting bake) before writing, and is the
+        // SOLE rebuild trigger and the SOLE path that can abort a save.
+        //
+        // Captured before the seal build / write, which clear these flags.
+        bool wasPreview = _buildController?.GeometryIsPreview ?? false;
+        bool wasGeometryDirty = _buildController?.GeometryDirty ?? false;
+        bool wasLightingDirty = _buildController?.LightingDirty ?? false;
+
+        SaveGuard.SaveNotice notice;
+        if (_buildController is { } build && SaveGuard.RequiresSeal(wasPreview))
         {
-            _dispatcher.ShowMessage("Geometry changed — building + lighting before save…");
-            await _buildController.CalculateMapsAndLightAsync(shadows: true);
+            _dispatcher.ShowMessage("Re-sealing preview geometry before save…");
+            bool sealBuildRan = await build.BuildAsync(); // interactive geometry-only re-seal — no lighting bake
+
+            // Only the seal path can abort. A refused seal (another user build in flight) or one that
+            // completes with the geometry still unsealed writes NOTHING and tells the user why.
+            switch (SaveGuard.EvaluateSeal(sealBuildRan, build.GeometryDirty, build.GeometryIsPreview))
+            {
+                case SaveGuard.PreSaveOutcome.AbortBuildRunning:
+                    _notifications.Notify(Services.NotificationSeverity.Warning,
+                        "Save aborted — a build is already running. Retry when it finishes.");
+                    return false;
+                case SaveGuard.PreSaveOutcome.AbortSealIncomplete:
+                    _notifications.Notify(Services.NotificationSeverity.Warning,
+                        "Save aborted — the geometry re-seal did not complete.");
+                    return false;
+            }
+
+            notice = SaveGuard.SaveNotice.GeometryResealed;
         }
-        else if (_buildController is { LightingDirty: true })
+        else
         {
-            _dispatcher.ShowMessage("Lighting changed — baking before save…");
-            await _buildController.CalculateLightingAsync(shadows: true);
+            // Merely dirty ⇒ save as-is (RED-style); one nudge per save, geometry winning over lighting.
+            notice = SaveGuard.NoticeForDirtySave(wasGeometryDirty, wasLightingDirty);
         }
 
         // Pre-save linter summary: budget/compatibility violations are surfaced
@@ -1237,10 +1339,30 @@ public sealed partial class MainWindow : Window, IEditorHost
             UpdateTitle();
             AfterMutation();
             _statusMessage.Text = $"Saved {Path.GetFileName(path)} [Alpine v{Document.Rfl.Header.Version}]";
+
+            // RED-style advisory (owner decision): one nudge per save about staleness / re-seal.
+            switch (notice)
+            {
+                case SaveGuard.SaveNotice.UnbuiltGeometry:
+                    _notifications.Notify(Services.NotificationSeverity.Hint,
+                        "Saved with unbuilt geometry changes — rebuild when ready.");
+                    break;
+                case SaveGuard.SaveNotice.UnbakedLighting:
+                    _notifications.Notify(Services.NotificationSeverity.Hint,
+                        "Saved with unbaked lighting changes — bake when ready.");
+                    break;
+                case SaveGuard.SaveNotice.GeometryResealed:
+                    _notifications.Notify(Services.NotificationSeverity.Info,
+                        "Geometry re-sealed for save — lightmaps were reset; bake lighting when ready.");
+                    break;
+            }
+
+            return true;
         }
         catch (Exception ex)
         {
-            _statusMessage.Text = $"Save failed: {ex.Message}";
+            _notifications.Notify(Services.NotificationSeverity.Error, $"Save failed: {ex.Message}");
+            return false;
         }
     }
 
@@ -2295,6 +2417,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         catch (Exception ex)
         {
             CrashHandler.LogNonFatal("autosave", ex);
+            _notifications.Notify(Services.NotificationSeverity.Warning, $"Autosave failed: {ex.Message}");
         }
     }
 

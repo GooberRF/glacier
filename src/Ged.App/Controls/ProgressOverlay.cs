@@ -16,6 +16,14 @@ namespace Ged.App.Controls;
 /// several operations overlap and hiding entirely when none are running. It never takes focus
 /// or blocks viewport input (<see cref="InputElement.IsHitTestVisible"/> is false), so it only
 /// ever informs.
+/// <para>
+/// On the default Direct3D 11 backend each viewport pane is a native child HWND that paints above
+/// all Avalonia-drawn content in the same region, so this card stack is rehosted in a native
+/// top-level <c>Popup</c> (which paints above native children) by the shell — see
+/// <c>MainWindow.BuildLayout</c>. This control stays the bare card stack so it can be mounted and
+/// tested directly; it raises <see cref="ActiveChanged"/> when its live-operation set crosses
+/// empty ↔ non-empty so the host can open/close that popup in step with <see cref="IsVisible"/>.
+/// </para>
 /// </summary>
 internal sealed class ProgressOverlay : UserControl
 {
@@ -26,11 +34,18 @@ internal sealed class ProgressOverlay : UserControl
         Spacing = 8,
         HorizontalAlignment = HorizontalAlignment.Right,
         VerticalAlignment = VerticalAlignment.Bottom,
-        Margin = new Thickness(0, 0, 14, 14),
     };
 
     private readonly Dictionary<OperationProgress, Card> _cards = new();
     private bool _syncQueued;
+    private bool _active;
+
+    /// <summary>
+    /// Raised when the overlay's active state changes: <c>true</c> once at least one operation is in
+    /// flight, <c>false</c> when the set empties. The popup host that rehosts this stack over the
+    /// native viewport opens/closes in response (it mirrors <see cref="IsVisible"/>).
+    /// </summary>
+    internal event System.Action<bool>? ActiveChanged;
 
     public ProgressOverlay(OperationProgressService service)
     {
@@ -102,7 +117,13 @@ internal sealed class ProgressOverlay : UserControl
             card.Update(op);
         }
 
-        IsVisible = ops.Count > 0;
+        bool active = ops.Count > 0;
+        IsVisible = active;
+        if (active != _active)
+        {
+            _active = active;
+            ActiveChanged?.Invoke(active);
+        }
     }
 
     /// <summary>The visual for one operation card (title + progress bar + detail).</summary>

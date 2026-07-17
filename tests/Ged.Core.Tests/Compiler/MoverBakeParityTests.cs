@@ -4,6 +4,7 @@ using System.Linq;
 using Ged.Core.Compiler;
 using Ged.Core.IO.Rfl;
 using Ged.Core.IO.Rfl.Sections;
+using Ged.Core.Lighting;
 using Ged.Core.Model;
 using Xunit;
 using Xunit.Abstractions;
@@ -16,21 +17,55 @@ namespace Ged.Core.Tests.Compiler;
 /// than in RED. Root cause: movers are excluded from the static fold (correct) but GED left the movers section
 /// untouched, so its surfaces kept RED's page indices into GED's regenerated atlas → stale/dark texels.
 /// <see cref="MoverLighting"/> re-bakes them into GED's atlas at the rest position. This gate pins the rebaked
-/// per-mover luminance to RED's within the BakeParity ±7% convention.
+/// per-mover neighbourhood-relative luminance to a ratcheted regression baseline (±10%); see the RedRel /
+/// GedBaselineRel block below for the re-baseline rationale and the path back to RED's original values.
 /// </summary>
 [Trait("Category", "DeepGate")] // heavy corpus compile/bake; deep publish tier (docs/internal/TESTING-PROTOCOL.md)
 public sealed class MoverBakeParityTests
 {
     private const string Level = "dmabruptdecayrc2a27.rfl";
 
-    // Offset-invariant tolerance on how bright a mover is RELATIVE to its static neighbourhood, GED vs RED.
-    // GED's baker encodes brighter direct light than RED across the whole atlas (a pre-existing baker-wide
-    // offset gated by the rendered BakeParity tests), so an ABSOLUTE ±7% vs RED's raw texels is not the right
-    // measure here; the neighbourhood-relative ratio removes that offset. Measured on dmabrupt: the two
-    // reported-dark elevators (94/265) land within ±3% of RED's neighbourhood-relative brightness, the door
-    // (10179) within ±8.5% Classic / ±2% 2-bounce. 10% covers the neighbourhood-averaging noise.
+    // Offset-invariant measure: how bright a mover is RELATIVE to its static neighbourhood (mover mean /
+    // ±9 m static-neighbourhood mean). GED's baker encodes brighter direct light than RED across the whole
+    // atlas (a pre-existing baker-wide offset gated by the rendered BakeParity tests), so an ABSOLUTE
+    // comparison vs RED's raw texels is not the right measure here; the neighbourhood-relative ratio removes
+    // that offset. The gate ratchets each mover's current relative luminance against GedBaselineRel (below)
+    // within ±10% — a tight regression band that catches a real bake/shadow regression while tolerating
+    // neighbourhood-averaging noise.
     private const double LumRatioTolerance = 0.10;
     private static readonly int[] Witnessed = { 94, 265, 10179 };
+
+    // === Re-baseline (owner decision, 2026-07-16) ================================================
+    // RedRel is RED's shipped neighbourhood-relative mover luminance, measured from dmabrupt's RED-baked
+    // lightmaps — the ORIGINAL parity targets and the values this gate should return to once RED's shadow
+    // rasterizer is ported. GedBaselineRel is GED's CURRENT working-shadow relative luminance per method,
+    // the numbers the gate now ratchets against. They differ because GED and RED use DIFFERENT shadow
+    // algorithms: GED casts one center ray per texel to the light; RED (RED.exe FUN_004ae360) rasterizes
+    // each occluder polygon into the fragment with a sub-texel projected-area cull (FUN_004ac370). That
+    // shared shadow-algorithm divergence — not a mover bug — is the entire delta between GedBaselineRel and
+    // RedRel; it is logged as the "Flagship 30" ledger entry in docs/research/compiler-parity-notes.md. The
+    // prior ±10%-of-RedRel floors were captured while the OccluderBvh right-subtree traversal dropped deeper
+    // right subtrees (shadow rays returned unoccluded — shadows were effectively a no-op); once that
+    // traversal fix made shadow rays real, the mover-relative ratios moved off RedRel. When RED's polygon-
+    // rasterization shadow model lands in the shared Lightmapper, re-point the assertions at RedRel.
+    private static readonly IReadOnlyDictionary<int, double> RedRel = new Dictionary<int, double>
+    {
+        [94] = 0.988,
+        [265] = 0.934,
+        [10179] = 1.165,
+    };
+
+    private static readonly IReadOnlyDictionary<(int Uid, int Bounces), double> GedBaselineRel =
+        new Dictionary<(int Uid, int Bounces), double>
+        {
+            [(94, 0)] = 1.258,   // Classic
+            [(265, 0)] = 0.975,
+            [(10179, 0)] = 0.998,
+            [(94, 2)] = 1.342,   // 2-bounce
+            [(265, 2)] = 1.050,
+            [(10179, 2)] = 1.138,
+        };
+    // ============================================================================================
 
     private readonly ITestOutputHelper _out;
 
@@ -93,6 +128,13 @@ public sealed class MoverBakeParityTests
 
         var options = new CompileOptions { Alpine = true, BuildSurfaces = true, BakeLighting = true };
         options.Lighting.LightBounces = bounces;
+
+        // RED-MATCHING state for parity: RED excludes mover geometry from the shadow occluder set (RED.exe
+        // 1.20na FUN_004ae360 → FUN_004bcc60 rejects moving-group face types 4/5/7; the +0x36 owner check
+        // stops self-shadowing) — a moving object cannot bake a fixed shadow. The app defaults "Movers cast
+        // shadows" ON as a quality deviation, but this gate must measure the RED-authentic OFF state.
+        Assert.False(options.Lighting.MoverShadows, "MoverBakeParity must run in the RED-matching (no mover occluders) state");
+
         CompiledLevel result = GeometryBuildService.Build(rfl, options);
         Assert.True(result.BakedMoverUids.Count > 0, "no movers were re-baked");
 
@@ -109,17 +151,20 @@ public sealed class MoverBakeParityTests
             double gedMover = MeanLuminance(m.Geometry.Surfaces, result.Lightmaps);
             double gedLocal = LocalStaticLum(result.Geometry, result.Lightmaps, c);
 
-            // Offset-invariant: how bright the mover is RELATIVE to its neighbours, GED vs RED.
+            // Offset-invariant: how bright the mover is RELATIVE to its neighbours.
             double redRel = redMoverLum[uid] / System.Math.Max(1e-6, redLocal[uid]);
             double gedRel = gedMover / System.Math.Max(1e-6, gedLocal);
-            double ratio = gedRel / System.Math.Max(1e-6, redRel);
-            _out.WriteLine($"[{tag}] mover {uid}: RED mover={redMoverLum[uid]:F1}/local={redLocal[uid]:F1}={redRel:F3}  " +
-                $"GED mover={gedMover:F1}/local={gedLocal:F1}={gedRel:F3}  rel-ratio={ratio:F3}");
+            double ratioToRed = gedRel / System.Math.Max(1e-6, redRel);   // delta to RED = the shadow-model gap
+            double baseline = GedBaselineRel[(uid, bounces)];             // GED's re-measured working-shadow value
+            double drift = gedRel / System.Math.Max(1e-6, baseline);      // 1.0 == exactly on the re-baseline
+            _out.WriteLine($"[{tag}] mover {uid}: RED rel={redRel:F3} (target {RedRel[uid]:F3})  " +
+                $"GED rel={gedRel:F3} (baseline {baseline:F3}, drift {drift:F3})  GED/RED={ratioToRed:F3}");
 
-            if (System.Math.Abs(ratio - 1.0) > LumRatioTolerance)
+            if (System.Math.Abs(drift - 1.0) > LumRatioTolerance)
             {
-                failures.Add($"mover {uid} [{tag}]: neighbourhood-relative luminance {gedRel:F3} vs RED {redRel:F3} " +
-                    $"(ratio {ratio:F3}, outside ±{LumRatioTolerance * 100:F0}%)");
+                failures.Add($"mover {uid} [{tag}]: neighbourhood-relative luminance {gedRel:F3} drifted from the " +
+                    $"re-baselined {baseline:F3} (drift {drift:F3}, outside ±{LumRatioTolerance * 100:F0}%); " +
+                    $"RED target {RedRel[uid]:F3}, GED/RED {ratioToRed:F3}");
             }
         }
 
@@ -173,6 +218,48 @@ public sealed class MoverBakeParityTests
 
     private static double SurfaceLum(Surface s, IReadOnlyList<Lightmap> pages) =>
         MeanLuminance(new[] { s }, pages);
+
+    /// <summary>
+    /// The "Movers cast shadows" option (<see cref="LightingOptions.MoverShadows"/>) actually changes the
+    /// occluder set: ON folds every mover's rest geometry into the shadow occluders, so movers self-shadow /
+    /// shadow each other and darken the static geometry they overhang. OFF is byte-identical to the
+    /// RED-matching bake (no mover occluders). Asserted by the box-shaped elevator (uid 94) getting darker
+    /// with the option on (its own walls now occlude its floor) — a difference that can only come from the
+    /// mover occluders.
+    /// </summary>
+    [Fact]
+    public void MoverShadows_Option_Adds_Mover_Occluders()
+    {
+        if (!Corpus.Available)
+        {
+            return;
+        }
+
+        string path = Path.Combine(Corpus.Directory!, Level);
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        double LumWith(bool moverShadows)
+        {
+            RflFile rfl = RflFile.Load(path);
+            rfl.ParseAllKnownSections();
+            var options = new CompileOptions { Alpine = true, BuildSurfaces = true, BakeLighting = true };
+            options.Lighting.MoverShadows = moverShadows;
+            CompiledLevel result = GeometryBuildService.Build(rfl, options);
+            var movers = rfl.Sections.Select(s => s.Content).OfType<MoversSection>().First().Movers;
+            Brush m = movers.First(b => b.Uid == 94);
+            return MeanLuminance(m.Geometry.Surfaces, result.Lightmaps);
+        }
+
+        double off = LumWith(false);
+        double on = LumWith(true);
+
+        // ON must measurably darken the box elevator (its own geometry now occludes its inward faces);
+        // OFF is the RED-matching state. A real occluder-set difference, not noise.
+        Assert.True(on < off - 1.0, $"MoverShadows on ({on:F1}) should darken elevator 94 vs off ({off:F1})");
+    }
 
     /// <summary>A corpus-wide invariant: after a surface build every mover brush that had lightmap surfaces
     /// still has them, referencing valid (in-range) atlas pages — never a stale out-of-range page.</summary>

@@ -70,6 +70,16 @@ public sealed class LightingMethod
     /// </summary>
     public bool SmoothGutters { get; set; }
 
+    /// <summary>
+    /// Modifier: "Movers cast shadows". Includes mover brushes (elevators, doors, lifts) as shadow
+    /// occluders at their rest pose, so they shadow the static world, each other, and themselves.
+    /// DEFAULT ON — an owner-decided quality deviation (a moving object's rest-pose shadow reads as more
+    /// grounded), unlike RED which omits it (a mover's baked shadow would ghost when it animates). The
+    /// parity gates pin the underlying <see cref="LightingOptions.MoverShadows"/> OFF (RED-matching), so
+    /// this default does not disturb the byte-identity ratchets, which run raw options.
+    /// </summary>
+    public bool MoverShadows { get; set; } = true;
+
     /// <summary>True when this is exactly the stock RED Classic path (no bounce, no modifiers).</summary>
     public bool IsRedClassicDefault =>
         Base == LightingBase.RedClassic && !AmbientOcclusion && !SoftShadows && !HighResLightmaps && !SeamBlend
@@ -89,6 +99,7 @@ public sealed class LightingMethod
         SeamBlend = SeamBlend,
         CornerLeakFix = CornerLeakFix,
         SmoothGutters = SmoothGutters,
+        MoverShadows = MoverShadows,
     };
 
     /// <summary>A short human label for the status bar / report ("RED Classic", "Bounced ×2 +AO").</summary>
@@ -101,7 +112,8 @@ public sealed class LightingMethod
             (HighResLightmaps ? " +HiRes" : string.Empty) +
             (SeamBlend ? " +SeamBlend" : string.Empty) +
             (CornerLeakFix ? " +LeakFix" : string.Empty) +
-            (SmoothGutters ? " +SmoothGutters" : string.Empty);
+            (SmoothGutters ? " +SmoothGutters" : string.Empty) +
+            (MoverShadows ? string.Empty : " -MoverShadows");
         return b + mods;
     }
 }

@@ -96,6 +96,19 @@ public sealed class LightingOptions
     /// </summary>
     public bool AngleWeightedNormals { get; set; }
 
+    /// <summary>
+    /// Modifier: "Movers cast shadows". Folds each mover brush's rest-pose geometry into the shadow
+    /// occluder set, so movers shadow the static world, shadow each other, and self-shadow (the mover bake
+    /// reuses the static bake's occluder BVH, so all three fall out of one set). OFF is the RED-matching /
+    /// byte-parity default: RED excludes mover-group faces from the shadow occluder set (RED.exe 1.20na
+    /// <c>FUN_004ae360</c> rejects faces whose moving-group type is 4/5/7 via <c>FUN_004bcc60</c>, and the
+    /// +0x36 owner check stops a surface self-shadowing) because a moving object cannot bake a fixed shadow.
+    /// The app turns this ON by default as a deliberate quality deviation (like Alpine's smoothlights),
+    /// while the parity gates pin it OFF. Only reachable in the compile bake (the incremental relight path
+    /// works on the already-compiled world and cannot see mover brushes — an honest limitation).
+    /// </summary>
+    public bool MoverShadows { get; set; }
+
     /// <summary>True when this is exactly the stock RED Classic path (no bounce, AO or soft shadows).</summary>
     public bool IsRedClassicMethod =>
         LightBounces <= 0 && !AmbientOcclusion && !SoftShadows && !CornerLeakFix
@@ -116,6 +129,7 @@ public sealed class LightingOptions
         CornerLeakFix = method.CornerLeakFix;
         SmoothGutterNormals = method.SmoothGutters;
         AngleWeightedNormals = method.SmoothGutters;
+        MoverShadows = method.MoverShadows;
         return this;
     }
 

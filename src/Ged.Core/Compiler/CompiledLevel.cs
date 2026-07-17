@@ -37,6 +37,17 @@ public sealed class CompiledLevel
     public BakeStats? BakeStats { get; set; }
 
     /// <summary>
+    /// The occluder BVH the static bake built (from the convex pre-output <c>CsgFace</c> fragments).
+    /// Carried so <see cref="MoverLighting"/> shadows the movers against the SAME occluder set RED uses —
+    /// RED bakes the static world and each mover group from one global world face list
+    /// (<c>FUN_004aabf0</c> reads the shared BSP face list in <c>FUN_004ae360</c>; RED.exe 1.20na). Reusing
+    /// it keeps a mover and its static neighbourhood shadowed identically (the parity gate is
+    /// neighbourhood-relative); rebuilding from the post-merge output faces instead fan-triangulates
+    /// possibly-non-convex merged polygons, occluding the wrong area. Null when no shadow bake ran.
+    /// </summary>
+    internal OccluderBvh? StaticOccluders { get; set; }
+
+    /// <summary>
     /// Mover brush UIDs whose geometry was re-baked (lightmap surfaces + per-vertex UVs rebuilt into this
     /// build's atlas by <see cref="MoverLighting"/>). RED bakes mover surfaces into the shared atlas at the
     /// rest position; GED must too, or the movers keep stale references into the regenerated atlas and render

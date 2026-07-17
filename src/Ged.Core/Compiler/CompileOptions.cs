@@ -353,6 +353,17 @@ public sealed class CompileOptions
     /// <summary>Bake tunables (shadows, clamp, quality) when <see cref="BakeLighting"/> is on.</summary>
     public LightingOptions Lighting { get; set; } = new();
 
+    /// <summary>
+    /// The level's mover brushes (elevators, doors, lifts). Supplied so the lighting bake can include
+    /// them as shadow occluders at their rest pose when <see cref="LightingOptions.MoverShadows"/> is on
+    /// ("Movers cast shadows"). RED itself excludes mover geometry from the shadow occluder set
+    /// (RED.exe 1.20na <c>FUN_004ae360</c>: faces whose moving-group type is 4/5/7 are rejected via
+    /// <c>FUN_004bcc60</c>, and a surface never self-shadows against its own solid via the +0x36 owner
+    /// check) — a moving object cannot bake a fixed shadow — so the RED-matching / byte-parity state is
+    /// OFF and this list is unused there. Populated by <see cref="GeometryBuildService"/>.
+    /// </summary>
+    public IReadOnlyList<Brush> Movers { get; set; } = Array.Empty<Brush>();
+
     /// <summary>Level lights (from the lights section) contributing to the game bake.</summary>
     public IReadOnlyList<Light> Lights { get; set; } = Array.Empty<Light>();
 

@@ -13,7 +13,8 @@ namespace Ged.App;
 
 /// <summary>
 /// Playtest launch: F7 Play Level, F8 Play Level from Camera, and
-/// Play in Multi / from Camera. Saves (build-before-save applies), stages the .rfl
+/// Play in Multi / from Camera. Saves RED-style (the save writes what was last built and never bakes,
+/// so a playtest launches with whatever geometry / lighting is on disk), stages the .rfl
 /// into <c>&lt;install&gt;\user_maps\&lt;single|multi&gt;</c>, and launches the
 /// configured Alpine Faction launcher (<c>-level</c> / <c>-levelm</c>; a manually
 /// configured non-launcher exe still runs, gated to single-player). "From Camera"
@@ -54,20 +55,23 @@ public sealed partial class MainWindow
 
         string installDir = _session.RfInstallDir ?? Path.GetDirectoryName(exe) ?? Environment.CurrentDirectory;
 
-        // Ensure the user's level is saved (build-before-save flow applies). "From
-        // Camera" does NOT persist the relocated spawn to the user's file.
-        await SaveAsync(saveAs: Document.Path is null);
-        if (Document.Path is null)
+        // Ensure the user's level is saved (RED-style: the save writes what was last built and never
+        // bakes — F7 after brush edits launches with whatever lighting is on disk, stock-RED behavior).
+        // "From Camera" does NOT persist the relocated spawn to the user's file. A save the seal guard
+        // aborts (a build in flight, or the geometry re-seal did not complete) must abort the launch too
+        // — its notification already fired.
+        bool saved = await SaveAsync(saveAs: Document.Path is null);
+        if (!saved || Document.Path is not string levelPath)
         {
-            return; // save cancelled
+            return; // save cancelled or aborted — do not launch on unsealed geometry
         }
 
         try
         {
-            string levelName = Path.GetFileName(Document.Path);
+            string levelName = Path.GetFileName(levelPath);
             PlaytestCommand cmd = GameLauncher.BuildCommand(exe, installDir, levelName, mode, fromCamera, _settings.PlaytestExtraArgs);
 
-            byte[] rflBytes = fromCamera ? SaveBytesWithCameraSpawn() : File.ReadAllBytes(Document.Path);
+            byte[] rflBytes = fromCamera ? SaveBytesWithCameraSpawn() : File.ReadAllBytes(levelPath);
             GameLauncher.StageLevel(cmd, rflBytes);
 
             // Compose through the launch template (blank = direct on Windows; "wine {exe} {args}"
@@ -88,7 +92,7 @@ public sealed partial class MainWindow
         }
         catch (Exception ex)
         {
-            _dispatcher.ShowMessage($"Play failed: {ex.Message}");
+            _notifications.Notify(Services.NotificationSeverity.Error, $"Play failed: {ex.Message}");
         }
     }
 

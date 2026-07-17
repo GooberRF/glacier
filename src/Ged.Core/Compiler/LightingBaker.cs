@@ -33,8 +33,13 @@ internal static class LightingBaker
         }
 
         OccluderBvh occluders = options.Lighting.CastShadows
-            ? BuildOccluders(faces)
+            ? BuildOccluders(faces, options)
             : OccluderBvh.Build(Array.Empty<(Vec3, Vec3, Vec3)>());
+
+        // Hand the built occluder set to the mover pass so it shadows movers against the exact same
+        // convex CsgFace geometry the static world was shadowed against — RED uses one world face list
+        // for both bakes (docs/research/red-lighting-model.md; RED.exe FUN_004ae360).
+        result.StaticOccluders = occluders;
 
         Vec3 levelAmbient = options.LevelAmbient is RfColor a
             ? new Vec3(a.R / 255f, a.G / 255f, a.B / 255f)
@@ -84,9 +89,23 @@ internal static class LightingBaker
     }
 
     /// <summary>Triangulates the level's solid occluder faces for the shadow BVH.</summary>
-    private static OccluderBvh BuildOccluders(List<CsgFace> faces)
+    private static OccluderBvh BuildOccluders(List<CsgFace> faces, CompileOptions options)
     {
         var tris = new List<(Vec3, Vec3, Vec3)>(faces.Count * 2);
+
+        // "Movers cast shadows" (LightingOptions.MoverShadows) — fold each mover's rest geometry into the
+        // shadow occluder set so movers shadow the static world, their peers, and themselves (the mover bake
+        // reuses this same BVH via CompiledLevel.StaticOccluders). OFF is the RED-matching / byte-parity
+        // default: RED excludes mover-group faces from occluders (RED.exe FUN_004ae360 → FUN_004bcc60, moving
+        // group types 4/5/7) — a moving object cannot bake a fixed shadow — so a stock bake never adds them.
+        if (options.Lighting.MoverShadows)
+        {
+            foreach (Brush m in options.Movers)
+            {
+                MoverLighting.AppendMoverWorldTris(m, tris);
+            }
+        }
+
         foreach (CsgFace f in faces)
         {
             if (f.IsPortal || string.IsNullOrEmpty(f.Texture) || f.Vertices.Count < 3)

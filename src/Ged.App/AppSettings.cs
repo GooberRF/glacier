@@ -57,6 +57,13 @@ public sealed class AppSettings
     // ---- General ----
     public bool AutosaveEnabled { get; set; } = true;
 
+    /// <summary>
+    /// Toast-notification threshold (see <see cref="Services.ToastLevel"/>): 0 = Off, 1 = Errors only,
+    /// 2 = Warnings, 3 = Info (the default), 4 = Everything (incl. hints). Every notification always
+    /// reaches the status bar and the Log panel; this gates which ALSO raise a bottom-right toast.
+    /// </summary>
+    public int ToastLevel { get; set; } = (int)Services.ToastLevel.Info;
+
     public int AutosaveIntervalMinutes { get; set; } = 5;
 
     public bool PromptForSave { get; set; } = true;
@@ -184,6 +191,10 @@ public sealed class AppSettings
 
     /// <summary>Global default: add the Smooth Gutter Normals modifier (weld gutter normals + angle-weighted average).</summary>
     public bool LightingSmoothGutters { get; set; }
+
+    /// <summary>Global default: "Movers cast shadows". DEFAULT ON (owner-decided quality deviation from RED,
+    /// which omits mover occluders); the parity gates pin the compiler option OFF to stay byte-identical.</summary>
+    public bool LightingMoverShadows { get; set; } = true;
 
     /// <summary>Item 9 — persisted UV Unwrap window X position (int.MinValue = never saved).</summary>
     public int UvWindowX { get; set; } = int.MinValue;

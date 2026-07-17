@@ -65,7 +65,9 @@ public sealed class LightingMethodWiringTests
         var opts = new LightingOptions();
         Assert.True(opts.IsRedClassicMethod);
 
-        opts.WithMethod(new LightingMethod { Base = LightingBase.Bounced, Bounces = 2, AmbientOcclusion = true, SoftShadows = true, SeamBlend = true, CornerLeakFix = true, SmoothGutters = true });
+        Assert.False(opts.MoverShadows); // raw LightingOptions default is the RED-matching / byte-safe OFF
+
+        opts.WithMethod(new LightingMethod { Base = LightingBase.Bounced, Bounces = 2, AmbientOcclusion = true, SoftShadows = true, SeamBlend = true, CornerLeakFix = true, SmoothGutters = true, MoverShadows = true });
         Assert.Equal(2, opts.LightBounces);
         Assert.True(opts.AmbientOcclusion);
         Assert.True(opts.SoftShadows);
@@ -73,7 +75,14 @@ public sealed class LightingMethodWiringTests
         Assert.True(opts.CornerLeakFix);
         Assert.True(opts.SmoothGutterNormals);
         Assert.True(opts.AngleWeightedNormals);
+        Assert.True(opts.MoverShadows);
         Assert.False(opts.IsRedClassicMethod);
+
+        // "Movers cast shadows" defaults ON in a LightingMethod (owner quality default); WithMethod carries it.
+        Assert.True(new LightingMethod().MoverShadows);
+        var mm = new LightingOptions();
+        mm.WithMethod(new LightingMethod { Base = LightingBase.RedClassic, MoverShadows = false });
+        Assert.False(mm.MoverShadows);
 
         // A null method (preview → RED Classic) leaves the defaults untouched (seam blend off).
         var d = new LightingOptions();

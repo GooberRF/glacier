@@ -62,9 +62,17 @@ internal static class MoverLighting
                 lights.Add(EngineLight.FromModel(l, editorOnly: false, cookies?.Invoke(l.Uid), sharpness?.Invoke(l.Uid) ?? 1f));
             }
 
-            occluders = options.Lighting.CastShadows
-                ? OccluderBvh.Build(BuildStaticTris(result.Geometry))
-                : OccluderBvh.Build(System.Array.Empty<(Vec3, Vec3, Vec3)>());
+            // Shadow the movers against the SAME occluder set the static world was baked against — RED
+            // bakes the static solid and every mover group from one global world face list (RED.exe 1.20na
+            // FUN_004aabf0 → FUN_004ae360 reads the shared BSP faces; docs/research/red-lighting-model.md).
+            // The static bake builds its BVH from the convex pre-output CsgFace fragments; reuse it verbatim
+            // so a mover and its static neighbourhood receive identical shadowing (the mover parity gate is
+            // neighbourhood-relative). Rebuilding from result.Geometry.Faces instead would fan-triangulate the
+            // post-merge (possibly non-convex) output polygons and occlude the wrong area. When "Movers cast
+            // shadows" (LightingOptions.MoverShadows) is on, the static bake already folded the mover rest
+            // geometry INTO that shared BVH, so reusing it makes each mover self-shadow and shadow its peers
+            // for free; the fallback below reproduces both (used only if the static bake left no BVH).
+            occluders = result.StaticOccluders ?? BuildFallbackOccluders(result, movers, options);
 
             Vec3 levelAmbient = options.LevelAmbient is RfColor a
                 ? new Vec3(a.R / 255f, a.G / 255f, a.B / 255f)
@@ -188,6 +196,28 @@ internal static class MoverLighting
         return true;
     }
 
+    /// <summary>Occluders for the mover bake when the static bake left no shared BVH (rare — a
+    /// surfaces-only build). Static world faces, plus every mover's rest geometry when "Movers cast
+    /// shadows" is on (matching the shared BVH the static bake would otherwise have folded them into).</summary>
+    private static OccluderBvh BuildFallbackOccluders(CompiledLevel result, IReadOnlyList<Brush> movers, CompileOptions options)
+    {
+        if (!options.Lighting.CastShadows)
+        {
+            return OccluderBvh.Build(System.Array.Empty<(Vec3, Vec3, Vec3)>());
+        }
+
+        List<(Vec3, Vec3, Vec3)> tris = BuildStaticTris(result.Geometry);
+        if (options.Lighting.MoverShadows)
+        {
+            foreach (Brush m in movers)
+            {
+                AppendMoverWorldTris(m, tris);
+            }
+        }
+
+        return OccluderBvh.Build(tris);
+    }
+
     /// <summary>Triangulated static-world occluders for the mover shadow rays (portals / invisible / sky /
     /// liquid / alpha excluded — RED's shadow rasteriser skips them).</summary>
     private static List<(Vec3, Vec3, Vec3)> BuildStaticTris(Geometry g)
@@ -218,5 +248,40 @@ internal static class MoverLighting
         }
 
         return tris;
+    }
+
+    /// <summary>EXPERIMENTAL (flagship 30): world-space triangles of a mover's own geometry at its rest
+    /// pose (same face filtering as the static occluders). Used to test whether RED self-shadows movers or
+    /// includes movers as static occluders.</summary>
+    internal static void AppendMoverWorldTris(Brush mover, List<(Vec3, Vec3, Vec3)> tris)
+    {
+        Geometry g = mover.Geometry;
+        var mt = new MoverTransform(mover.Position, mover.Rotation);
+        foreach (Face f in g.Faces)
+        {
+            if (f.IsPortalFace || f.Vertices.Count < 3)
+            {
+                continue;
+            }
+
+            var flags = (FaceFlags)f.Flags;
+            if ((flags & (FaceFlags.ShowSky | FaceFlags.IsInvisible | FaceFlags.LiquidSurface | FaceFlags.HasAlpha)) != 0)
+            {
+                continue;
+            }
+
+            List<FaceVertex> v = f.Vertices;
+            for (int i = 1; i < v.Count - 1; i++)
+            {
+                if (v[0].Index >= 0 && v[i].Index >= 0 && v[i + 1].Index >= 0 &&
+                    v[0].Index < g.Vertices.Count && v[i].Index < g.Vertices.Count && v[i + 1].Index < g.Vertices.Count)
+                {
+                    Vec3 a = mt.Position.Add(mt.Rotation.Transform(g.Vertices[v[0].Index]));
+                    Vec3 b = mt.Position.Add(mt.Rotation.Transform(g.Vertices[v[i].Index]));
+                    Vec3 c = mt.Position.Add(mt.Rotation.Transform(g.Vertices[v[i + 1].Index]));
+                    tris.Add((a, b, c));
+                }
+            }
+        }
     }
 }

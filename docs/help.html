@@ -550,6 +550,10 @@
       and <em>Play Level from Camera</em> (<kbd>F8</kbd>) start single-player; <em>Play in Multi</em>
       (<kbd>F9</kbd>) and <em>Play in Multi from Camera</em> (<kbd>F10</kbd>) start a multiplayer
       session. The "from Camera" variants drop you in at the current viewport camera position.</p>
+      <p>Playtesting saves your level first, RED-style: the save writes exactly what you last built and
+      does <strong>not</strong> re-bake, so run <em>Geometry ▸ Build</em> and <em>Build ▸ Calculate
+      Lighting</em> before playtesting if you have changed geometry or lights. (Unsealed live-preview
+      geometry is re-sealed automatically before the save, which resets its lightmaps to unbaked.)</p>
       <p>Play-tests run through <code>AlpineFactionLauncher.exe</code>. On Linux the launch goes
       through a configurable template (default <code>wine {exe} {args}</code>) so the Windows launcher
       runs under Wine or Proton; staging paths flow through the VFS mount unchanged.</p>

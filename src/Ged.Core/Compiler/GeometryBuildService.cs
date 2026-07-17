@@ -29,6 +29,14 @@ public static class GeometryBuildService
         options ??= new CompileOptions();
         PopulateLighting(rfl, options);
 
+        // Hand the mover brushes to the compile so the bake can occlude with them at rest pose when the
+        // "Movers cast shadows" option is on (LightingOptions.MoverShadows). Off (the RED-matching /
+        // byte-parity default) leaves them unused — RED excludes movers from the shadow occluder set.
+        if (options.Movers.Count == 0 && Find<MoversSection>(rfl) is { Movers.Count: > 0 } moverSec)
+        {
+            options.Movers = moverSec.Movers;
+        }
+
         // [ALPINE] Feed the geoable/breakable brush set into the compile so each such brush
         // isolates into its own detail room (RED's populate_isolated_face_map): the set is the
         // union of the alpine_level_properties geoable + breakable brush-uid lists plus any

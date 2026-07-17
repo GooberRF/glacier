@@ -90,6 +90,7 @@ public sealed class LightmapMethodPanel : UserControl
         root.Children.Add(Check("seam", "Seam Blend (cross-room)", m => m.SeamBlend, (m, v) => m.SeamBlend = v));
         root.Children.Add(Check("leak", "Corner Leak Fix", m => m.CornerLeakFix, (m, v) => m.CornerLeakFix = v));
         root.Children.Add(Check("gutters", "Smooth Gutter Normals", m => m.SmoothGutters, (m, v) => m.SmoothGutters = v));
+        root.Children.Add(Check("movershadows", "Movers cast shadows", m => m.MoverShadows, (m, v) => m.MoverShadows = v));
 
         return root;
     }

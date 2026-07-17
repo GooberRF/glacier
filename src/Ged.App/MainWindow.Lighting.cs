@@ -29,6 +29,7 @@ public sealed partial class MainWindow
         SeamBlend = _settings.LightingSeamBlend,
         CornerLeakFix = _settings.LightingCornerLeakFix,
         SmoothGutters = _settings.LightingSmoothGutters,
+        MoverShadows = _settings.LightingMoverShadows,
     };
 
     /// <summary>The effective method for the open level: its sidecar override, else the global default.</summary>
@@ -71,6 +72,7 @@ public sealed partial class MainWindow
         _settings.LightingSeamBlend = m.SeamBlend;
         _settings.LightingCornerLeakFix = m.CornerLeakFix;
         _settings.LightingSmoothGutters = m.SmoothGutters;
+        _settings.LightingMoverShadows = m.MoverShadows;
         Persist();
         SyncLightingMethodToController();
         SaveAnnotationSidecarAndLighting();

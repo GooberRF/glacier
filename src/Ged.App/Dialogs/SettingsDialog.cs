@@ -85,6 +85,7 @@ internal sealed class SettingsDialog : Window
         panel.Children.Add(NumberRow("Autosave interval (min)", _settings.AutosaveIntervalMinutes,
             v => _settings.AutosaveIntervalMinutes = Math.Max(1, (int)v)));
         panel.Children.Add(CheckRow("Prompt to save on close", _settings.PromptForSave, v => _settings.PromptForSave = v));
+        panel.Children.Add(ToastLevelRow());
         panel.Children.Add(CheckRow("Suppress legacy-level (pre-Alpine) open warning", _settings.SuppressLegacyWarning, v => _settings.SuppressLegacyWarning = v));
         panel.Children.Add(NumberRow("Default nav point height", _settings.NavPointHeight, v => _settings.NavPointHeight = (float)v));
         panel.Children.Add(RfInstallRow());
@@ -93,6 +94,29 @@ internal sealed class SettingsDialog : Window
         panel.Children.Add(TextRow("Playtest launch template (blank = direct; e.g. wine {exe} {args})", _settings.PlaytestLaunchTemplate, v => _settings.PlaytestLaunchTemplate = v.Trim()));
         panel.Children.Add(TextRow("Prefab directory (blank = default)", _settings.PrefabDirectory, v => _settings.PrefabDirectory = v.Trim()));
         return Scroll(panel);
+    }
+
+    /// <summary>
+    /// The "Toast notifications" threshold selector: which severities also raise a bottom-right toast
+    /// (Off / Errors only / Warnings / Info / Everything). Every notification still reaches the status
+    /// bar and the Log panel regardless. Indices map 1:1 to <see cref="Services.ToastLevel"/>.
+    /// </summary>
+    private Control ToastLevelRow()
+    {
+        var combo = new ComboBox
+        {
+            ItemsSource = new[] { "Off", "Errors only", "Warnings", "Info", "Everything (incl. hints)" },
+            SelectedIndex = Math.Clamp(_settings.ToastLevel, 0, 4),
+            MinWidth = 200,
+        };
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (combo.SelectedIndex >= 0)
+            {
+                _settings.ToastLevel = combo.SelectedIndex;
+            }
+        };
+        return LabeledRow("Toast notifications", combo);
     }
 
     private Control ViewportTab()
