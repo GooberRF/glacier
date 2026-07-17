@@ -71,6 +71,27 @@ public sealed class PrefabInstanceService
     }
 
     /// <summary>
+    /// Places a prefab payload as a tracked instance in ONE undo transaction: the payload is
+    /// posed so its own pivot (<see cref="RfgInterop.ComputePivot"/>) lands at
+    /// <paramref name="pivotPosition"/> with orientation <paramref name="pivotRotation"/>, then a
+    /// lineage record is written carrying that world pose. The pose stored here is the explicit,
+    /// persisted source of truth for the instance — propagation re-poses the (updated) payload at
+    /// exactly this pose, and whole-instance moves keep it fresh via <see cref="ApplyRigidTransform"/>.
+    /// Returns the record (its <see cref="PrefabInstanceRecord.MemberUids"/> are the placed UIDs).
+    /// </summary>
+    public PrefabInstanceRecord PlaceInstance(RfgFile payload, string prefabName, string sourceHash, Vec3 pivotPosition, Mat3 pivotRotation)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        using UndoStack.Transaction tx = _doc.Undo.BeginTransaction($"Place prefab '{prefabName}'");
+        // The payload is in FIXED prefab-local space (origin == pivot); pose it at the instance's
+        // world pose: world = pivotRotation·local + pivotPosition. No content-derived pivot.
+        IReadOnlyList<int> placed = RfgInterop.Import(_doc, payload, pivotRotation, pivotPosition);
+        PrefabInstanceRecord record = RecordInstance(prefabName, sourceHash, placed, pivotPosition, pivotRotation);
+        tx.Commit();
+        return record;
+    }
+
+    /// <summary>
     /// Records a placed instance (undoable). Call inside the same undo transaction as the
     /// placement import so undo removes both the members and the lineage record together.
     /// </summary>
@@ -181,9 +202,13 @@ public sealed class PrefabInstanceService
         var oldMembers = record.MemberUids.ToList();
         DeleteMembers(oldMembers);
 
-        // Re-import the payload at the instance's pivot — Import returns the placed UIDs in the
-        // SAME stable order the members were originally recorded in (its enumeration is fixed).
-        IReadOnlyList<int> placed = RfgInterop.Import(_doc, payload, record.PivotPosition);
+        // Re-pose the (updated) payload at the instance's EXPLICIT, persisted world pose. The payload
+        // is in FIXED prefab-local space (origin == pivot), so the frame NEVER depends on the content's
+        // bounds — an untouched member keeps byte-identical world coords and the pose is unchanged. The
+        // members' layout relative to the pivot is the NEW payload's (authoritative); the group's world
+        // pose is the user's (preserved). Import returns UIDs in the SAME stable order the members were
+        // recorded in, so the index-stable external-link remap holds.
+        IReadOnlyList<int> placed = RfgInterop.Import(_doc, payload, record.PivotRotation, record.PivotPosition);
 
         // old member i → new member i (index-stable; extra old/new members simply have no pair).
         var map = new Dictionary<int, int>();
@@ -197,6 +222,78 @@ public sealed class PrefabInstanceService
         UpdateRecordMembers(record, placed, newHash);
 
         tx.Commit();
+    }
+
+    /// <summary>
+    /// Sets an instance's explicit world pose (position + orientation), undoably. This is the
+    /// single manipulable source of truth for the instance's transform — the interactive
+    /// whole-instance gizmo/keyboard hooks and the unit-selection feature drive it, and propagation
+    /// reads it. Returns false when no such instance exists.
+    /// </summary>
+    public bool SetInstancePose(int instanceId, Vec3 position, Mat3 rotation)
+    {
+        if (ById(instanceId) is not { } record)
+        {
+            return false;
+        }
+
+        SetPoseUndoable(record, position, rotation);
+        return true;
+    }
+
+    /// <summary>
+    /// Keeps instance poses fresh when their members are transformed as a whole: for every instance
+    /// whose members are ALL contained in <paramref name="transformedUids"/>, the same rigid
+    /// transform (<paramref name="rotation"/> about <paramref name="pivot"/> then
+    /// <paramref name="translation"/>) is applied to the instance's explicit pose record — so a
+    /// later propagation re-poses the updated payload at the moved/rotated transform. Instances only
+    /// partially covered (an individual member moved WITHIN the instance) are untouched; that is the
+    /// "locally modified" case, handled separately. Returns the number of instance poses updated.
+    /// </summary>
+    public int ApplyRigidTransform(IReadOnlyCollection<int> transformedUids, Mat3 rotation, Vec3 translation, Vec3 pivot)
+    {
+        ArgumentNullException.ThrowIfNull(transformedUids);
+        if (transformedUids.Count == 0 || FindSection() is not { } section)
+        {
+            return 0;
+        }
+
+        var set = transformedUids as HashSet<int> ?? new HashSet<int>(transformedUids);
+        bool rotate = !rotation.Equals(Mat3.Identity);
+        int done = 0;
+        foreach (PrefabInstanceRecord record in section.Instances.ToList())
+        {
+            if (record.MemberUids.Count == 0 || !record.MemberUids.All(set.Contains))
+            {
+                continue;
+            }
+
+            Vec3 newPos = pivot.Add(rotate ? rotation.Transform(record.PivotPosition.Sub(pivot)) : record.PivotPosition.Sub(pivot)).Add(translation);
+            Mat3 newRot = rotate ? Mat3Math.Compose(rotation, record.PivotRotation).Orthonormalize() : record.PivotRotation;
+            SetPoseUndoable(record, newPos, newRot);
+            done++;
+        }
+
+        return done;
+    }
+
+    private void SetPoseUndoable(PrefabInstanceRecord record, Vec3 position, Mat3 rotation)
+    {
+        if (FindSection() is not { } section)
+        {
+            return;
+        }
+
+        RflSection host = HostOf(section);
+        Vec3 oldPos = record.PivotPosition;
+        Mat3 oldRot = record.PivotRotation;
+
+        // Pose is internal lineage metadata with no live UI, and this runs per-frame during an
+        // interactive drag — so it marks the host dirty (persist + undo) but does NOT raise
+        // InstancesChanged, which would thrash the Outliner/Properties panels every frame.
+        _doc.Undo.Execute(new RelayCommand("Move prefab instance",
+            () => { record.PivotPosition = position; record.PivotRotation = rotation; host.Dirty = true; },
+            () => { record.PivotPosition = oldPos; record.PivotRotation = oldRot; host.Dirty = true; }));
     }
 
     /// <summary>Removes member brushes + objects by UID as one undoable command (within the tx).</summary>

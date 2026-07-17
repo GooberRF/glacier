@@ -152,8 +152,9 @@ internal sealed class PalettePanel : UserControl
             if (Match(type.DisplayName))
             {
                 LevelObjectKind kind = type.Kind;
-                entries.Add((type.DisplayName,
-                    IconLeaf(type.DisplayName, Services.PaletteIcons.TryFor(kind), () => _host?.PlaceFromPalette(kind, null))));
+                TreeViewItem node = IconLeaf(type.DisplayName, Services.PaletteIcons.TryFor(kind), () => _host?.PlaceFromPalette(kind, null));
+                PlaceableDrag.WireSource(node, () => PlaceableDrag.Class(kind, null), onPress: () => _hoverPreview.Cancel()); // drag out into a viewport (item E)
+                entries.Add((type.DisplayName, node));
             }
         }
 
@@ -352,6 +353,7 @@ internal sealed class PalettePanel : UserControl
         };
         var leaf = new TreeViewItem { Header = header, Tag = PlaceClass(kind, className) };
         leaf.AttachedToVisualTree += (_, _) => LoadThumbnail(kind, className, img);
+        PlaceableDrag.WireSource(header, () => PlaceableDrag.Class(kind, className), onPress: () => _hoverPreview.Cancel()); // drag out into a viewport (item E)
         return leaf;
     }
 

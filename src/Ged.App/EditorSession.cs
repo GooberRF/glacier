@@ -188,11 +188,26 @@ public sealed class EditorSession : IDisposable
     /// Document/BrushEditor select primitives are internal, making this the only way App
     /// code can mutate selection (compile-time enforcement against out-of-mode leaks).
     /// </summary>
-    public SelectionRouter Selection => _selection ??= new SelectionRouter(
-        () => Document, () => BrushEditor, () => ActiveSelectKinds, k => SelectionDropped?.Invoke(k));
+    public SelectionRouter Selection
+    {
+        get
+        {
+            if (_selection is null)
+            {
+                _selection = new SelectionRouter(
+                    () => Document, () => BrushEditor, () => ActiveSelectKinds, k => SelectionDropped?.Invoke(k));
+                _selection.LockBlocked += () => SelectionLockBlocked?.Invoke();
+            }
+
+            return _selection;
+        }
+    }
 
     /// <summary>Raised when a selection request was dropped by the mode/chip gate (subtle status hint).</summary>
     public event Action<SelectKinds>? SelectionDropped;
+
+    /// <summary>Raised when a click resolved only to a locked item (G: "Locked — unlock to select").</summary>
+    public event Action? SelectionLockBlocked;
 
     /// <summary>Room-graph visibility mode (all / portal-culled / current room only).</summary>
     public RoomVisibility RoomMode { get; set; } = RoomVisibility.All;
@@ -1048,6 +1063,119 @@ public sealed class EditorSession : IDisposable
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// CPU-raycasts a world ray against the compiled static geometry and the editable brush faces,
+    /// returning the nearest front-facing hit's world point + outward normal. Used by the
+    /// drag-out-into-viewport drop (item E) to place an asset on the surface under the cursor,
+    /// independently of the render backend (no GPU pick). Returns false when the ray misses
+    /// everything (the caller then falls back to the in-front-of-camera placement point).
+    /// </summary>
+    public bool TryRayFaceHit(Vector3 origin, Vector3 direction, out Vec3 point, out Vec3 normal)
+    {
+        point = default;
+        normal = default;
+        var o = new Vec3(origin.X, origin.Y, origin.Z);
+        var d = new Vec3(direction.X, direction.Y, direction.Z);
+        if (d.LengthSquared() < 1e-12f)
+        {
+            return false;
+        }
+
+        float bestT = float.MaxValue;
+        bool hit = false;
+        Vec3 bestPoint = default;
+        Vec3 bestNormal = default;
+
+        void Test(Geometry g, Func<Vec3, Vec3> toWorld, Func<Vec3, Vec3> normalToWorld)
+        {
+            foreach (Face f in g.Faces)
+            {
+                if (f.Vertices.Count < 3)
+                {
+                    continue;
+                }
+
+                Vec3 n = normalToWorld(f.Plane.Normal).Normalized();
+                if (n.LengthSquared() < 1e-8f)
+                {
+                    continue;
+                }
+
+                float denom = n.Dot(d);
+                if (MathF.Abs(denom) < 1e-7f)
+                {
+                    continue; // ray parallel to the face plane
+                }
+
+                Vec3 p0 = toWorld(VertexAt(g, f.Vertices[0].Index));
+                float t = n.Dot(p0.Sub(o)) / denom;
+                if (t <= 1e-4f || t >= bestT)
+                {
+                    continue;
+                }
+
+                Vec3 hitPoint = o.Add(d.Scale(t));
+                if (!PointInFace(g, f, toWorld, n, hitPoint))
+                {
+                    continue;
+                }
+
+                bestT = t;
+                // Outward normal faces the ray origin (a decal/object sits on the visible side).
+                bestNormal = denom > 0 ? n.Scale(-1f) : n;
+                bestPoint = hitPoint;
+                hit = true;
+            }
+        }
+
+        if (_staticGeometry is { Faces.Count: > 0 } sg)
+        {
+            Test(sg, v => v, nrm => nrm);
+        }
+
+        if (BrushEditor is { } be)
+        {
+            foreach (Brush b in be.Brushes)
+            {
+                Test(b.Geometry, v => b.Position.Add(b.Rotation.Transform(v)), nrm => b.Rotation.Transform(nrm));
+            }
+        }
+
+        point = bestPoint;
+        normal = bestNormal;
+        return hit;
+    }
+
+    /// <summary>Even-odd point-in-polygon test for a face, projected onto its normal's minor plane.</summary>
+    private static bool PointInFace(Geometry g, Face f, Func<Vec3, Vec3> toWorld, Vec3 n, Vec3 p)
+    {
+        // Drop the dominant axis of the normal so the projection preserves winding.
+        float ax = MathF.Abs(n.X), ay = MathF.Abs(n.Y), az = MathF.Abs(n.Z);
+        int drop = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
+        Vector2 Project(Vec3 v) => drop switch
+        {
+            0 => new Vector2(v.Y, v.Z),
+            1 => new Vector2(v.X, v.Z),
+            _ => new Vector2(v.X, v.Y),
+        };
+
+        Vector2 pt = Project(p);
+        bool inside = false;
+        int count = f.Vertices.Count;
+        for (int i = 0, j = count - 1; i < count; j = i++)
+        {
+            Vector2 vi = Project(toWorld(VertexAt(g, f.Vertices[i].Index)));
+            Vector2 vj = Project(toWorld(VertexAt(g, f.Vertices[j].Index)));
+            if (((vi.Y > pt.Y) != (vj.Y > pt.Y)) &&
+                (pt.X < ((vj.X - vi.X) * (pt.Y - vi.Y) / (vj.Y - vi.Y)) + vi.X))
+            {
+                inside = !inside;
+            }
+        }
+
+        return inside;
     }
 
     private static Vec3 FaceCentroid(Geometry g, Face f)

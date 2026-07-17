@@ -176,9 +176,12 @@ public sealed class OutlinerStabilityTests
         Assert.Equal(objs[0].Uid, panel.SelectedRowUidForTest);
         Assert.True(panel.IsGroupExpandedForTest(Kind));
 
-        // And toggling lock on the other member leaves the multi-selection intact too.
+        // Feature G (real lock enforcement): locking a selected member REMOVES it from the
+        // selection (a locked item is unselectable/untransformable, so it can't stay selected).
+        // The rest of the multi-selection — and the panel's expansion — survive intact.
         panel.ToggleLockForTest(objs[0]);
-        Assert.Equal(before, doc.Selection.Select(o => o.Uid).OrderBy(x => x).ToArray());
+        Assert.Equal(new[] { objs[1].Uid }, doc.Selection.Select(o => o.Uid).OrderBy(x => x).ToArray());
+        Assert.True(doc.IsLocked(objs[0]));
         Assert.True(panel.IsGroupExpandedForTest(Kind));
     }
 

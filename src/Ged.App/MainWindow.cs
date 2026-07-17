@@ -14,6 +14,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Dock.Avalonia.Controls;
 using Ged.App.Camera;
 using Ged.App.Dialogs;
@@ -236,6 +237,10 @@ public sealed partial class MainWindow : Window, IEditorHost
             Services.NotificationSeverity.Hint,
             $"{kind} can't be selected in this mode — switch mode or Ctrl+click its chip.");
 
+        // G: a click that resolves only to a locked brush/object selects nothing and hints.
+        _session.SelectionLockBlocked += () => _notifications.Notify(
+            Services.NotificationSeverity.Hint, "Locked — unlock to select.");
+
         AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
         AddHandler(DragDrop.DropEvent, OnDrop);
         AddHandler(DragDrop.DragOverEvent, (_, e) => e.DragEffects = DragDropEffects.Copy);
@@ -316,7 +321,9 @@ public sealed partial class MainWindow : Window, IEditorHost
         // priority at press time, so restoring visibility restores aim. The transform-drag
         // progress indicators (dimension line / angle arc / scale ghost) ride the same
         // on-top channel so they read over geometry mid-drag.
-        _viewportGrid.SetGizmoOverlay(BuildGizmoLines().Concat(BuildTransformIndicatorLines()).ToList());
+        // The prefab-unit padlock badge rides the same on-top channel as the gizmo so it reads over
+        // geometry and its CPU pick (against the pick ray) matches what the user sees.
+        _viewportGrid.SetGizmoOverlay(BuildGizmoLines().Concat(BuildTransformIndicatorLines()).Concat(BuildPrefabBadge()).ToList());
         _statusSelection.Text = "Sel: " + BuildSelectionReadout();
     }
 
@@ -1550,7 +1557,18 @@ public sealed partial class MainWindow : Window, IEditorHost
 
         _links = new LinkService(Document);
         _prefabInstances = new PrefabInstanceService(Document);
-        _prefabInstances.InstancesChanged += () => { _properties.Refresh(); _outliner.Refresh(); };
+        _prefabInstances.InstancesChanged += () =>
+        {
+            // An instance may have been orphaned / re-instantiated away: drop stale unit state.
+            if (_prefabUnit?.ValidateExisting() == true)
+            {
+                RefreshSelectionOverlay();
+            }
+
+            _properties.Refresh();
+            _outliner.Refresh();
+        };
+        InitPrefabUnit(); // Feature F: prefab-instance unit-selection controller for this document
         _metadata = new Ged.Core.Editing.GedObjectMetadataService(Document); // item 4: light cookies + future per-object metadata
         _navGraph = new NavGraphService(Document);
         _groups = new GroupService(Document);
@@ -1734,6 +1752,14 @@ public sealed partial class MainWindow : Window, IEditorHost
                 _dispatcher.ShowMessage("Eyedropper: that was not a brush face — nothing sampled.");
             }
 
+            return;
+        }
+
+        // Feature F: prefab-instance unit selection intercepts BEFORE per-kind selection — a click
+        // on a tracked member selects the whole instance as a unit (double-click / badge enters it).
+        // Returns false (fall through) for non-members and for members while inside their instance.
+        if (HandlePrefabPick(surface, id, additive))
+        {
             return;
         }
 
@@ -2332,6 +2358,15 @@ public sealed partial class MainWindow : Window, IEditorHost
 
     private async void OnDrop(object? sender, DragEventArgs e)
     {
+        // In-app placeable drag (mesh / prefab / catalog class) dropped into a viewport (item E).
+        bool placeable = e.Data.Contains(PlaceableDrag.Format);
+        LogOperation("DragDrop", $"drop received: format={(placeable ? "yes" : "no")}");
+        if (placeable && e.Data.Get(PlaceableDrag.Format) is string descriptor)
+        {
+            HandlePlaceableDrop(descriptor, e);
+            return;
+        }
+
         var paths = e.Data.GetFiles()?
             .Select(i => i.TryGetLocalPath())
             .Where(p => p is not null)
@@ -2361,6 +2396,143 @@ public sealed partial class MainWindow : Window, IEditorHost
                 _dispatcher.ShowMessage($"Import .rfg failed: {ex.Message}");
             }
         }
+    }
+
+    // ---- Drag a placeable asset out into a viewport (item E) ------------------
+
+    /// <summary>Makes a tile a drag source that places <paramref name="descriptor"/> where it is dropped.</summary>
+    private void WirePlaceableDrag(Control tile, string descriptor) =>
+        PlaceableDrag.WireSource(tile, () => descriptor,
+            onPress: () => _assetPreview.Cancel(),           // a press suppresses the hover popover
+            onLog: msg => LogOperation("DragDrop", msg));
+
+    /// <summary>
+    /// Places the dragged asset at the drop point: a ray through the pane pixel under the cursor is
+    /// cast at the geometry (<see cref="EditorSession.TryRayFaceHit"/>) and the asset lands on the hit
+    /// face; with no hit (or a drop outside any pane) it falls back to the in-front-of-camera
+    /// placement point. One undo transaction + a status message per drop.
+    /// </summary>
+    private void HandlePlaceableDrop(string descriptor, DragEventArgs e)
+    {
+        if (Document is null)
+        {
+            LogOperation("DragDrop", "placed: none (no level open)");
+            _dispatcher.ShowMessage("Open or create a level first.");
+            return;
+        }
+
+        if (!PlaceableDrag.TryParse(descriptor, out PlaceableKind kind, out string arg1, out string? arg2))
+        {
+            LogOperation("DragDrop", $"placed: none (unparsable descriptor '{descriptor}')");
+            return;
+        }
+
+        (Ged.Core.Model.Vec3 point, bool onSurface) = ResolveDropPoint(e);
+        string where = onSurface ? "on the surface" : "in front of the camera";
+
+        switch (kind)
+        {
+            case PlaceableKind.Prefab:
+                LogOperation("DragDrop", $"placed: prefab '{Path.GetFileNameWithoutExtension(arg1)}' {where}");
+                PlacePrefabAt(arg1, point, $"at the drop point ({where})");
+                break;
+            case PlaceableKind.Mesh:
+                PlaceDroppedObject(LevelObjectKind.MeshObject, arg1, point, where);
+                break;
+            case PlaceableKind.Class:
+                if (Enum.TryParse(arg1, out LevelObjectKind objKind))
+                {
+                    PlaceDroppedObject(objKind, arg2, point, where);
+                }
+                else
+                {
+                    LogOperation("DragDrop", $"placed: none (unknown kind '{arg1}')");
+                }
+
+                break;
+        }
+    }
+
+    private void PlaceDroppedObject(LevelObjectKind kind, string? className, Ged.Core.Model.Vec3 point, string where)
+    {
+        try
+        {
+            _lastPlacedKind = kind;
+            _lastPlacedClass = className;
+            LevelObject? placed = Document!.PlaceObject(kind, point, className);
+            OnObjectPlaced(placed);
+            LogOperation("DragDrop", placed is null ? "placed: none" : $"placed: uid={placed.Uid} ({placed.Kind}) {where}");
+            if (placed is not null)
+            {
+                _dispatcher.ShowMessage($"Placed {placed.Kind} {where} (uid {placed.Uid}).");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogOperation("DragDrop", $"placed: none (error: {ex.Message})");
+            _dispatcher.ShowMessage($"Place failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Resolves a top-level drop position to a world placement point: the pane under the cursor is
+    /// found and a ray through its pixel is cast at the geometry; the hit point (if any) is returned
+    /// with <c>onSurface = true</c>. With no geometry hit (a miss, or a drop outside any pane) the
+    /// in-front-of-camera placement point is used (the item-A convention).
+    /// </summary>
+    private (Ged.Core.Model.Vec3 Point, bool OnSurface) ResolveDropPoint(DragEventArgs e)
+    {
+        if (!TryResolveDropPane(e, out IViewportSurface surface, out int px, out int py))
+        {
+            LogOperation("DragDrop", "pane resolved: none — camera fallback");
+            return (PlacementPoint, false);
+        }
+
+        LogOperation("DragDrop", $"pane resolved: {surface.ViewType} @ px ({px},{py})");
+        if (surface.PixelRay(px, py) is (Vector3 origin, Vector3 dir) &&
+            _session.TryRayFaceHit(origin, dir, out Ged.Core.Model.Vec3 hit, out _))
+        {
+            LogOperation("DragDrop", $"ray hit: ({hit.X:0.##}, {hit.Y:0.##}, {hit.Z:0.##})");
+            return (hit, true);
+        }
+
+        LogOperation("DragDrop", "ray hit: none — camera fallback");
+        return (PlacementPoint, false);
+    }
+
+    /// <summary>
+    /// Finds the viewport pane whose render surface is under the drop, returning its physical pixel.
+    /// The drop position is read relative to each pane's surface control (DIP) and scaled by the
+    /// render scaling to the device pixels the native surface's pixel-ray math expects. Panes not
+    /// currently in the visual tree (maximized layout) are skipped.
+    /// </summary>
+    private bool TryResolveDropPane(DragEventArgs e, out IViewportSurface surface, out int px, out int py)
+    {
+        surface = null!;
+        px = py = 0;
+        double scale = this.GetVisualRoot()?.RenderScaling ?? 1.0;
+        foreach (ViewportPane pane in _viewportGrid.Panes)
+        {
+            Control ctrl = pane.Surface.AsControl();
+            if (ctrl.GetVisualRoot() is null)
+            {
+                continue; // detached pane (maximized layout)
+            }
+
+            Avalonia.Point local = e.GetPosition(ctrl);
+            if (local.X < 0 || local.Y < 0 || local.X > ctrl.Bounds.Width || local.Y > ctrl.Bounds.Height)
+            {
+                continue;
+            }
+
+            (int w, int h) = pane.Surface.SurfaceSize;
+            surface = pane.Surface;
+            px = Math.Clamp((int)Math.Round(local.X * scale), 0, Math.Max(0, w - 1));
+            py = Math.Clamp((int)Math.Round(local.Y * scale), 0, Math.Max(0, h - 1));
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>

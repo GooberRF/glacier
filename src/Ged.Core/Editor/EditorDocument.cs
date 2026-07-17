@@ -285,14 +285,23 @@ public sealed class EditorDocument
 
     // ---- Lock (session only, not persisted) -----------------------------------
 
-    /// <summary>Stock <c>Q</c>: locks the selected objects (editor-session state).</summary>
+    /// <summary>Stock <c>Q</c>: locks the selected objects (editor-session state). A locked
+    /// object is unselectable/untransformable, so locking removes it from the selection
+    /// (coherent state); lock is session-only, so the deselect is not undoable either.</summary>
     public void LockSelected()
     {
+        if (_selection.Count == 0)
+        {
+            return;
+        }
+
         foreach (LevelObject o in _selection)
         {
             _locked.Add(o.Uid);
         }
 
+        _selection.Clear();
+        SelectionChanged?.Invoke();
         VisibilityChanged?.Invoke();
     }
 
@@ -313,6 +322,12 @@ public sealed class EditorDocument
         if (!_locked.Remove(o.Uid))
         {
             _locked.Add(o.Uid);
+
+            // Newly locked: drop it from the selection so no locked item stays selected.
+            if (_selection.Remove(o))
+            {
+                SelectionChanged?.Invoke();
+            }
         }
 
         VisibilityChanged?.Invoke();

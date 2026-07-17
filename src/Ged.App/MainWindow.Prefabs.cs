@@ -9,6 +9,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Ged.Core.Editing;
+using Ged.Core.Editor;
 using Ged.Core.Input;
 using Ged.Core.IO.Rfg;
 using Ged.Core.Model;
@@ -57,6 +58,10 @@ public sealed partial class MainWindow
             var objectUids = Document.Selection.Select(o => o.Uid).ToList();
             RfgFile rfg = RfgInterop.Export(Document, brushUids, objectUids, alpine: true, groupName: name);
 
+            // Store the payload in FIXED prefab-local space: re-base so its origin IS the pivot (bbox
+            // centre at save time). Placement/propagation then never derive a pivot from content.
+            RfgInterop.TransformInPlace(rfg, Ged.Core.Model.Mat3.Identity, RfgInterop.ComputePivot(rfg).Scale(-1f));
+
             byte[]? thumb = RenderPrefabThumbnail(brushUids);
 
             var manifest = new PrefabManifest
@@ -65,6 +70,7 @@ public sealed partial class MainWindow
                 Author = Environment.UserName,
                 BrushCount = brushUids.Count,
                 ObjectCount = objectUids.Count,
+                PivotBased = true,
             };
 
             string dir = PrimaryPrefabDir();
@@ -200,12 +206,37 @@ public sealed partial class MainWindow
             },
         };
         btn.DoubleTapped += (_, _) => PlacePrefab(path);
+        WireHoverPreview(btn, preview =>
+        {
+            if (thumb is { Length: > 0 })
+            {
+                try
+                {
+                    using var ms = new MemoryStream(thumb);
+                    preview.Source = new Bitmap(ms);
+                }
+                catch (Exception)
+                {
+                    // leave blank
+                }
+            }
+        });
+        WirePlaceableDrag(btn, PlaceableDrag.Prefab(path));
         return btn;
     }
 
-    private void PlacePrefab(string path)
+    private void PlacePrefab(string path) => PlacePrefabAt(path, PlacementPoint, "at the camera");
+
+    /// <summary>
+    /// Places a tracked prefab instance so its pivot lands at <paramref name="pivotPosition"/>
+    /// (double-click uses the in-front-of-camera <see cref="PlacementPoint"/>, matching a mesh
+    /// object; a viewport drop uses the face-hit / camera-fallback point). The prefab is RE-CENTERED
+    /// on its own pivot before offsetting, so it appears at the target point rather than at its
+    /// authored world origin plus the offset. Import + lineage record are ONE undo transaction.
+    /// </summary>
+    private void PlacePrefabAt(string path, Vec3 pivotPosition, string whereNote)
     {
-        if (Document is null)
+        if (Document is null || _prefabInstances is null)
         {
             _dispatcher.ShowMessage("Open or create a level first.");
             return;
@@ -214,21 +245,17 @@ public sealed partial class MainWindow
         try
         {
             PrefabPackage pkg = PrefabPackage.Load(path);
-            Vec3 at = PlacementPoint;
             string name = string.IsNullOrWhiteSpace(pkg.Manifest.Name) ? Path.GetFileNameWithoutExtension(path) : pkg.Manifest.Name;
-            IReadOnlyList<int> placed;
+            RfgFile payload = BasedPayload(pkg);
 
-            // Record a tracked instance (import + lineage record are ONE undo entry — item 1).
-            using (Document.Undo.BeginTransaction($"Place prefab '{name}'"))
-            {
-                placed = RfgInterop.Import(Document, pkg.Payload, at);
-                _prefabInstances?.RecordInstance(name, PrefabHash(path), placed, at, Ged.Core.Model.Mat3.Identity);
-            }
+            PrefabInstanceRecord rec = _prefabInstances.PlaceInstance(
+                payload, name, PrefabHash(path), pivotPosition, Ged.Core.Model.Mat3.Identity);
 
+            InvalidatePrefabBrushGeometry(payload); // imported brushes bypass BrushEditor — invalidate CSG
             AfterMutation();
             _linkGraph.Refresh();
             _outliner.Refresh();
-            _dispatcher.ShowMessage($"Placed prefab instance '{name}' — {placed.Count} object(s) at the camera.");
+            _dispatcher.ShowMessage($"Placed prefab instance '{name}' — {rec.MemberUids.Count} object(s) {whereNote}.");
         }
         catch (Exception ex)
         {
@@ -273,23 +300,99 @@ public sealed partial class MainWindow
     }
 
     /// <summary>
-    /// "Update Prefab from Selection": overwrites an existing .gedprefab with the current
-    /// selection, then offers to propagate the change to every non-orphaned instance of it
-    /// (item 1). Modified instances are included only when the user confirms the force prompt.
+    /// "Update Prefab from Selection" (item C1 — no free-text typing): if the selection contains
+    /// members of exactly ONE tracked instance, that prefab is updated directly after a single
+    /// confirm; otherwise a PICKER of existing prefabs is shown. Either way the chosen prefab's
+    /// .gedprefab is overwritten with the selection and the change propagates to its placed
+    /// instances (each kept at its own moved/rotated pose). Free-text naming lives only in Save
+    /// Selection As Prefab.
     /// </summary>
     private async Task UpdatePrefabFromSelectionAsync()
     {
-        if (Document is null || !HasSelectionForPrefab())
+        if (Document is null || _prefabInstances is null || !HasSelectionForPrefab())
         {
             _dispatcher.ShowMessage("Select the updated prefab geometry/objects first.");
             return;
         }
 
-        string existing = string.Join(", ", EnumeratePrefabs()
-            .Select(p => { try { return PrefabPackage.LoadHeader(p).Manifest.Name; } catch { return string.Empty; } })
-            .Where(n => !string.IsNullOrWhiteSpace(n)).Distinct());
-        string? name = await Dialogs.InputDialog.ShowAsync(this, "Update Prefab", $"Prefab to overwrite (existing: {existing}):", string.Empty);
-        if (string.IsNullOrWhiteSpace(name))
+        // Which tracked instance(s) does the current selection belong to?
+        var selected = new HashSet<int>(SelectedMemberUids());
+        var distinctNames = _prefabInstances.Instances
+            .Where(r => r.MemberUids.Any(selected.Contains))
+            .Select(r => r.PrefabName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        string? name;
+        if (distinctNames.Count == 1)
+        {
+            // Update THAT prefab directly — no typing; a single confirm.
+            name = distinctNames[0];
+            int total = _prefabInstances.Instances.Count(i => string.Equals(i.PrefabName, name, StringComparison.OrdinalIgnoreCase));
+            int others = Math.Max(0, total - 1);
+            bool ok = await Dialogs.ConfirmDialog.ShowAsync(this, "Update Prefab",
+                $"Update '{name}' from this instance and propagate to {others} other instance(s)?");
+            if (!ok)
+            {
+                return;
+            }
+        }
+        else
+        {
+            // Selection maps to no (or several) tracked instances → pick an existing prefab (a list, not free text).
+            var choices = EnumeratePrefabs()
+                .Select(p => { try { return PrefabPackage.LoadHeader(p).Manifest.Name; } catch { return null; } })
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Select(n => n!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (choices.Count == 0)
+            {
+                _dispatcher.ShowMessage("No existing prefabs to update — use Save Selection… to create one.");
+                return;
+            }
+
+            name = await Dialogs.PickerDialog.ShowAsync(this, "Update Prefab",
+                "Overwrite which prefab with the current selection?", choices);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
+        }
+
+        // The SOURCE instance (if the selection belongs to one of this prefab's instances) fixes the
+        // prefab-local frame: capturing the new content through its pose keeps every untouched member's
+        // local coords byte-identical, so nothing shifts across propagation (defect 1).
+        PrefabInstanceRecord? source = _prefabInstances.Instances.FirstOrDefault(r =>
+            string.Equals(r.PrefabName, name, StringComparison.OrdinalIgnoreCase) && r.MemberUids.Any(selected.Contains));
+        await OverwriteAndPropagateAsync(name, source);
+    }
+
+    /// <summary>The UIDs of the current selection (brush + object members), for instance detection.</summary>
+    private IEnumerable<int> SelectedMemberUids()
+    {
+        foreach (int uid in BrushEd?.SelectedBrushes ?? Enumerable.Empty<int>())
+        {
+            yield return uid;
+        }
+
+        foreach (LevelObject o in Document?.Selection ?? Enumerable.Empty<LevelObject>())
+        {
+            yield return o.Uid;
+        }
+    }
+
+    /// <summary>
+    /// Overwrites <paramref name="name"/>'s .gedprefab with the current selection and propagates
+    /// to its placed instances. The exported selection is re-based into FIXED prefab-local space —
+    /// through <paramref name="source"/>'s pose when the selection is one of this prefab's instances
+    /// (so untouched members keep byte-identical local coords and never shift), else by its bbox
+    /// centre. Modified instances are force-propagated only after a confirm.
+    /// </summary>
+    private async Task OverwriteAndPropagateAsync(string name, PrefabInstanceRecord? source)
+    {
+        if (Document is null || _prefabInstances is null)
         {
             return;
         }
@@ -300,15 +403,26 @@ public sealed partial class MainWindow
             var objectUids = Document.Selection.Select(o => o.Uid).ToList();
             RfgFile rfg = RfgInterop.Export(Document, brushUids, objectUids, alpine: true, groupName: name);
 
+            // Re-base into fixed prefab-local space (defect 1).
+            if (source is not null)
+            {
+                Ged.Core.Model.Mat3 rInv = source.PivotRotation.Transpose();
+                RfgInterop.TransformInPlace(rfg, rInv, rInv.Transform(source.PivotPosition).Scale(-1f)); // local = Rᵀ·(world − pivotPos)
+            }
+            else
+            {
+                RfgInterop.TransformInPlace(rfg, Ged.Core.Model.Mat3.Identity, RfgInterop.ComputePivot(rfg).Scale(-1f));
+            }
+
             string dir = PrimaryPrefabDir();
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, SanitizeFileName(name) + PrefabPackage.Extension);
-            var manifest = new PrefabManifest { Name = name, Author = Environment.UserName, BrushCount = brushUids.Count, ObjectCount = objectUids.Count };
+            var manifest = new PrefabManifest { Name = name, Author = Environment.UserName, BrushCount = brushUids.Count, ObjectCount = objectUids.Count, PivotBased = true };
             PrefabPackage.Save(path, manifest, rfg, RenderPrefabThumbnail(brushUids));
             RebuildPrefabGrid();
 
-            int total = _prefabInstances?.Instances.Count(i => string.Equals(i.PrefabName, name, StringComparison.OrdinalIgnoreCase)) ?? 0;
-            int modified = _prefabInstances?.Instances.Count(i => string.Equals(i.PrefabName, name, StringComparison.OrdinalIgnoreCase) && i.Modified) ?? 0;
+            int total = _prefabInstances.Instances.Count(i => string.Equals(i.PrefabName, name, StringComparison.OrdinalIgnoreCase));
+            int modified = _prefabInstances.Instances.Count(i => string.Equals(i.PrefabName, name, StringComparison.OrdinalIgnoreCase) && i.Modified);
             if (total == 0)
             {
                 _dispatcher.ShowMessage($"Saved prefab '{name}' (no placed instances to propagate).");
@@ -322,7 +436,9 @@ public sealed partial class MainWindow
                     $"{total} instance(s) of '{name}' ({modified} locally modified).\n\nForce-propagate to the modified instances too?");
             }
 
-            int done = _prefabInstances?.Propagate(name, rfg, PrefabHash(path), force) ?? 0;
+            int done = _prefabInstances.Propagate(name, rfg, PrefabHash(path), force);
+            InvalidatePrefabBrushGeometry(rfg); // propagation deleted/re-imported brushes outside BrushEditor (defect 2)
+            _prefabUnit?.ValidateExisting();     // propagated instances were re-created with fresh UIDs
             AfterMutation();
             _linkGraph.Refresh();
             _outliner.Refresh();
@@ -331,6 +447,34 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             _dispatcher.ShowMessage($"Update prefab failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>The (possibly legacy) package payload normalized to FIXED prefab-local space (origin == pivot).</summary>
+    private static RfgFile BasedPayload(PrefabPackage pkg)
+    {
+        RfgFile payload = pkg.Payload;
+        if (!pkg.Manifest.PivotBased)
+        {
+            // Legacy v1 package: establish the pivot once (bbox centre) and re-base in memory, then
+            // treat it as fixed for this placement (no per-propagation re-derivation).
+            RfgInterop.TransformInPlace(payload, Ged.Core.Model.Mat3.Identity, RfgInterop.ComputePivot(payload).Scale(-1f));
+        }
+
+        return payload;
+    }
+
+    /// <summary>
+    /// After a prefab placement/propagation that imported brushes (which bypass <c>BrushEditor</c>,
+    /// so its <c>BrushesChanged</c> invalidation never fired), invalidates the compiled geometry
+    /// exactly like a structural brush edit: marks it dirty, drops the merged-brush stash wholesale,
+    /// and kicks the live-CSG preview — no-op when the payload carried no brushes (defect 2).
+    /// </summary>
+    private void InvalidatePrefabBrushGeometry(RfgFile payload)
+    {
+        if (payload.Groups.Any(g => g.Brushes.Brushes.Count > 0))
+        {
+            _buildController?.InvalidateBrushGeometry();
         }
     }
 

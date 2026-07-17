@@ -424,6 +424,18 @@ public sealed partial class MainWindow
 
     private string BuildSelectionReadout()
     {
+        // Feature F: while inside a prefab instance, the status bar shows the persistent
+        // editing indicator (distinct from the Q-lock wording).
+        if (_prefabUnit?.EnteredInstanceId is int enteredId)
+        {
+            return $"Editing prefab instance {enteredId} — ESC to exit";
+        }
+
+        if (_prefabUnit?.UnitInstanceId is int unitId)
+        {
+            return $"prefab instance {unitId} (unit)";
+        }
+
         if (BrushEd is { } be)
         {
             if (be.SelectedBrushes.Count > 0)
@@ -576,6 +588,16 @@ public sealed partial class MainWindow
 
     private void OnNudgeMove(Vector3 dir)
     {
+        // Feature F: keyboard-nudge the whole prefab unit rigidly (drives it in any mode; one undo
+        // step — RigidTransformUnit wraps its own transaction when no gizmo drag is open).
+        if (PrefabUnitActive)
+        {
+            var unitDelta = new CoreVec3(dir.X, dir.Y, dir.Z).Scale(_settings.GridSize);
+            _prefabUnit?.RigidTransformUnit(Mat3.Identity, unitDelta, default);
+            AfterMutation();
+            return;
+        }
+
         if (!IsBrushEditMode || BrushEd is null)
         {
             return;
@@ -594,23 +616,34 @@ public sealed partial class MainWindow
             return;
         }
 
-        if (BrushEd.SelectedBrushes.Count == 0)
+        // G defense-in-depth: never nudge a locked brush even if a stale selection slips through.
+        var moveUids = BrushEd.SelectedBrushes.Where(u => !BrushEd.IsBrushLocked(u)).ToList();
+        if (moveUids.Count == 0)
         {
             return;
         }
 
-        BrushEd.TransformSelected("Move", b => BrushTransform.Move(b, delta));
+        BrushEd.EditBrushesCoalesced(moveUids, "Move", b => { BrushTransform.Move(b, delta); return OpResult.Ok(); }, null);
+        _prefabInstances?.ApplyRigidTransform(moveUids, Mat3.Identity, delta, default);
         AfterBrushEdit();
     }
 
     private void OnNudgeRotate(Vector3 axis)
     {
+        Mat3 rot = Mat3Math.FromAxisAngle(new CoreVec3(axis.X, axis.Y, axis.Z), TransformMath.DegToRad(_settings.RotationStep));
+
+        // Feature F: keyboard-rotate the whole prefab unit about its pose pivot, rigidly.
+        if (PrefabUnitActive && _prefabUnit?.UnitRecord is { } unitRec)
+        {
+            _prefabUnit.RigidTransformUnit(rot, CoreVec3.Zero, unitRec.PivotPosition);
+            AfterMutation();
+            return;
+        }
+
         if (!IsBrushEditMode || BrushEd is null)
         {
             return;
         }
-
-        Mat3 rot = Mat3Math.FromAxisAngle(new CoreVec3(axis.X, axis.Y, axis.Z), TransformMath.DegToRad(_settings.RotationStep));
 
         // Edge mode: rotate the selected edges about the selection pivot (per-brush local frame).
         if (BrushEd.Mode == EditMode.Edge && BrushEd.SelectedEdges.Count > 0)
@@ -627,15 +660,17 @@ public sealed partial class MainWindow
             return;
         }
 
-        if (BrushEd.SelectedBrushes.Count == 0)
+        // G defense-in-depth: exclude locked brushes from the rotate set.
+        var uids = BrushEd.SelectedBrushes.Where(u => !BrushEd.IsBrushLocked(u)).ToList();
+        if (uids.Count == 0)
         {
             return;
         }
 
-        var uids = SelectedBrushUids();
         var brushes = uids.Select(u => BrushEd.FindBrush(u)!).Where(b => b is not null).ToList();
         CoreVec3 pivot = BrushTransform.SelectionPivot(brushes);
         BrushEd.EditBrushes(uids, "Rotate", b => { BrushTransform.RotateAboutPivot(b, rot, pivot); return OpResult.Ok(); });
+        _prefabInstances?.ApplyRigidTransform(uids, rot, CoreVec3.Zero, pivot);
         AfterBrushEdit();
     }
 

@@ -10,10 +10,19 @@ namespace Ged.Core.Prefabs;
 /// </summary>
 public sealed class PrefabManifest
 {
-    /// <summary>The current writer format version.</summary>
-    public const int CurrentVersion = 1;
+    /// <summary>The current writer format version (v2 introduced the fixed pivot-based payload).</summary>
+    public const int CurrentVersion = 2;
 
     public int FormatVersion { get; set; } = CurrentVersion;
+
+    /// <summary>
+    /// True when the <c>payload.rfg</c> is stored in FIXED prefab-local space — its local origin IS
+    /// the prefab pivot — so placement and propagation pose it at each instance's pose record without
+    /// deriving a pivot from content (which would shift existing members when the content's bounds
+    /// change). Legacy v1 packages have this false; the editor establishes their pivot once (bbox
+    /// centre) on load and treats it as fixed thereafter.
+    /// </summary>
+    public bool PivotBased { get; set; }
 
     public string Name { get; set; } = string.Empty;
 

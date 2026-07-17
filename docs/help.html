@@ -250,10 +250,11 @@
         per-type and per-item show/hide, Jump To and View From. Sorted by name.</p></div>
         <div class="tile"><h4>Properties</h4><p>Context inspector for the current selection — brushes,
         faces, objects, events, lights, room effects, movers and more.</p></div>
-        <div class="tile"><h4>Textures</h4><p>The texture browser: categories, filters, current
-        texture, favourites, tiled preview and per-category assignment.</p></div>
+        <div class="tile"><h4>Asset Browser</h4><p>Textures, meshes, sounds and prefabs: categories,
+        filters, favourites, a large preview on hover, and drag any mesh or prefab straight into a
+        viewport pane to place it where you drop it.</p></div>
         <div class="tile"><h4>Object palette</h4><p>Entities, clutter, items and event types,
-        organised into category trees with hover mesh previews.</p></div>
+        organised into category trees with hover mesh previews; drag a class into a pane to place it.</p></div>
         <div class="tile"><h4>Link graph</h4><p>An interactive node-graph editor of triggers, events,
         movers and their links — draggable, box-selectable, pan/zoom navigable.</p></div>
         <div class="tile"><h4>Dependency graph</h4><p>What references what: textures, meshes and
@@ -358,10 +359,14 @@
       <h2>6. Prefabs, groups &amp; layers</h2>
       <h3>Prefabs</h3>
       <p>A prefab is a reusable, <strong>parametric instance</strong>: save a selection of brushes
-      and objects as a prefab, then place instances of it. Instances remember their source, so when
-      you update the prefab you can <strong>propagate</strong> the change to every placed instance
-      (with a prompt before overwriting instances you have modified locally). Prefabs live in your
-      prefab library, browsable with thumbnails.</p>
+      and objects as a prefab, then place instances of it. <strong>Double-click</strong> a prefab tile
+      (or drag it into a pane) to drop an instance in front of the camera, just like placing a mesh.
+      Instances remember their source and their placement, so when you update the prefab you can
+      <strong>propagate</strong> the change to every placed instance while keeping each one at the
+      position and rotation you gave it. <strong>Update from Selection</strong> targets the prefab the
+      selected objects belong to (or lets you pick one from a list) — no typing — with a prompt before
+      overwriting instances you have modified locally. Prefabs live in your prefab library, browsable
+      with thumbnails and a large hover preview.</p>
       <h3>Groups</h3>
       <p>Groups bind brushes and objects into a named unit you can select and move together, import
       and export as <code>.rfg</code> files, and drag-drop into the viewport.</p>

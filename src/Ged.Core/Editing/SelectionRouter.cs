@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Ged.Core.Editor;
 
 namespace Ged.Core.Editing;
@@ -44,6 +45,21 @@ public sealed class SelectionRouter
     /// <summary>Raised (with the dropped kind) when a selection was rejected by the mode/chip gate.</summary>
     public event Action<SelectKinds>? Dropped;
 
+    /// <summary>
+    /// Raised when a single-target selection was refused SOLELY because the hit resolves to a
+    /// locked item (brush/object). The shell shows a "Locked — unlock to select." Hint. Batch
+    /// paths (marquee, invert, select-all, group/unit) silently skip locked items instead.
+    /// </summary>
+    public event Action? LockBlocked;
+
+    private void RaiseLockBlocked() => LockBlocked?.Invoke();
+
+    /// <summary>True when a level object is locked (session lock; unselectable/untransformable).</summary>
+    private bool IsObjectLocked(LevelObject o) => _doc()?.IsLocked(o) == true;
+
+    /// <summary>True when a brush is locked (<see cref="BrushState.Locked"/>).</summary>
+    private bool IsBrushLocked(int uid) => _brushes()?.IsBrushLocked(uid) == true;
+
     /// <summary>The kinds a selection may currently target (mode default + any Ctrl+chip additions).</summary>
     public SelectKinds Active => _active();
 
@@ -75,6 +91,15 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Objects);
         }
 
+        // G: a locked object is unselectable. A click resolving ONLY to a locked hit selects
+        // nothing and hints (the GPU id-buffer exposes just the topmost hit, so there is no
+        // cheap fall-through to the next unlocked item — select nothing, per the brief).
+        if (IsObjectLocked(o))
+        {
+            RaiseLockBlocked();
+            return false;
+        }
+
         _doc()?.Select(o, additive);
         return true;
     }
@@ -86,7 +111,8 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Objects);
         }
 
-        _doc()?.SelectMany(objects, additive);
+        // Batch path (group select, Outliner group): silently skip locked members.
+        _doc()?.SelectMany(objects.Where(o => !IsObjectLocked(o)), additive);
         return true;
     }
 
@@ -95,6 +121,12 @@ public sealed class SelectionRouter
         if (!Permits(SelectKinds.Objects))
         {
             return Reject(SelectKinds.Objects);
+        }
+
+        if (IsObjectLocked(o))
+        {
+            RaiseLockBlocked();
+            return false;
         }
 
         _doc()?.ToggleSelection(o);
@@ -108,7 +140,11 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Objects);
         }
 
-        _doc()?.SelectAll();
+        if (_doc() is { } doc)
+        {
+            doc.SelectMany(doc.Objects.Where(o => !IsObjectLocked(o)));
+        }
+
         return true;
     }
 
@@ -119,7 +155,11 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Objects);
         }
 
-        _doc()?.SelectAllOfKind(kind);
+        if (_doc() is { } doc)
+        {
+            doc.SelectMany(doc.Objects.Where(o => o.Kind == kind && !IsObjectLocked(o)));
+        }
+
         return true;
     }
 
@@ -130,7 +170,15 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Objects);
         }
 
-        _doc()?.InvertSelection();
+        // Stock I, lock-aware: the new selection is every currently-unselected, unlocked object.
+        // Materialize BEFORE SelectMany, which clears the selection before enumerating (so a lazy
+        // IsSelected filter would otherwise see an already-cleared selection and match everything).
+        if (_doc() is { } doc)
+        {
+            var inverted = doc.Objects.Where(o => !doc.IsSelected(o) && !IsObjectLocked(o)).ToList();
+            doc.SelectMany(inverted);
+        }
+
         return true;
     }
 
@@ -139,6 +187,12 @@ public sealed class SelectionRouter
         if (!Permits(SelectKinds.Objects))
         {
             Reject(SelectKinds.Objects);
+            return null;
+        }
+
+        if (_doc()?.FindByUid(uid) is { } o && IsObjectLocked(o))
+        {
+            RaiseLockBlocked();
             return null;
         }
 
@@ -154,6 +208,12 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Brushes);
         }
 
+        if (IsBrushLocked(uid))
+        {
+            RaiseLockBlocked();
+            return false;
+        }
+
         _brushes()?.SelectBrush(uid, additive);
         return true;
     }
@@ -163,6 +223,12 @@ public sealed class SelectionRouter
         if (!Permits(SelectKinds.Brushes))
         {
             return Reject(SelectKinds.Brushes);
+        }
+
+        if (IsBrushLocked(uid))
+        {
+            RaiseLockBlocked();
+            return false;
         }
 
         _brushes()?.ToggleBrush(uid);
@@ -176,6 +242,13 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Faces);
         }
 
+        // Sub-geometry of a locked brush is off-limits too (defense: no editing a locked brush).
+        if (IsBrushLocked(brush))
+        {
+            RaiseLockBlocked();
+            return false;
+        }
+
         _brushes()?.SelectFace(brush, face, additive);
         return true;
     }
@@ -185,6 +258,12 @@ public sealed class SelectionRouter
         if (!Permits(SelectKinds.Faces))
         {
             return Reject(SelectKinds.Faces);
+        }
+
+        if (IsBrushLocked(brush))
+        {
+            RaiseLockBlocked();
+            return false;
         }
 
         _brushes()?.ToggleFace(brush, face);
@@ -198,6 +277,12 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Vertices);
         }
 
+        if (IsBrushLocked(brush))
+        {
+            RaiseLockBlocked();
+            return false;
+        }
+
         _brushes()?.SelectVertex(brush, vertex, additive);
         return true;
     }
@@ -207,6 +292,12 @@ public sealed class SelectionRouter
         if (!Permits(SelectKinds.Vertices))
         {
             return Reject(SelectKinds.Vertices);
+        }
+
+        if (IsBrushLocked(brush))
+        {
+            RaiseLockBlocked();
+            return false;
         }
 
         _brushes()?.ToggleVertex(brush, vertex);
@@ -220,6 +311,12 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Edges);
         }
 
+        if (IsBrushLocked(brush))
+        {
+            RaiseLockBlocked();
+            return false;
+        }
+
         _brushes()?.SelectEdge(brush, v0, v1, additive);
         return true;
     }
@@ -229,6 +326,12 @@ public sealed class SelectionRouter
         if (!Permits(SelectKinds.Edges))
         {
             return Reject(SelectKinds.Edges);
+        }
+
+        if (IsBrushLocked(brush))
+        {
+            RaiseLockBlocked();
+            return false;
         }
 
         _brushes()?.ToggleEdge(brush, v0, v1);
@@ -242,8 +345,103 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Edges);
         }
 
+        if (IsBrushLocked(brush))
+        {
+            RaiseLockBlocked();
+            return false;
+        }
+
         _brushes()?.SelectEdges(brush, edges, additive);
         return true;
+    }
+
+    // ---- Prefab-instance UNIT selection (Feature F) ---------------------------
+
+    /// <summary>
+    /// Selects a whole prefab instance as a UNIT: every member brush AND object, in one shot.
+    /// This is the mixed-kind gate the brief calls for — modelled on GROUP selection, where one
+    /// chip (Groups) widens BOTH the object and brush gates so a group's members of either kind
+    /// select together. Here the unit is permitted whenever the active chips permit whole-object
+    /// OR whole-brush selection (both widen to include Groups). Sub-geometry modes (Face/Vertex/
+    /// Edge) permit neither, so a member click there is never escalated to a unit. G point 4: an
+    /// instance with ANY locked member is unselectable as a unit — refused with a lock hint.
+    /// </summary>
+    public bool SelectPrefabUnit(IReadOnlyCollection<int> memberUids)
+    {
+        if (!Permits(SelectKinds.Objects) && !Permits(SelectKinds.Brushes))
+        {
+            return Reject(SelectKinds.Objects);
+        }
+
+        // G point 4: an instance with ANY locked member is unselectable as a unit (all-or-nothing).
+        if (AnyMemberLocked(memberUids))
+        {
+            RaiseLockBlocked();
+            return false;
+        }
+
+        _doc()?.ClearSelection();
+        _brushes()?.ClearSelection();
+        AddPrefabMembers(memberUids);
+        return true;
+    }
+
+    /// <summary>
+    /// Additively selects a set of prefab-instance members (both kinds), skipping locked ones — the
+    /// marquee-time variant that folds several caught instances into one multi-selection. Same
+    /// group-like gate as <see cref="SelectPrefabUnit"/>.
+    /// </summary>
+    public bool AddPrefabUnitMembers(IReadOnlyCollection<int> memberUids)
+    {
+        if (!Permits(SelectKinds.Objects) && !Permits(SelectKinds.Brushes))
+        {
+            return Reject(SelectKinds.Objects);
+        }
+
+        AddPrefabMembers(memberUids);
+        return true;
+    }
+
+    private bool AnyMemberLocked(IReadOnlyCollection<int> memberUids)
+    {
+        EditorDocument? doc = _doc();
+        BrushEditor? be = _brushes();
+        foreach (int uid in memberUids)
+        {
+            if (be?.FindBrush(uid) is not null)
+            {
+                if (be.IsBrushLocked(uid))
+                {
+                    return true;
+                }
+            }
+            else if (doc?.FindByUid(uid) is { } o && doc.IsLocked(o))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void AddPrefabMembers(IReadOnlyCollection<int> memberUids)
+    {
+        EditorDocument? doc = _doc();
+        BrushEditor? be = _brushes();
+        foreach (int uid in memberUids)
+        {
+            if (be?.FindBrush(uid) is not null)
+            {
+                if (!be.IsBrushLocked(uid))
+                {
+                    be.SelectBrush(uid, additive: true);
+                }
+            }
+            else if (doc?.FindByUid(uid) is { } o && !doc.IsLocked(o))
+            {
+                doc.Select(o, additive: true);
+            }
+        }
     }
 
     // ---- Clears (always permitted: they never add a disallowed kind) ----------

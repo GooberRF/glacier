@@ -29,7 +29,7 @@ namespace Ged.App;
 /// </summary>
 public sealed partial class MainWindow
 {
-    private enum GizmoSelKind { None, Brush, SubGeometry, Object }
+    private enum GizmoSelKind { None, Brush, SubGeometry, Object, PrefabUnit }
 
     private bool _showGizmo = true;
     private bool _gizmoLocal;
@@ -161,6 +161,13 @@ public sealed partial class MainWindow
 
     private GizmoSelKind TransformableKind()
     {
+        // Feature F: a unit-selected prefab instance drives the gizmo as one rigid body, ahead of
+        // (and independent of) the per-mode brush/object selection its members also populate.
+        if (PrefabUnitActive)
+        {
+            return GizmoSelKind.PrefabUnit;
+        }
+
         if (BrushEd is { } be)
         {
             if (be.Mode == EditMode.Brush && be.SelectedBrushes.Count > 0)
@@ -195,6 +202,8 @@ public sealed partial class MainWindow
     private bool ToolAllowed(GizmoTool t) => TransformableKind() switch
     {
         GizmoSelKind.Brush => true,
+        // A prefab unit moves/rotates rigidly (no scale — a rigid body has no meaningful scale here).
+        GizmoSelKind.PrefabUnit => t != GizmoTool.Scale,
         GizmoSelKind.Object => t != GizmoTool.Scale,
         // Edge sub-geometry supports full Move/Rotate/Scale (about the selection pivot);
         // Vertex/Face sub-geometry stays Move-only.
@@ -238,6 +247,12 @@ public sealed partial class MainWindow
     private bool TrySelectionRotation(out Mat3 rot)
     {
         rot = Mat3.Identity;
+        if (PrefabUnitActive && _prefabUnit?.UnitRecord is { } unitRec)
+        {
+            rot = unitRec.PivotRotation;
+            return true;
+        }
+
         if (BrushEd is { Mode: EditMode.Brush } be && be.SelectedBrushes.Count == 1 &&
             be.FindBrush(be.SelectedBrushes.First()) is { } b)
         {
@@ -256,6 +271,11 @@ public sealed partial class MainWindow
 
     private CoreVec3 ComputeGizmoPivot()
     {
+        if (PrefabUnitActive && _prefabUnit?.UnitRecord is { } unitRec)
+        {
+            return unitRec.PivotPosition;
+        }
+
         if (BrushEd is { } be)
         {
             if (be.Mode == EditMode.Brush && be.SelectedBrushes.Count > 0)
@@ -530,9 +550,15 @@ public sealed partial class MainWindow
     {
         switch (TransformableKind())
         {
+            case GizmoSelKind.PrefabUnit:
+                _prefabUnit?.RigidTransformUnit(Mat3.Identity, delta, default);
+                AfterMutation();
+                break;
             case GizmoSelKind.Brush when BrushEd is { } be:
-                be.EditBrushesCoalesced(be.SelectedBrushes.ToList(), "Move (gizmo)",
+                var moveBrushes = TransformableBrushUids(be);
+                be.EditBrushesCoalesced(moveBrushes, "Move (gizmo)",
                     b => { BrushTransform.Move(b, delta); return OpResult.Ok(); }, null);
+                _prefabInstances?.ApplyRigidTransform(moveBrushes, Mat3.Identity, delta, default);
                 AfterBrushEdit();
                 break;
             case GizmoSelKind.SubGeometry:
@@ -540,15 +566,28 @@ public sealed partial class MainWindow
                 AfterBrushEdit();
                 break;
             case GizmoSelKind.Object when Document is { } doc:
-                foreach (LevelObject o in doc.Selection.ToList())
+                var movedObjects = TransformableObjects(doc);
+                var movedObjectUids = movedObjects.Select(o => o.Uid).ToList();
+                foreach (LevelObject o in movedObjects)
                 {
                     doc.EditValue(o.Section, "Move (gizmo)", o.Position, o.Position.Add(delta), v => o.Position = v);
                 }
 
+                _prefabInstances?.ApplyRigidTransform(movedObjectUids, Mat3.Identity, delta, default);
                 AfterMutation();
                 break;
         }
     }
+
+    // ---- G defense-in-depth: transform paths refuse locked members ------------
+
+    /// <summary>Selected brush UIDs excluding locked brushes (untransformable even if stale-selected).</summary>
+    private List<int> TransformableBrushUids(BrushEditor be) =>
+        be.SelectedBrushes.Where(u => !be.IsBrushLocked(u)).ToList();
+
+    /// <summary>Selected objects excluding locked ones (untransformable even if stale-selected).</summary>
+    private List<LevelObject> TransformableObjects(EditorDocument doc) =>
+        doc.Selection.Where(o => !doc.IsLocked(o)).ToList();
 
     private void GizmoMoveSubGeometry(CoreVec3 delta)
     {
@@ -673,6 +712,13 @@ public sealed partial class MainWindow
     private void ApplyGizmoRotation(Mat3 rot)
     {
         CoreVec3 pivot = _dragPivot;
+        if (TransformableKind() == GizmoSelKind.PrefabUnit)
+        {
+            _prefabUnit?.RigidTransformUnit(rot, CoreVec3.Zero, pivot);
+            AfterMutation();
+            return;
+        }
+
         if (TransformableKind() == GizmoSelKind.SubGeometry && BrushEd is { Mode: EditMode.Edge } beEdge)
         {
             GizmoTransformEdges(beEdge, "Rotate edges (gizmo)", (b, edges) =>
@@ -687,13 +733,17 @@ public sealed partial class MainWindow
         }
         else if (TransformableKind() == GizmoSelKind.Brush && BrushEd is { } be)
         {
-            be.EditBrushesCoalesced(be.SelectedBrushes.ToList(), "Rotate (gizmo)",
+            var rotBrushes = TransformableBrushUids(be);
+            be.EditBrushesCoalesced(rotBrushes, "Rotate (gizmo)",
                 b => { BrushTransform.RotateAboutPivot(b, rot, pivot); return OpResult.Ok(); }, null);
+            _prefabInstances?.ApplyRigidTransform(rotBrushes, rot, CoreVec3.Zero, pivot);
             AfterBrushEdit();
         }
         else if (TransformableKind() == GizmoSelKind.Object && Document is { } doc)
         {
-            foreach (LevelObject o in doc.Selection.ToList())
+            var rotatedObjects = TransformableObjects(doc);
+            var rotatedObjectUids = rotatedObjects.Select(o => o.Uid).ToList();
+            foreach (LevelObject o in rotatedObjects)
             {
                 CoreVec3 np = pivot.Add(rot.Transform(o.Position.Sub(pivot)));
                 doc.EditValue(o.Section, "Rotate (gizmo)", o.Position, np, v => o.Position = v);
@@ -704,6 +754,7 @@ public sealed partial class MainWindow
                 }
             }
 
+            _prefabInstances?.ApplyRigidTransform(rotatedObjectUids, rot, CoreVec3.Zero, pivot);
             AfterMutation();
         }
     }
@@ -874,6 +925,40 @@ public sealed partial class MainWindow
         }
 
         List<int> hits = MarqueeSelection.Select(rect, cands, active);
+
+        // Feature F: a member hit selects its WHOLE instance (unit semantics), except the instance
+        // currently entered for member editing, and except an instance with a locked member (G point
+        // 4: unselectable as a unit). Non-member hits stay plain.
+        var instanceIds = new List<int>();
+        var plainHits = new List<int>();
+        foreach (int id in hits)
+        {
+            if (_prefabUnit?.MemberInstance(id) is { } rec &&
+                _prefabUnit.EnteredInstanceId != rec.InstanceId &&
+                _prefabUnit.CanSelectAsUnit(rec.InstanceId))
+            {
+                if (!instanceIds.Contains(rec.InstanceId))
+                {
+                    instanceIds.Add(rec.InstanceId);
+                }
+            }
+            else
+            {
+                plainHits.Add(id);
+            }
+        }
+
+        // A single instance caught alone drives the unit gizmo; any mix falls back to multi-select.
+        if (!additive && instanceIds.Count == 1 && plainHits.Count == 0 &&
+            _prefabUnit?.SelectUnit(instanceIds[0]) == true)
+        {
+            UpdateGizmoState();
+            RefreshSelectionOverlay();
+            _dispatcher.ShowMessage($"Marquee selected prefab instance {instanceIds[0]} as a unit.");
+            return;
+        }
+
+        _prefabUnit?.Reset();
         if (!additive)
         {
             Document.ClearSelection();
@@ -881,21 +966,35 @@ public sealed partial class MainWindow
         }
 
         int n = 0;
-        foreach (int id in hits)
+        foreach (int id in plainHits)
         {
-            // Route every marquee hit through the SAME PickGate the click path uses, so box-
+            // Route every plain marquee hit through the SAME PickGate the click path uses, so box-
             // select can never drift from click-select (item 2).
             if (BrushEd is { } be2 && be2.FindBrush(id) is not null &&
                 Ged.App.Services.PickGate.AllowsBrushEditor(active, Ged.Rendering.Picking.PickKind.Brush))
             {
-                _session.Selection.SelectBrush(id, additive: true);
-                n++;
+                if (_session.Selection.SelectBrush(id, additive: true))
+                {
+                    n++;
+                }
             }
             else if (Document.FindByUid(id) is { } o &&
                 Ged.App.Services.PickGate.AllowsDocumentSelect(active, Ged.Rendering.Picking.PickKind.Object, o.Kind == LevelObjectKind.Mover))
             {
-                _session.Selection.SelectObject(o, additive: true);
-                n++;
+                if (_session.Selection.SelectObject(o, additive: true))
+                {
+                    n++;
+                }
+            }
+        }
+
+        // Expanded instance members select as whole units (both kinds, group-like gate, skip locked).
+        foreach (int iid in instanceIds)
+        {
+            if (_prefabInstances?.ById(iid) is { } rec)
+            {
+                _session.Selection.AddPrefabUnitMembers(rec.MemberUids);
+                n += rec.MemberUids.Count;
             }
         }
 

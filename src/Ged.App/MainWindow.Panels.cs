@@ -530,16 +530,17 @@ public sealed partial class MainWindow
         return b;
     }
 
+    /// <summary>
+    /// A horizontal button/control row that WRAPS to the next line at narrow panel widths instead
+    /// of overflowing the panel (the docked tool panels and the Asset Browser tabs are narrow). A
+    /// small per-child margin supplies the inter-item and inter-line spacing.
+    /// </summary>
     private static Control Row(params Control[] children)
     {
-        var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var p = new WrapPanel { Orientation = Orientation.Horizontal };
         foreach (Control c in children)
         {
-            if (c is Button btn)
-            {
-                btn.HorizontalAlignment = HorizontalAlignment.Stretch;
-            }
-
+            c.Margin = new Avalonia.Thickness(0, 0, 4, 4);
             p.Children.Add(c);
         }
 

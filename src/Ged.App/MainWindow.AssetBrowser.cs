@@ -48,6 +48,9 @@ public sealed partial class MainWindow
 
     private readonly ThumbnailCache _meshThumbs = new(Path.Combine(ThumbnailCache.DefaultCacheDirectory(), "mesh"));
 
+    /// <summary>Shared large-preview popover for the Asset Browser tiles (item D).</summary>
+    private readonly Panels.AssetHoverPreview _assetPreview = new();
+
     private void InitAssetBrowser()
     {
         _dispatcher.Bind(CommandIds.ToolsReloadTextures, ReloadTextures);
@@ -63,7 +66,21 @@ public sealed partial class MainWindow
         tabs.Items.Add(new TabItem { Header = "Meshes", Content = BuildMeshesTab() });
         tabs.Items.Add(new TabItem { Header = "Sounds", Content = BuildSoundsTab() });
         tabs.Items.Add(new TabItem { Header = "Prefabs", Content = BuildPrefabsTab() });
-        return tabs;
+        tabs.SelectionChanged += (_, _) => _assetPreview.Cancel(); // no stale popover across tab switches
+
+        // Host the shared hover-preview popover in the panel tree (a Popup needs a visual parent to
+        // open); it takes no layout space.
+        var host = new Panel();
+        host.Children.Add(tabs);
+        host.Children.Add(_assetPreview.Popup);
+        return host;
+    }
+
+    /// <summary>Wires the large hover preview onto a tile: dwell-open, snap between tiles, close on leave.</summary>
+    private void WireHoverPreview(Control tile, Action<Image> render)
+    {
+        tile.PointerEntered += (_, _) => _assetPreview.Schedule(tile, render);
+        tile.PointerExited += (_, _) => _assetPreview.ScheduleClose();
     }
 
     // ---- Textures tab ---------------------------------------------------------
@@ -218,6 +235,7 @@ public sealed partial class MainWindow
         btn.Click += (_, _) => SelectAbTexture(name);
         btn.DoubleTapped += (_, _) => { SelectAbTexture(name); _texCurrent = name; ApplyCurrentTexture(); };
         LoadAbTextureThumb(img, name, size);
+        WireHoverPreview(btn, preview => LoadAbTextureThumb(preview, name, Panels.AssetHoverPreview.PreviewSize));
         return btn;
     }
 
@@ -392,6 +410,8 @@ public sealed partial class MainWindow
         btn.Click += (_, _) => ShowMeshInfo(name);
         btn.DoubleTapped += (_, _) => PlaceFromPalette(Ged.Core.Editor.LevelObjectKind.MeshObject, name);
         LoadMeshThumb(img, name);
+        WireHoverPreview(btn, preview => LoadMeshThumb(preview, name, Panels.AssetHoverPreview.PreviewSize));
+        WirePlaceableDrag(btn, PlaceableDrag.Mesh(name));
         return btn;
     }
 
@@ -422,7 +442,7 @@ public sealed partial class MainWindow
         }
     }
 
-    private void LoadMeshThumb(Image img, string name)
+    private void LoadMeshThumb(Image img, string name, int size = 96)
     {
         if (_session.Vfs is not { } vfs)
         {
@@ -431,13 +451,14 @@ public sealed partial class MainWindow
 
         // Render on the UI thread (shares the process D3D device with the viewport;
         // must not run concurrently on a background thread). Deferred + cached so it
-        // trickles in without freezing the grid.
+        // trickles in without freezing the grid. The thumbnail cache is size-keyed, so the
+        // large hover preview caches independently of the small tile thumbnail.
         Dispatcher.UIThread.Post(() =>
         {
             try
             {
                 GraphicsDevice? dev = TryGetDevice();
-                byte[] png = MeshThumbnailRenderer.GetOrRender(_meshThumbs, dev, vfs, name, name, "v1", size: 96);
+                byte[] png = MeshThumbnailRenderer.GetOrRender(_meshThumbs, dev, vfs, name, name, "v1", size);
                 using var ms = new MemoryStream(png);
                 img.Source = new Bitmap(ms);
             }

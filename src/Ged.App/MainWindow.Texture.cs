@@ -82,7 +82,7 @@ public sealed partial class MainWindow
         // On Face mode's Texture/UV tab, H/V flip the map (they otherwise hit the global
         // Hide binding); intercept them before dispatch on every viewport pane. On the
         // Geometry tab H stays Hide (geometry priority — item 0h).
-        _viewportGrid.ForEachSurface(s => s.KeyPreDispatch = TryTextureModeKey);
+        _viewportGrid.ForEachSurface(s => s.KeyPreDispatch = ViewportKeyPreDispatch);
 
         // Ctrl+P focuses the face-property editor on the Texture/UV tab; otherwise the
         // Properties panel (which now shows face properties too — item 0f).

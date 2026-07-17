@@ -79,6 +79,10 @@ public sealed class BrushEditor
 
     public Brush? FindBrush(int uid) => Brushes.FirstOrDefault(b => b.Uid == uid);
 
+    /// <summary>True when the brush is locked (<see cref="BrushState.Locked"/>) — unselectable
+    /// and untransformable until unlocked. Unknown UIDs read as unlocked.</summary>
+    public bool IsBrushLocked(int uid) => FindBrush(uid)?.State == BrushState.Locked;
+
     /// <summary>The time index (build order) of a brush, or -1.</summary>
     public int TimeIndex(int uid)
     {
@@ -644,6 +648,22 @@ public sealed class BrushEditor
         _doc.Undo.Execute(new RelayCommand(locked ? "Lock brushes" : "Unlock brushes",
             () => { foreach (var (b, _) in changes) { b.State = target; } host.Dirty = true; VisibilityChanged?.Invoke(); },
             () => { foreach (var (b, old) in changes) { b.State = old; } host.Dirty = true; VisibilityChanged?.Invoke(); }));
+
+        // A locked item must not stay selected (G: coherent state). Selection is transient
+        // (never part of undo here), so drop the now-locked brushes/sub-geometry outside the
+        // undo command, mirroring the session-only object lock.
+        if (locked)
+        {
+            var lockedSet = new HashSet<int>(changes.Select(c => c.Brush.Uid));
+            bool removed = _selectedBrushes.RemoveWhere(lockedSet.Contains) > 0;
+            removed |= _selectedFaces.RemoveWhere(f => lockedSet.Contains(f.Brush)) > 0;
+            removed |= _selectedVertices.RemoveWhere(v => lockedSet.Contains(v.Brush)) > 0;
+            removed |= _selectedEdges.RemoveWhere(e => lockedSet.Contains(e.Brush)) > 0;
+            if (removed)
+            {
+                SelectionChanged?.Invoke();
+            }
+        }
     }
 
     // ---- Brush hide (session-only view state; not persisted, like object lock) ----

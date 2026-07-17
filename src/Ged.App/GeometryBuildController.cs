@@ -238,6 +238,30 @@ public sealed class GeometryBuildController
         LightingDirty = true;
     }
 
+    /// <summary>
+    /// Invalidates compiled geometry after a STRUCTURAL brush mutation that bypassed
+    /// <see cref="BrushEditor"/> — prefab placement / propagation deletes and re-imports member
+    /// brushes directly, so <c>BrushesChanged</c> never fired. Mirrors the
+    /// <see cref="OnBrushesChanged"/> structural (unknown-UIDs) path: marks geometry + lighting
+    /// dirty, clears hole locations, drops the merged-brush stash wholesale (fragment↔face identity
+    /// no longer holds), and kicks the debounced live-CSG preview on small levels.
+    /// </summary>
+    public void InvalidateBrushGeometry()
+    {
+        GeometryDirty = true;
+        LightingDirty = true;
+        HoleLocations = Array.Empty<Vec3>();
+        _session.BrushFaceSurvival = null;
+        _session.BrushFragments = null;
+        _session.StaleFragmentBrushUids.Clear();
+        StateChanged?.Invoke();
+        if (LivePreviewEnabled && BrushCount() > 0 && BrushCount() <= LivePreviewBrushLimit)
+        {
+            _previewTimer.Stop();
+            _previewTimer.Start();
+        }
+    }
+
     private void OnBrushesChanged()
     {
         GeometryDirty = true;
