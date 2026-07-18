@@ -26,4 +26,10 @@ public sealed class HelpReferenceTests
     {
         Assert.Equal("https://discord.gg/factionfiles", HelpReference.DiscordUrl);
     }
+
+    [Fact]
+    public void Issues_Url_Points_At_The_Glacier_Issue_Tracker()
+    {
+        Assert.Equal("https://github.com/GooberRF/glacier/issues", HelpReference.IssuesUrl);
+    }
 }

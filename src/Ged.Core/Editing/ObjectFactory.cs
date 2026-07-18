@@ -84,29 +84,29 @@ public static class ObjectFactory
     /// <summary>Builds a placement blueprint with representative, round-trip-safe field values.</summary>
     public static ObjectBlueprint Build(LevelObjectKind kind, int uid, Vec3 pos, string? className = null)
     {
-        return kind switch
+        ObjectBlueprint bp = kind switch
         {
             LevelObjectKind.Entity => Bp(kind, SectionType.Entities, uid,
                 new Entity
                 {
-                    Uid = uid, ClassName = className ?? "Guard", Position = pos, Rotation = Ident,
-                    ScriptName = "ent_script", Life = 100f, Armor = 50f, Fov = 90, TeamId = 0,
+                    Uid = uid, ClassName = ClassScript(className, "Guard"), Position = pos, Rotation = Ident,
+                    Life = 100f, Armor = 50f, Fov = 90, TeamId = 0,
                     DefaultPrimaryWeapon = "rail_gun", AiMode = 0, AiAttackStyle = 0,
                 },
                 () => new EntitiesSection(), c => ((EntitiesSection)c).Entities),
 
             LevelObjectKind.Item => Bp(kind, SectionType.Items, uid,
-                new Item { Header = Head(uid, className ?? "First_Aid", pos), Count = 1, RespawnTime = 20, TeamId = 0 },
+                new Item { Header = Head(uid, ClassScript(className, "First_Aid"), pos), Count = 1, RespawnTime = 20, TeamId = 0 },
                 () => new ItemsSection(), c => ((ItemsSection)c).Items),
 
             LevelObjectKind.Clutter => Bp(kind, SectionType.Clutters, uid,
-                new Clutter { Header = Head(uid, className ?? "officebookcase", pos), Skin = string.Empty },
+                new Clutter { Header = Head(uid, ClassScript(className, "officebookcase"), pos), Skin = string.Empty },
                 () => new CluttersSection(), c => ((CluttersSection)c).Clutters),
 
             LevelObjectKind.Light => Bp(kind, SectionType.Lights, uid,
                 new Light
                 {
-                    Uid = uid, ClassName = "Light", Position = pos, Rotation = Ident, ScriptName = "light_script",
+                    Uid = uid, ClassName = "Light", Position = pos, Rotation = Ident,
                     Flags = 0x1, Color = new RfColor(255, 240, 200, 255), Range = 10f, IntensityAtMaxRange = 1f,
                     OnIntensity = 1f, OnTime = 1f, OffTime = 1f,
                 },
@@ -115,7 +115,7 @@ public static class ObjectFactory
             LevelObjectKind.Trigger => Bp(kind, SectionType.Triggers, uid,
                 new Trigger
                 {
-                    Uid = uid, Position = pos, ScriptName = "trig_script", Shape = Trigger.ShapeSphere, SphereRadius = 3f,
+                    Uid = uid, Position = pos, Shape = Trigger.ShapeSphere, SphereRadius = 3f,
                     ResetsAfter = 0f, ResetsTimes = -1, ActivatedBy = 0, Team = -1,
                 },
                 () => new TriggersSection(), c => ((TriggersSection)c).Triggers),
@@ -131,7 +131,7 @@ public static class ObjectFactory
             LevelObjectKind.MpRespawnPoint => Bp(kind, SectionType.MpRespawnPoints, uid,
                 new MpRespawnPoint
                 {
-                    Uid = uid, Position = pos, Rotation = Ident, ScriptName = string.Empty, Team = 0,
+                    Uid = uid, Position = pos, Rotation = Ident, Team = 0,
                     RedTeam = 1, BlueTeam = 1, Bot = 0,
                 },
                 () => new MpRespawnPointsSection(), c => ((MpRespawnPointsSection)c).Points),
@@ -223,7 +223,6 @@ public static class ObjectFactory
                     Header = new ObjectHeader
                     {
                         Uid = uid, ClassName = "Room Effect", Position = pos, Rotation = Ident,
-                        ScriptName = "Room Effect",
                     },
                 },
                 () => new RoomEffectsSection(), c => ((RoomEffectsSection)c).Effects),
@@ -231,7 +230,7 @@ public static class ObjectFactory
             LevelObjectKind.MeshObject => Bp(kind, SectionType.AlpineMeshObjects, uid,
                 new AlpineMeshObject
                 {
-                    Uid = uid, Position = pos, Orientation = Ident, ScriptName = "mesh_script",
+                    Uid = uid, Position = pos, Orientation = Ident,
                     MeshFilename = className ?? "mymesh.v3m", StateAnim = string.Empty, CollisionMode = 2,
                     Material = 0, IsClutter = 0,
                 },
@@ -240,7 +239,7 @@ public static class ObjectFactory
             LevelObjectKind.NoteObject => Bp(kind, SectionType.AlpineNoteObjects, uid,
                 new AlpineNoteObject
                 {
-                    Uid = uid, Position = pos, Orientation = Ident, ScriptName = "note_script",
+                    Uid = uid, Position = pos, Orientation = Ident,
                     Notes = new List<string> { "A designer note." },
                 },
                 () => new AlpineNoteObjectsSection(), c => ((AlpineNoteObjectsSection)c).Notes),
@@ -248,7 +247,7 @@ public static class ObjectFactory
             LevelObjectKind.CoronaObject => Bp(kind, SectionType.AlpineCoronaObjects, uid,
                 new AlpineCoronaObject
                 {
-                    Uid = uid, Position = pos, Orientation = Ident, ScriptName = "corona_script",
+                    Uid = uid, Position = pos, Orientation = Ident,
                     ColorR = 255, ColorG = 220, ColorB = 160, ColorA = 255, CoronaBitmap = "glow1.tga",
                     ConeAngle = 45f, Intensity = 1f, RadiusDistance = 20f, RadiusScale = 1f, DiminishDistance = 40f,
                     VolumetricBitmap = string.Empty,
@@ -261,12 +260,70 @@ public static class ObjectFactory
 
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Not a placeable object kind (movers/keyframes/player start are handled elsewhere)."),
         };
+
+        ApplyDefaultScriptName(bp.Model, kind);
+        return bp;
     }
 
     private static ObjectHeader Head(int uid, string className, Vec3 pos) => new()
     {
         Uid = uid, ClassName = className, Position = pos, Rotation = Ident, ScriptName = string.Empty,
     };
+
+    /// <summary>The resolved class name for a class-based object (the given name, or the fallback).</summary>
+    private static string ClassScript(string? className, string fallback) =>
+        string.IsNullOrEmpty(className) ? fallback : className;
+
+    /// <summary>
+    /// The shared script-name default (RED convention; always editable afterward), applied to EVERY
+    /// newly-built object: a class-based kind (entity / item / clutter) defaults to its class name; any
+    /// other kind defaults to the kind's canonical palette DISPLAY NAME (e.g. "Bolt Emitter", "Light").
+    /// No placeholders. A model with no script-name field is left untouched.
+    /// </summary>
+    private static void ApplyDefaultScriptName(object model, LevelObjectKind kind)
+    {
+        bool classBased = kind is LevelObjectKind.Entity or LevelObjectKind.Item or LevelObjectKind.Clutter;
+        SetScriptName(model, classBased ? ClassNameOf(model) : DisplayName(kind));
+    }
+
+    /// <summary>The kind's canonical human-readable name — exactly the palette / Outliner display name.</summary>
+    private static string DisplayName(LevelObjectKind kind)
+    {
+        foreach (PlaceableObjectType t in Palette)
+        {
+            if (t.Kind == kind)
+            {
+                return t.DisplayName;
+            }
+        }
+
+        return kind.ToString();
+    }
+
+    private static string ClassNameOf(object model)
+    {
+        if (model.GetType().GetProperty("ClassName")?.GetValue(model) is string s)
+        {
+            return s;
+        }
+
+        return model.GetType().GetProperty("Header")?.GetValue(model) is ObjectHeader h ? h.ClassName : string.Empty;
+    }
+
+    private static void SetScriptName(object model, string script)
+    {
+        System.Reflection.PropertyInfo? p = model.GetType().GetProperty("ScriptName");
+        if (p is { CanWrite: true } && p.PropertyType == typeof(string))
+        {
+            p.SetValue(model, script);
+            return;
+        }
+
+        if (model.GetType().GetProperty("Header")?.GetValue(model) is ObjectHeader h)
+        {
+            h.ScriptName = script;
+        }
+    }
 
     private static ObjectBlueprint Bp(
         LevelObjectKind kind, SectionType section, int uid, object model,

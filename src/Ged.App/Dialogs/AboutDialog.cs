@@ -48,6 +48,21 @@ internal sealed class AboutDialog : Window
             licensesButton.Content = show ? "Hide licenses" : "Third-party licenses";
         };
 
+        var reportBug = new Button { Content = "Report Bug", MinWidth = 100 };
+        reportBug.Click += (_, _) =>
+        {
+            // Reuse the app's shared OS-shell launcher (the same one MainWindow's Discord link
+            // uses). Best-effort — a failed launch must not crash the About box.
+            try
+            {
+                Services.HelpReference.OpenExternal(Services.HelpReference.IssuesUrl);
+            }
+            catch (Exception ex)
+            {
+                CrashHandler.LogNonFatal("about-report-bug", ex);
+            }
+        };
+
         var close = new Button { Content = "Close", IsDefault = true, IsCancel = true, MinWidth = 80 };
         close.Click += (_, _) => Close();
 
@@ -100,7 +115,7 @@ internal sealed class AboutDialog : Window
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Spacing = 8,
-            Children = { licensesButton, close },
+            Children = { reportBug, licensesButton, close },
         };
 
         var layout = new DockPanel { Margin = new Avalonia.Thickness(16) };

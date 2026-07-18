@@ -1066,32 +1066,47 @@ public sealed class EditorSession : IDisposable
     }
 
     /// <summary>
-    /// CPU-raycasts a world ray against the compiled static geometry and the editable brush faces,
-    /// returning the nearest front-facing hit's world point + outward normal. Used by the
-    /// drag-out-into-viewport drop (item E) to place an asset on the surface under the cursor,
-    /// independently of the render backend (no GPU pick). Returns false when the ray misses
-    /// everything (the caller then falls back to the in-front-of-camera placement point).
+    /// The nearest front-facing CPU-raycast hit against the compiled static geometry / editable brush
+    /// faces. <see cref="BrushUid"/> / <see cref="FaceIndex"/> identify the hit EDITABLE brush face
+    /// (both −1 when the hit was compiled static geometry, which has no editable face — or no hit).
     /// </summary>
-    public bool TryRayFaceHit(Vector3 origin, Vector3 direction, out Vec3 point, out Vec3 normal)
+    public readonly record struct RayFaceHitResult(bool Hit, Vec3 Point, Vec3 Normal, int BrushUid, int FaceIndex);
+
+    /// <summary>
+    /// The PLACEMENT raycast — it traces WHAT THE USER SEES, not the raw brushwork:
+    /// <list type="number">
+    /// <item>when compiled static geometry exists in the document, it raycasts the COMPILED geometry
+    /// ONLY (raw authored brush faces are excluded entirely — with the live-CSG preview active a raw
+    /// unmerged brush face, or the carved-away region of one, could otherwise catch the ray where the
+    /// merged result has an opening, placing things against geometry the user cannot see);</item>
+    /// <item>only on a never-built level (no compiled geometry) does it fall back to the authored brush
+    /// faces (the visible brush overlay), skipping hidden brushes.</item>
+    /// </list>
+    /// Backend-independent (no GPU pick). The shared drop resolver uses it for BOTH the ghost and the
+    /// drop, so they stay identical; <paramref name="usedCompiled"/> reports which set resolved.
+    /// </summary>
+    public RayFaceHitResult RayPlacementHit(Vector3 origin, Vector3 direction, out bool usedCompiled)
     {
-        point = default;
-        normal = default;
+        usedCompiled = _staticGeometry is { Faces.Count: > 0 };
         var o = new Vec3(origin.X, origin.Y, origin.Z);
         var d = new Vec3(direction.X, direction.Y, direction.Z);
         if (d.LengthSquared() < 1e-12f)
         {
-            return false;
+            return default;
         }
 
         float bestT = float.MaxValue;
         bool hit = false;
         Vec3 bestPoint = default;
         Vec3 bestNormal = default;
+        int bestUid = -1;
+        int bestFace = -1;
 
-        void Test(Geometry g, Func<Vec3, Vec3> toWorld, Func<Vec3, Vec3> normalToWorld)
+        void Test(Geometry g, int brushUid, Func<Vec3, Vec3> toWorld, Func<Vec3, Vec3> normalToWorld)
         {
-            foreach (Face f in g.Faces)
+            for (int fi = 0; fi < g.Faces.Count; fi++)
             {
+                Face f = g.Faces[fi];
                 if (f.Vertices.Count < 3)
                 {
                     continue;
@@ -1126,26 +1141,143 @@ public sealed class EditorSession : IDisposable
                 // Outward normal faces the ray origin (a decal/object sits on the visible side).
                 bestNormal = denom > 0 ? n.Scale(-1f) : n;
                 bestPoint = hitPoint;
+                bestUid = brushUid;
+                bestFace = brushUid >= 0 ? fi : -1;
                 hit = true;
             }
         }
 
         if (_staticGeometry is { Faces.Count: > 0 } sg)
         {
-            Test(sg, v => v, nrm => nrm);
+            Test(sg, -1, v => v, nrm => nrm); // (1) compiled ONLY — what the user sees
         }
-
-        if (BrushEditor is { } be)
+        else if (BrushEditor is { } be)
         {
-            foreach (Brush b in be.Brushes)
+            foreach (Brush b in be.Brushes) // (2) never-built fallback: visible authored brush faces
             {
-                Test(b.Geometry, v => b.Position.Add(b.Rotation.Transform(v)), nrm => b.Rotation.Transform(nrm));
+                if (!be.IsBrushHidden(b.Uid))
+                {
+                    Test(b.Geometry, b.Uid, v => b.Position.Add(b.Rotation.Transform(v)), nrm => b.Rotation.Transform(nrm));
+                }
             }
         }
 
-        point = bestPoint;
-        normal = bestNormal;
-        return hit;
+        return new RayFaceHitResult(hit, bestPoint, bestNormal, bestUid, bestFace);
+    }
+
+    /// <summary>The world-space outline of a brush face (its edges), for the drag-over highlight overlay.</summary>
+    public IReadOnlyList<LineSegment> BuildBrushFaceOutline(int brushUid, int faceIndex, uint color)
+    {
+        var lines = new List<LineSegment>();
+        if (BrushEditor?.FindBrush(brushUid) is { } b && faceIndex >= 0 && faceIndex < b.Geometry.Faces.Count)
+        {
+            AddFaceOutline(lines, b, b.Geometry.Faces[faceIndex], color);
+        }
+
+        return lines;
+    }
+
+    /// <summary>The result of a brush-face-only raycast (texture drag). See <see cref="RayBrushFaceHit"/>.</summary>
+    public readonly record struct BrushFaceHit(bool Hit, Vec3 Point, Vec3 Normal, int BrushUid, int FaceIndex, bool BlockedByLock);
+
+    /// <summary>
+    /// CPU-raycasts a world ray against the AUTHORED, editable brush faces ONLY (never compiled static
+    /// geometry — which is coplanar with brush output and would otherwise win the tie), returning the
+    /// nearest UNLOCKED, non-hidden brush face — the texture-drag target. Locked brushes are skipped;
+    /// when the nearest face(s) under the ray are all locked (no unlocked candidate) the result carries
+    /// <see cref="BrushFaceHit.BlockedByLock"/> with that locked face's id, so the caller can show the
+    /// standard locked hint / a blocked highlight. Hidden brushes are ignored entirely.
+    /// </summary>
+    public BrushFaceHit RayBrushFaceHit(Vector3 origin, Vector3 direction)
+    {
+        var o = new Vec3(origin.X, origin.Y, origin.Z);
+        var d = new Vec3(direction.X, direction.Y, direction.Z);
+        if (d.LengthSquared() < 1e-12f || BrushEditor is not { } be)
+        {
+            return default;
+        }
+
+        float bestT = float.MaxValue;
+        float lockedT = float.MaxValue;
+        bool hit = false, sawLocked = false;
+        Vec3 bestPoint = default, bestNormal = default, lockedPoint = default, lockedNormal = default;
+        int bestUid = -1, bestFace = -1, lockedUid = -1, lockedFace = -1;
+
+        foreach (Brush b in be.Brushes)
+        {
+            if (be.IsBrushHidden(b.Uid))
+            {
+                continue;
+            }
+
+            bool locked = be.IsBrushLocked(b.Uid);
+            Geometry g = b.Geometry;
+            for (int fi = 0; fi < g.Faces.Count; fi++)
+            {
+                Face f = g.Faces[fi];
+                if (f.Vertices.Count < 3)
+                {
+                    continue;
+                }
+
+                Vec3 n = b.Rotation.Transform(f.Plane.Normal).Normalized();
+                if (n.LengthSquared() < 1e-8f)
+                {
+                    continue;
+                }
+
+                float denom = n.Dot(d);
+                if (MathF.Abs(denom) < 1e-7f)
+                {
+                    continue;
+                }
+
+                Vec3 p0 = b.Position.Add(b.Rotation.Transform(VertexAt(g, f.Vertices[0].Index)));
+                float t = n.Dot(p0.Sub(o)) / denom;
+                if (t <= 1e-4f)
+                {
+                    continue;
+                }
+
+                Vec3 hitPoint = o.Add(d.Scale(t));
+                if (!PointInFace(g, f, v => b.Position.Add(b.Rotation.Transform(v)), n, hitPoint))
+                {
+                    continue;
+                }
+
+                Vec3 outward = denom > 0 ? n.Scale(-1f) : n;
+                if (locked)
+                {
+                    if (t < lockedT)
+                    {
+                        lockedT = t;
+                        lockedPoint = hitPoint;
+                        lockedNormal = outward;
+                        lockedUid = b.Uid;
+                        lockedFace = fi;
+                        sawLocked = true;
+                    }
+                }
+                else if (t < bestT)
+                {
+                    bestT = t;
+                    bestPoint = hitPoint;
+                    bestNormal = outward;
+                    bestUid = b.Uid;
+                    bestFace = fi;
+                    hit = true;
+                }
+            }
+        }
+
+        if (hit)
+        {
+            return new BrushFaceHit(true, bestPoint, bestNormal, bestUid, bestFace, false);
+        }
+
+        return sawLocked
+            ? new BrushFaceHit(false, lockedPoint, lockedNormal, lockedUid, lockedFace, true)
+            : default;
     }
 
     /// <summary>Even-odd point-in-polygon test for a face, projected onto its normal's minor plane.</summary>

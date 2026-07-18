@@ -80,7 +80,7 @@ public sealed partial class MainWindow
     private void WireHoverPreview(Control tile, Action<Image> render)
     {
         tile.PointerEntered += (_, _) => _assetPreview.Schedule(tile, render);
-        tile.PointerExited += (_, _) => _assetPreview.ScheduleClose();
+        tile.PointerExited += (_, _) => _assetPreview.ScheduleClose(tile);
     }
 
     // ---- Textures tab ---------------------------------------------------------
@@ -236,6 +236,7 @@ public sealed partial class MainWindow
         btn.DoubleTapped += (_, _) => { SelectAbTexture(name); _texCurrent = name; ApplyCurrentTexture(); };
         LoadAbTextureThumb(img, name, size);
         WireHoverPreview(btn, preview => LoadAbTextureThumb(preview, name, Panels.AssetHoverPreview.PreviewSize));
+        WirePlaceableDrag(btn, PlaceableDrag.Texture(name)); // drag onto a face to apply it (item 3)
         return btn;
     }
 

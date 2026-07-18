@@ -16,6 +16,9 @@ public static class HelpReference
     /// <summary>The community Discord invite opened from Help ▸ Join the Community Discord.</summary>
     public const string DiscordUrl = "https://discord.gg/factionfiles";
 
+    /// <summary>The issue tracker opened from the About box's "Report Bug" button.</summary>
+    public const string IssuesUrl = "https://github.com/GooberRF/glacier/issues";
+
     /// <summary>
     /// Locates <c>help.html</c>: beside the executable first (the shipped layout), then a
     /// dev-tree fallback to <c>docs/help.html</c> discovered by walking up from the base

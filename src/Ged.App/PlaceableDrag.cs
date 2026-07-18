@@ -14,6 +14,7 @@ internal enum PlaceableKind
     Mesh,
     Prefab,
     Class,
+    Texture,
 }
 
 /// <summary>
@@ -83,6 +84,9 @@ internal static class PlaceableDrag
     /// <summary>A catalog class / object kind (Palette): clutter, item, entity, or a kind with no class.</summary>
     public static string Class(LevelObjectKind kind, string? className) => $"class{Sep}{kind}{Sep}{className}";
 
+    /// <summary>A texture to apply to the dropped-on face (Asset Browser Textures tile).</summary>
+    public static string Texture(string textureName) => $"texture{Sep}{textureName}";
+
     /// <summary>Splits a descriptor into its fields (kind tag first).</summary>
     public static string[] Split(string descriptor) => descriptor.Split(Sep);
 
@@ -113,6 +117,10 @@ internal static class PlaceableDrag
                 kind = PlaceableKind.Class;
                 arg1 = p[1];
                 arg2 = string.IsNullOrEmpty(p[2]) ? null : p[2];
+                return true;
+            case "texture" when p.Length >= 2:
+                kind = PlaceableKind.Texture;
+                arg1 = p[1];
                 return true;
             default:
                 return false;

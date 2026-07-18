@@ -67,6 +67,14 @@ public sealed class PlaceableDragTests
     }
 
     [Fact]
+    public void Texture_Descriptor_Round_Trips()
+    {
+        Assert.True(PlaceableDrag.TryParse(PlaceableDrag.Texture("rck_brown01.tga"), out PlaceableKind k, out string arg, out _));
+        Assert.Equal(PlaceableKind.Texture, k);
+        Assert.Equal("rck_brown01.tga", arg);
+    }
+
+    [Fact]
     public void Unparsable_Descriptors_Are_Rejected()
     {
         Assert.False(PlaceableDrag.TryParse("garbage", out _, out _, out _));

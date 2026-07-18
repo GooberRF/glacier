@@ -28,6 +28,7 @@ using Ged.Core.Editor;
 using Ged.Core.Input;
 using Ged.Core.IO.Rfl;
 using Ged.Core.IO.Rfl.Sections;
+using Ged.Core.Prefabs;
 using Ged.Rendering;
 using Ged.Rendering.Picking;
 using AvDock = Avalonia.Controls.Dock;
@@ -243,7 +244,8 @@ public sealed partial class MainWindow : Window, IEditorHost
 
         AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
         AddHandler(DragDrop.DropEvent, OnDrop);
-        AddHandler(DragDrop.DragOverEvent, (_, e) => e.DragEffects = DragDropEffects.Copy);
+        AddHandler(DragDrop.DragOverEvent, OnDragOver);
+        AddHandler(DragDrop.DragLeaveEvent, (_, _) => EndDragGhost());
         DragDrop.SetAllowDrop(this, true);
 
         _autosaveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
@@ -2406,11 +2408,221 @@ public sealed partial class MainWindow : Window, IEditorHost
             onPress: () => _assetPreview.Cancel(),           // a press suppresses the hover popover
             onLog: msg => LogOperation("DragDrop", msg));
 
+    // Drag-over ghost state (built once per drag in local space + bounds, retranslated per move).
+    private GhostGeometry _dragGhost;
+    private string? _dragGhostKey;
+    private bool _dragOverlayActive;
+    private (int Uid, int Face) _dragOverlayFace = (-1, -1);
+
+    /// <summary>The resolved drop target: which pane (if any), the world point, and the hit brush face.</summary>
+    private readonly record struct DropTarget(bool OverPane, Ged.Core.Model.Vec3 Point, bool OnSurface, int BrushUid, int FaceIndex);
+
+    /// <summary>Which geometry set the last placement resolve traced (for the DragDrop log line).</summary>
+    private string _lastPlacementSet = "none";
+
+    /// <summary>
+    /// The SHARED placement resolver (used by both the live DragOver ghost and the final Drop): the
+    /// pane under the cursor → a ray through its pixel → <see cref="EditorSession.RayPlacementHit"/>,
+    /// which traces WHAT THE USER SEES — compiled geometry only when it exists, else the visible
+    /// authored brush faces. No hit over a pane falls back to the in-front-of-camera point; not over a
+    /// pane → OverPane false. Ghost and drop share this, so they never diverge.
+    /// </summary>
+    private DropTarget ResolveDrop(DragEventArgs e)
+    {
+        _lastPlacementSet = "none";
+        if (!TryResolveDropPane(e, out IViewportSurface surface, out int px, out int py))
+        {
+            return new DropTarget(false, PlacementPoint, false, -1, -1);
+        }
+
+        if (surface.PixelRay(px, py) is (Vector3 origin, Vector3 dir))
+        {
+            EditorSession.RayFaceHitResult hit = _session.RayPlacementHit(origin, dir, out bool usedCompiled);
+            _lastPlacementSet = usedCompiled ? "compiled" : "brush-fallback";
+            if (hit.Hit)
+            {
+                return new DropTarget(true, hit.Point, true, hit.BrushUid, hit.FaceIndex);
+            }
+        }
+
+        return new DropTarget(true, PlacementPoint, false, -1, -1);
+    }
+
+    /// <summary>
+    /// The TEXTURE-drag resolver (item 1): queries AUTHORED BRUSH FACES ONLY (never compiled static
+    /// geometry, which is coplanar and would win the tie), skipping hidden/locked brushes. Returns
+    /// whether the cursor is over a pane and the resolved brush-face hit (which flags a locked block).
+    /// </summary>
+    private (bool OverPane, EditorSession.BrushFaceHit Face) ResolveTextureFace(DragEventArgs e)
+    {
+        if (!TryResolveDropPane(e, out IViewportSurface surface, out int px, out int py))
+        {
+            return (false, default);
+        }
+
+        return surface.PixelRay(px, py) is (Vector3 origin, Vector3 dir)
+            ? (true, _session.RayBrushFaceHit(origin, dir))
+            : (true, default);
+    }
+
+    /// <summary>
+    /// Live DragOver: keeps the copy cursor, and while a placeable drag is over a pane shows either a
+    /// translucent placement GHOST at the would-be (bottom-aligned) drop point (mesh/prefab/class) or
+    /// the hit-face highlight (texture). Off-pane / non-placeable clears the overlay.
+    /// </summary>
+    private void OnDragOver(object? sender, DragEventArgs e)
+    {
+        e.DragEffects = DragDropEffects.Copy;
+        if (e.Data.Get(PlaceableDrag.Format) is not string descriptor ||
+            !PlaceableDrag.TryParse(descriptor, out PlaceableKind kind, out string arg1, out string? arg2))
+        {
+            EndDragGhost();
+            return;
+        }
+
+        if (kind == PlaceableKind.Texture)
+        {
+            (bool over, EditorSession.BrushFaceHit face) = ResolveTextureFace(e);
+            if (!over)
+            {
+                EndDragGhost();
+                return;
+            }
+
+            UpdateTextureDragHighlight(arg1, face);
+            return;
+        }
+
+        DropTarget target = ResolveDrop(e);
+        if (!target.OverPane)
+        {
+            EndDragGhost();
+            return;
+        }
+
+        UpdatePlacementGhost(descriptor, kind, arg1, arg2, target);
+    }
+
+    private void UpdatePlacementGhost(string descriptor, PlaceableKind kind, string arg1, string? arg2, DropTarget target)
+    {
+        GhostGeometry geo = EnsureDragGhost(descriptor, kind, arg1, arg2);
+        if (geo.Lines.Count == 0)
+        {
+            EndDragGhost();
+            return;
+        }
+
+        Vector3 offset = DragGhost.PlacementOffset(geo.Min, geo.Max, target.OnSurface, IsPickupDrop(kind, arg1, arg2));
+        var to = new Vector3(target.Point.X, target.Point.Y, target.Point.Z) + offset;
+        _viewportGrid.SetGizmoOverlay(DragGhost.Translate(geo.Lines, to).ToList());
+        _dragOverlayActive = true;
+    }
+
+    private void UpdateTextureDragHighlight(string texName, EditorSession.BrushFaceHit face)
+    {
+        _dragOverlayActive = true;
+        if (face.Hit)
+        {
+            if (_dragOverlayFace != (face.BrushUid, face.FaceIndex))
+            {
+                _dragOverlayFace = (face.BrushUid, face.FaceIndex);
+                _dispatcher.ShowMessage($"Apply texture '{texName}' to this face");
+            }
+
+            _viewportGrid.SetGizmoOverlay(_session.BuildBrushFaceOutline(face.BrushUid, face.FaceIndex, DragGhost.FaceTint).ToList());
+        }
+        else if (face.BlockedByLock)
+        {
+            if (_dragOverlayFace != (face.BrushUid, face.FaceIndex))
+            {
+                _dragOverlayFace = (face.BrushUid, face.FaceIndex);
+                _dispatcher.ShowMessage("Locked brush — unlock it to texture this face.");
+            }
+
+            _viewportGrid.SetGizmoOverlay(_session.BuildBrushFaceOutline(face.BrushUid, face.FaceIndex, DragGhost.BlockedTint).ToList());
+        }
+        else
+        {
+            _dragOverlayFace = (-1, -1);
+            _viewportGrid.SetGizmoOverlay(System.Array.Empty<Ged.Rendering.Scene.LineSegment>());
+        }
+    }
+
+    /// <summary>Builds (once per drag) and caches the drag ghost geometry + local bounds for a descriptor.</summary>
+    private GhostGeometry EnsureDragGhost(string descriptor, PlaceableKind kind, string arg1, string? arg2)
+    {
+        if (_dragGhostKey != descriptor)
+        {
+            _dragGhost = BuildDragGhost(kind, arg1, arg2);
+            _dragGhostKey = descriptor;
+        }
+
+        return _dragGhost;
+    }
+
+    private GhostGeometry BuildDragGhost(PlaceableKind kind, string arg1, string? arg2)
+    {
+        try
+        {
+            switch (kind)
+            {
+                case PlaceableKind.Mesh:
+                    return DragGhost.MeshWireframe(_session.Vfs?.LoadMesh(arg1), DragGhost.Tint);
+                case PlaceableKind.Prefab:
+                    return DragGhost.PrefabWireframe(BasedPayload(PrefabPackage.Load(arg1)), DragGhost.Tint);
+                case PlaceableKind.Class:
+                    if (Enum.TryParse(arg1, out LevelObjectKind objKind))
+                    {
+                        string? mesh = ResolveClassMesh(objKind, arg2 ?? string.Empty);
+                        Ged.Core.IO.Mesh.V3dFile? m = mesh is not null ? _session.Vfs?.LoadMesh(mesh) : null;
+                        return m is not null ? DragGhost.MeshWireframe(m, DragGhost.Tint) : DragGhost.UnitBox(DragGhost.Tint);
+                    }
+
+                    return DragGhost.UnitBox(DragGhost.Tint);
+                default:
+                    return DragGhost.UnitBox(DragGhost.Tint);
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashHandler.LogNonFatal("drag-ghost", ex);
+            return DragGhost.UnitBox(DragGhost.Tint);
+        }
+    }
+
+    /// <summary>True when the drop is a pickup item: an Item class not flagged <c>no_pickup</c> in items.tbl.</summary>
+    private bool IsPickupDrop(PlaceableKind kind, string arg1, string? arg2)
+    {
+        if (kind != PlaceableKind.Class || !Enum.TryParse(arg1, out LevelObjectKind objKind) || objKind != LevelObjectKind.Item)
+        {
+            return false;
+        }
+
+        // No discriminator → treat as a pickup (honest approximation for unknown / catalog-less classes).
+        return string.IsNullOrEmpty(arg2) || _session.Items?.Find(arg2) is not { } def
+            || !def.Flags.Any(f => string.Equals(f, "no_pickup", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Clears the drag ghost / face highlight and restores the real gizmo/selection overlay.</summary>
+    private void EndDragGhost()
+    {
+        if (!_dragOverlayActive && _dragGhostKey is null && _dragOverlayFace == (-1, -1))
+        {
+            return;
+        }
+
+        _dragOverlayActive = false;
+        _dragGhost = default;
+        _dragGhostKey = null;
+        _dragOverlayFace = (-1, -1);
+        RefreshSelectionOverlay();
+    }
+
     /// <summary>
     /// Places the dragged asset at the drop point: a ray through the pane pixel under the cursor is
-    /// cast at the geometry (<see cref="EditorSession.TryRayFaceHit"/>) and the asset lands on the hit
-    /// face; with no hit (or a drop outside any pane) it falls back to the in-front-of-camera
-    /// placement point. One undo transaction + a status message per drop.
+    /// cast at the geometry and the asset lands on the hit face; with no hit (or a drop outside any
+    /// pane) it falls back to the in-front-of-camera point. Texture drags apply to the hit face
+    /// (or the current face selection). One undo transaction + a status message per drop.
     /// </summary>
     private void HandlePlaceableDrop(string descriptor, DragEventArgs e)
     {
@@ -2418,31 +2630,49 @@ public sealed partial class MainWindow : Window, IEditorHost
         {
             LogOperation("DragDrop", "placed: none (no level open)");
             _dispatcher.ShowMessage("Open or create a level first.");
+            EndDragGhost();
             return;
         }
 
         if (!PlaceableDrag.TryParse(descriptor, out PlaceableKind kind, out string arg1, out string? arg2))
         {
             LogOperation("DragDrop", $"placed: none (unparsable descriptor '{descriptor}')");
+            EndDragGhost();
             return;
         }
 
-        (Ged.Core.Model.Vec3 point, bool onSurface) = ResolveDropPoint(e);
-        string where = onSurface ? "on the surface" : "in front of the camera";
+        if (kind == PlaceableKind.Texture)
+        {
+            (_, EditorSession.BrushFaceHit face) = ResolveTextureFace(e);
+            ApplyDroppedTexture(arg1, face);
+            EndDragGhost();
+            return;
+        }
+
+        // Placement (mesh / prefab / class): resolve the surface point, then align by the asset's bbox
+        // (bottom-align, or pickup 1 m raise) using the SAME offset the live ghost showed.
+        DropTarget target = ResolveDrop(e);
+        GhostGeometry geo = EnsureDragGhost(descriptor, kind, arg1, arg2);
+        Vector3 offset = DragGhost.PlacementOffset(geo.Min, geo.Max, target.OnSurface, IsPickupDrop(kind, arg1, arg2));
+        var at = new Ged.Core.Model.Vec3(target.Point.X + offset.X, target.Point.Y + offset.Y, target.Point.Z + offset.Z);
+        string where = target.OnSurface ? "on the surface" : "in front of the camera";
+        LogOperation("DragDrop", $"pane resolved: {(target.OverPane ? "yes" : "none")}; trace set: {_lastPlacementSet}; ray hit: " +
+            (target.OnSurface ? $"({target.Point.X:0.##},{target.Point.Y:0.##},{target.Point.Z:0.##})" : "none") +
+            $"; placed at ({at.X:0.##},{at.Y:0.##},{at.Z:0.##})");
 
         switch (kind)
         {
             case PlaceableKind.Prefab:
                 LogOperation("DragDrop", $"placed: prefab '{Path.GetFileNameWithoutExtension(arg1)}' {where}");
-                PlacePrefabAt(arg1, point, $"at the drop point ({where})");
+                PlacePrefabAt(arg1, at, $"at the drop point ({where})");
                 break;
             case PlaceableKind.Mesh:
-                PlaceDroppedObject(LevelObjectKind.MeshObject, arg1, point, where);
+                PlaceDroppedObject(LevelObjectKind.MeshObject, arg1, at, where);
                 break;
             case PlaceableKind.Class:
                 if (Enum.TryParse(arg1, out LevelObjectKind objKind))
                 {
-                    PlaceDroppedObject(objKind, arg2, point, where);
+                    PlaceDroppedObject(objKind, arg2, at, where);
                 }
                 else
                 {
@@ -2451,6 +2681,8 @@ public sealed partial class MainWindow : Window, IEditorHost
 
                 break;
         }
+
+        EndDragGhost();
     }
 
     private void PlaceDroppedObject(LevelObjectKind kind, string? className, Ged.Core.Model.Vec3 point, string where)
@@ -2475,29 +2707,52 @@ public sealed partial class MainWindow : Window, IEditorHost
     }
 
     /// <summary>
-    /// Resolves a top-level drop position to a world placement point: the pane under the cursor is
-    /// found and a ray through its pixel is cast at the geometry; the hit point (if any) is returned
-    /// with <c>onSurface = true</c>. With no geometry hit (a miss, or a drop outside any pane) the
-    /// in-front-of-camera placement point is used (the item-A convention).
+    /// Applies a dropped texture to the resolved AUTHORED brush face — to ALL currently-selected faces
+    /// when the hit face is part of that selection, else to just the hit face — in one undo step,
+    /// reusing the Texture mode apply operation. A locked-only hit is refused with the standard hint;
+    /// compiled static geometry is never a target (the query is brush-faces-only).
     /// </summary>
-    private (Ged.Core.Model.Vec3 Point, bool OnSurface) ResolveDropPoint(DragEventArgs e)
+    private void ApplyDroppedTexture(string texName, EditorSession.BrushFaceHit face)
     {
-        if (!TryResolveDropPane(e, out IViewportSurface surface, out int px, out int py))
+        if (face.BlockedByLock)
         {
-            LogOperation("DragDrop", "pane resolved: none — camera fallback");
-            return (PlacementPoint, false);
+            LogOperation("DragDrop", $"texture '{texName}': brush face uid={face.BrushUid} is LOCKED — refused");
+            _notifications.Notify(Services.NotificationSeverity.Hint, "Locked brush — unlock it to texture this face.");
+            return;
         }
 
-        LogOperation("DragDrop", $"pane resolved: {surface.ViewType} @ px ({px},{py})");
-        if (surface.PixelRay(px, py) is (Vector3 origin, Vector3 dir) &&
-            _session.TryRayFaceHit(origin, dir, out Ged.Core.Model.Vec3 hit, out _))
+        if (BrushEd is null || !face.Hit)
         {
-            LogOperation("DragDrop", $"ray hit: ({hit.X:0.##}, {hit.Y:0.##}, {hit.Z:0.##})");
-            return (hit, true);
+            LogOperation("DragDrop", $"texture '{texName}': no authored brush face under the drop");
+            _dispatcher.ShowMessage("Drop a texture onto a brush face to apply it.");
+            return;
         }
 
-        LogOperation("DragDrop", "ray hit: none — camera fallback");
-        return (PlacementPoint, false);
+        int uid = face.BrushUid, fi = face.FaceIndex;
+        bool hitSelected = BrushEd.SelectedFaces.Any(f => f.Brush == uid && f.Face == fi);
+        int applied;
+        if (hitSelected && BrushEd.SelectedFaces.Count > 0)
+        {
+            BrushEd.EditSelectedFaces($"Apply {texName}", (g, f) => g.Faces[f].Texture = GeometryUtil.EnsureTexture(g, texName));
+            applied = BrushEd.SelectedFaces.Count;
+        }
+        else
+        {
+            BrushEd.EditBrushes(new[] { uid }, $"Apply {texName}", b =>
+            {
+                if (fi >= 0 && fi < b.Geometry.Faces.Count)
+                {
+                    b.Geometry.Faces[fi].Texture = GeometryUtil.EnsureTexture(b.Geometry, texName);
+                }
+
+                return OpResult.Ok();
+            });
+            applied = 1;
+        }
+
+        AfterBrushEdit();
+        LogOperation("DragDrop", $"texture '{texName}': face uid={uid} fi={fi} — applied to {applied} face(s)");
+        _dispatcher.ShowMessage($"Applied texture '{texName}' to {applied} face(s).");
     }
 
     /// <summary>
