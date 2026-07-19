@@ -16,18 +16,31 @@
   <img src="docs/images/screenshot1.png" width="900" alt="Glacier editing a level">
 </p>
 
-**Glacier** — GED, short for **Glacier EDitor** — is a clean-room reimplementation of the Red Faction `.rfl` level editor, built in .NET 8 + Avalonia. It targets **stock-RED editor parity** and **Alpine Faction editor parity**, then layers **modern editing conveniences** on top of both — real gizmos, unlimited undo that survives save, live CSG preview, link graph, detailed layer view and object outliners, one-click packaging, prefabs, dependency explorer, and full Lua scripting workflow support.
+**Glacier** — GED, short for **Glacier EDitor** — is a modern Red Faction `.rfl` level editor, built in .NET 8 + Avalonia. It targets **stock-RED editor parity** and **Alpine Faction editor parity**, then layers **modern editing conveniences** on top of both — real gizmos, unlimited undo that survives save, live CSG preview, link graph, detailed layer view and object outliners, one-click packaging, prefabs, dependency explorer, and full Lua scripting workflow support.
 
 **Glacier** helps to make Red Faction level design accessible and approachable for those more familiar with modern design tools like Unity, Unreal Engine, or Blender; while also providing long awaited tools and workflow improvements for veteran level designers.
 
 ## Highlights
 
-- **Reads all RF1 RFLs** — opens every stock version (`0xB4`–`0xC8`) and every Alpine version (`300`–`305`) with a byte-preserving round-trip.
-- **RED-authentic geometry & lighting** — the full compile pipeline (time-ordered brush booleans → portal chopping → room building → t-joint fixing → lightmap UV) plus a multithreaded, byte-exact lightmap baker (point / spot / tube, shadows) that reproduces RED's per-texel kernel, with optional Alpine smoothlights quality.
-- **Modern editing over stock parity** — interactive move / rotate / scale gizmos, keyboard transforms, **unlimited undo/redo that survives save**, live CSG preview, and a full UV unwrap editor — without giving up any stock brush, face, or vertex operation.
-- **Everything a level needs** — every object type with data-driven inspectors, all 90 stock events and all 58 Alpine events, links with the interactive **Link Graph** editor, and full trigger / mover / group / cutscene authoring.
-- **Assets & packaging** — a dockable Asset Browser (textures / meshes / sounds), one-click `.vpp` packaging with a full dependency scanner, import/export (OBJ / FBX / glTF / DAE), and a prefab system.
-- **Playtest & polish** — one-key playtest in stock RF or the Alpine launcher (single & multiplayer), a first-run wizard, fully bindable hotkeys with RED Classic / Modern presets, a command palette, dark/light themes, and Direct3D 11 + OpenGL backends on Windows & Linux.
+**The core editor**:
+
+- **Full modeling & authoring** — brush/CSG modeling with time-ordered booleans, face and vertex editing, texturing with a complete UV unwrap editor, every object type, all 90 stock and 58 Alpine events, and trigger / mover / group / cutscene authoring with links.
+- **Reads all RF1 RFLs** — opens every stock version (`0xB4`–`0xC8`) and every Alpine version (`300`–`305`).
+- **RED-authentic geometry & lighting** — the full compile pipeline plus byte-exact lightmap baking that reproduces RED's per-texel kernel.
+- **One-click packaging** — build `.vpp` packfiles with a full dependency scanner.
+- **One-key playtest** — launch using Alpine Faction, single and multiplayer.
+
+**New in Glacier**:
+
+- **Modern editing tools** — interactive move / rotate / scale gizmos, marquee box-select, a dedicated edge-editing mode, and a live CSG preview that updates as you build.
+- **Unlimited, branching undo** — undo/redo with a history tree that survives save, replacing RED's 16-step, save-wiped buffer.
+- **Parametric prefabs** — tracked instances: edit the prefab once and the change propagates to every placed copy.
+- **Interactive graph views** — a Link Graph node editor and a Dependency Graph panel.
+- **Dockable Asset Browser** — search, rendered thumbnails, and hover previews, with drag-and-drop placement into the viewport — including dropping a texture straight onto a face.
+- **Mesh import** — bring in OBJ / FBX / glTF / DAE as brushes or mesh objects.
+- **Lighting quality beyond RED** — optional bounced light, ambient occlusion, soft shadows, corner-leak fixes, and mover shadows.
+- **Lua scripting** — automate the editor with a sandboxed Lua API, each run a single undo step.
+- **Modern shell, cross-platform** — a command palette, fully bindable keymaps (RED Classic / Modern presets), dark/light themes, and toast notifications, on native Windows and Linux with Direct3D 11 and OpenGL renderers.
 
 **[→ Full feature catalog](docs/catalog.md)** for the complete, detailed breakdown.
 

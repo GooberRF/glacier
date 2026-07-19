@@ -274,6 +274,21 @@
       Help) and most commands are also on the toolbar. Press <kbd>Ctrl+Shift+P</kbd> for the
       <strong>command palette</strong> — a fuzzy search over every command that shows its bound key
       and runs it through the same dispatcher the menus use.</p>
+
+      <h3>Notifications</h3>
+      <p>Every message Glacier raises — a finished build, a warning, an error, a hint — always reaches
+      the <strong>status bar</strong> and the <strong>Log</strong> panel. On top of that it can pop a
+      brief <strong>toast</strong> in the bottom-right corner. Choose how much the toasts show from
+      <em>Settings ▸ General ▸ Toast notifications</em>: <strong>Off</strong>,
+      <strong>Errors only</strong>, <strong>Warnings</strong>, <strong>Info</strong> (the default) or
+      <strong>Everything</strong> (including hints). The threshold gates only the toasts — the status
+      bar and Log always record everything.</p>
+
+      <div class="note"><strong>Locked brushes and objects are protected.</strong> Locking an item
+      (the padlock in the Outliner or Layers panel, or <kbd>Q</kbd> / <kbd>Shift+Q</kbd> to lock /
+      unlock) makes it <strong>unselectable and untransformable</strong> until you unlock it — a click
+      that lands only on a locked item is refused with a hint — so you can work around fixed geometry
+      without disturbing it.</div>
     </section>
 
     <!-- 3 -->
@@ -347,7 +362,9 @@
       <strong>fuse</strong>, <strong>stretch</strong>, <strong>bend</strong>, <strong>twist</strong>,
       <strong>mirror</strong>, <strong>n-gon split</strong> and <strong>bridge</strong>. The
       interactive <strong>Draw Brush</strong> tool builds a brush in three stages (base outline,
-      then height) with live grid snapping.</p>
+      then height) with live grid snapping; it starts each launch set to create <strong>Air</strong>
+      (carve) brushes — toggle Air / Solid on the Brush panel. Opening or creating a level always
+      returns the active tool to <strong>Select</strong>.</p>
       <div class="note"><strong>Increment-based transforms.</strong> Move (<kbd>M</kbd>), rotate
       (<kbd>R</kbd>) and scale (<kbd>S</kbd>) work by the grid / rotation / scale increment for
       RED-parity precision. Hold <kbd>Alt</kbd> during a mouse drag to temporarily invert the magnet
@@ -367,6 +384,12 @@
       selected objects belong to (or lets you pick one from a list) — no typing — with a prompt before
       overwriting instances you have modified locally. Prefabs live in your prefab library, browsable
       with thumbnails and a large hover preview.</p>
+      <p><strong>A placed instance selects as one unit.</strong> Clicking any member selects the whole
+      instance, and moving or rotating it drives every member together while keeping the instance's
+      pose record current. To edit an individual member, <strong>double-click</strong> it — or click
+      the <strong>padlock badge</strong> shown on the selected instance — to step inside;
+      <kbd>Esc</kbd> (or clicking empty space) steps back out to unit level. Capture a new prefab from
+      whatever is selected with <em>File ▸ Save Selection As Prefab</em>.</p>
       <h3>Groups</h3>
       <p>Groups bind brushes and objects into a named unit you can select and move together, import
       and export as <code>.rfg</code> files, and drag-drop into the viewport.</p>
@@ -390,6 +413,21 @@
       <p>Objects are everything that is not world geometry: entities, items, clutter, lights,
       triggers, movers, particle emitters, ambient sounds, decals, cutscene path nodes, room effects
       and the full catalogue of <strong>events</strong> (148 event types).</p>
+
+      <h3>Placing objects</h3>
+      <p>Drag a class straight out of the <strong>Object palette</strong> (entities, clutter, items,
+      events) or a mesh / prefab out of the <strong>Asset Browser</strong> and drop it into any
+      viewport pane. A translucent <strong>ghost</strong> of the asset follows the cursor so you can
+      see exactly what will land where. Dropped on a surface the object <strong>bottom-aligns</strong>
+      to the face under the cursor (a pickup item instead floats <strong>1&#160;m</strong> above it);
+      dropped in open space it lands in front of the camera. You can also place at the camera from the
+      palette, staple an object to a face with <kbd>S</kbd>, or drop the last-placed kind at the cursor
+      with <kbd>P</kbd>.</p>
+      <p>A new object's <strong>script name</strong> starts from a sensible default — the class name
+      for entities, clutter and items, or the object type's name for everything else — and stays
+      editable. Mesh objects can reference <code>.v3m</code>, <code>.v3c</code> and <code>.vfx</code>
+      effect meshes, and <code>.vfx</code> files appear in the Asset Browser's Meshes tab alongside
+      V3M / V3C models.</p>
 
       <h3>Inspectors</h3>
       <p>The Properties panel shows a purpose-built inspector for each kind — events (with their
@@ -417,13 +455,19 @@
       tiled preview and display-size control. Supported formats include TGA (incl. 8-bit greyscale),
       VBM, <strong>DDS (DXT1/3/5)</strong>, PNG, JPG and ATX (frame 0), resolved through the same
       supersede chain the game uses.</p>
+      <div class="note"><strong>Drop a texture onto a face.</strong> Drag a texture tile from the
+      browser onto a brush face in a viewport to apply it. If that face is part of the current face
+      selection the texture applies to the <strong>whole selection</strong>; otherwise it applies to
+      just the face you dropped on — always in a single undo step. (A locked brush is refused.)</div>
 
       <h3>Mapping &amp; UV</h3>
       <p>From the Texture/UV tab (in Face mode) apply <strong>Box</strong> (<kbd>Ctrl+Q</kbd>),
       <strong>Planar</strong> and <strong>Cylinder</strong> (<kbd>Ctrl+W</kbd>) mapping, set
-      pixels-per-meter, copy/paste UVs, and flip. <strong>Verify Textures</strong> (Tools menu)
-      reports faces whose textures are missing from the mounted data before you build or
-      package.</p>
+      pixels-per-meter, copy/paste UVs, and flip. Two <strong>Fit</strong> buttons snap the mapping to
+      the texture tile: <strong>Fit</strong> stretches the face corner-to-corner over the tile (world
+      projection), while <strong>Fit (Keep Aspect)</strong> scales uniformly so the texture is not
+      distorted. <strong>Verify Textures</strong> (Tools menu) reports faces whose textures are missing
+      from the mounted data before you build or package.</p>
       <div class="note"><strong>Planar map is a toolbar button, not a hotkey.</strong> In the RED
       Classic preset <kbd>Ctrl+E</kbd> is Extrude in Face mode, so Planar map has no key — use the
       Texture/UV panel button.</div>
@@ -453,6 +497,9 @@
         pack the faces into the tile), <strong>Fit UVs</strong> (scale the selection to fill the
         base tile), decal-vs-texture display (<kbd>D</kbd> / <kbd>T</kbd>), Show Tiled, and
         <strong>Print → TGA</strong>.</li>
+        <li><strong>Multiple faces</strong> — unwrap more than one face at once and each gets its own
+        colour and a numbered label so you can tell them apart; hovering a face shows a readout and
+        cross-highlights the matching face in the 3D viewport.</li>
         <li><strong>Navigation</strong> — wheel or <kbd>Shift</kbd>+right-drag to zoom,
         <kbd>Shift</kbd>+left-drag or middle-drag to pan, and <strong>Fit View</strong> to reframe.</li>
       </ul>
@@ -480,6 +527,14 @@
       vertices, surfaces, lightmap pages, UIDs, elapsed time and any <strong>warnings</strong>. The
       warnings are textual; <strong>hole-leak findings are click-to-navigate</strong> — click one to
       frame the leak in the viewport.</p>
+
+      <div class="note"><strong>Saving never rebuilds or re-bakes.</strong> A save
+      (<kbd>Ctrl+S</kbd>) writes exactly what you last built — RED-style — so rebuild geometry and
+      recalculate lighting yourself after you change them. The one exception is an automatic
+      <strong>re-seal</strong> of unsealed live-preview geometry immediately before the write (which
+      resets its lightmaps to unbaked). If a build is still running the save is
+      <strong>aborted</strong> — "retry when it finishes" — rather than writing half-built
+      geometry.</div>
     </section>
 
     <!-- 11 -->
@@ -518,6 +573,10 @@
           <tr><td><strong>Smooth Gutter Normals</strong></td><td>Welds and angle-averages gutter
           normals so shading is smooth across lightmap gutters. Use to remove faceting artefacts on
           curved or beveled surfaces.</td></tr>
+          <tr><td><strong>Movers cast shadows</strong> <em>(default on)</em></td><td>Bakes mover
+          brushes — doors, lifts, elevators — as shadow occluders at their rest pose, so they cast
+          static shadows. Turn it <strong>off</strong> for RED-authentic output (stock RED excludes
+          movers from the lightmap shadow set).</td></tr>
         </tbody>
       </table></div>
     </section>
@@ -923,7 +982,9 @@
       notice — nothing is lost.</p>
 
       <h4>Where can I get help or share levels?</h4>
-      <p>Join the community on <a href="https://discord.gg/factionfiles">Discord</a>.</p>
+      <p>Join the community on <a href="https://discord.gg/factionfiles">Discord</a>. The
+      <strong>Report Bug</strong> button in <em>Help ▸ About</em> opens the issue tracker in your
+      browser.</p>
 
       <footer>
         Glacier is © Chris "Goober" Parsons. See LICENSE and licensing-info.txt.

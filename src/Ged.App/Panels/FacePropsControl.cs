@@ -17,14 +17,14 @@ namespace Ged.App.Panels;
 /// The shared per-face property editor: texture name (+ picker button), the genuinely-authored
 /// face flags (full-bright / show-sky / mirrored), scroll U/V, the 4-level lightmap resolution,
 /// and the 32-bit smoothing-group mask. The five build-derived flags (has-alpha / has-holes /
-/// invisible / liquid-surface / detail) are shown as READ-ONLY indicators: RED generates them
-/// at build time from the texture and brush (RED.exe <c>FlagFaceTextureTraits</c> derives
-/// alpha/holes/invisible from the texture; detail is a brush property; the liquid surface is
-/// generated from the liquid room), never as user-set face attributes, so GED does the same.
-/// Multi-select mixed-value aware, undo-safe (routes every edit through
-/// <see cref="BrushEditor.EditSelectedFaces"/> so only the brushes section is dirtied). The
-/// SAME control backs both the Properties panel (when face(s) are selected) and Face mode's
-/// Texture/UV tab, so there is one face-editing surface everywhere.
+/// invisible / liquid-surface / detail) are NOT surfaced here: RED generates them at build time
+/// from the texture and brush (RED.exe <c>FlagFaceTextureTraits</c> derives alpha/holes/invisible
+/// from the texture; detail is a brush property; the liquid surface is generated from the liquid
+/// room), never as user-set face attributes, so GED still computes, maintains and serializes them
+/// unchanged but does not display them. Multi-select mixed-value aware, undo-safe (routes every
+/// edit through <see cref="BrushEditor.EditSelectedFaces"/> so only the brushes section is
+/// dirtied). The SAME control backs both the Properties panel (when face(s) are selected) and Face
+/// mode's Texture/UV tab, so there is one face-editing surface everywhere.
 /// </summary>
 internal sealed class FacePropsControl : UserControl
 {
@@ -98,14 +98,10 @@ internal sealed class FacePropsControl : UserControl
         _root.Children.Add(FlagCheck("Show Sky", faces, FaceFlags.ShowSky));
         _root.Children.Add(FlagCheck("Mirrored", faces, FaceFlags.Mirrored));
 
-        // Build-derived flags: the compiler generates these from the texture and brush the way
-        // RED does, so they are shown read-only rather than offered as editable face attributes.
-        _root.Children.Add(Head("Build-derived (read-only)"));
-        _root.Children.Add(FlagIndicator("Has Alpha", faces, FaceFlags.HasAlpha, DerivedTip));
-        _root.Children.Add(FlagIndicator("Has Holes", faces, FaceFlags.HasHoles, DerivedTip));
-        _root.Children.Add(FlagIndicator("Invisible", faces, FaceFlags.IsInvisible, DerivedTip));
-        _root.Children.Add(FlagIndicator("Liquid Surface", faces, FaceFlags.LiquidSurface, DerivedTip));
-        _root.Children.Add(FlagIndicator("Detail", faces, FaceFlags.IsDetail, DerivedTip));
+        // The build-derived flags (has-alpha / has-holes / invisible / liquid-surface / detail) are NOT
+        // shown here: the compiler generates them from the texture and brush the way RED does, and GED
+        // still computes, maintains and serializes them unchanged — they are just not offered as editable
+        // or read-only face attributes in the editor.
 
         // Scroll velocities.
         Uv scroll0 = FaceProps.GetScroll(faces[0].G, faces[0].F);
@@ -192,9 +188,6 @@ internal sealed class FacePropsControl : UserControl
         return Labeled("Texture", row);
     }
 
-    /// <summary>Tooltip shown on every build-derived (read-only) flag indicator.</summary>
-    private const string DerivedTip = "Determined by the build from the texture and brush.";
-
     private Control FlagCheck(string label, List<(Geometry G, Face F)> faces, FaceFlags flag)
     {
         bool all = faces.All(t => FaceProps.Get(t.F, flag));
@@ -207,28 +200,6 @@ internal sealed class FacePropsControl : UserControl
             Commit($"Set {label}", (g, fi) => FaceProps.Set(g.Faces[fi], flag, val));
         };
         return cb;
-    }
-
-    /// <summary>
-    /// A read-only indicator for a build-derived flag: a disabled checkbox that reflects the
-    /// current stored value (three-state across a mixed selection) with an explanatory tooltip.
-    /// It carries NO change handler, so it never edits the face — the value is generated at
-    /// build time, and the stored flags are left byte-untouched on load/save.
-    /// </summary>
-    private static Control FlagIndicator(string label, List<(Geometry G, Face F)> faces, FaceFlags flag, string tooltip)
-    {
-        bool all = faces.All(t => FaceProps.Get(t.F, flag));
-        bool none = faces.All(t => !FaceProps.Get(t.F, flag));
-        return new CheckBox
-        {
-            Content = label,
-            FontSize = 12,
-            IsEnabled = false,
-            IsHitTestVisible = false,
-            IsThreeState = !all && !none,
-            IsChecked = all ? true : (none ? false : (bool?)null),
-            [ToolTip.TipProperty] = tooltip,
-        };
     }
 
     private void SetScroll(float? u, float? v)

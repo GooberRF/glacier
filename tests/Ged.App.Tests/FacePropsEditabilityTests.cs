@@ -15,9 +15,9 @@ namespace Ged.App.Tests;
 /// The per-face editor (<see cref="FacePropsControl"/>) exposes only the genuinely-authored face
 /// flags as editable checkboxes (full-bright / show-sky / mirrored). The five build-derived flags
 /// (has-alpha / has-holes / invisible / liquid-surface / detail) — which RED generates at build
-/// time from the texture and brush, not as user-set attributes — are rendered as READ-ONLY
-/// indicators (disabled checkboxes with no change handler), so the user cannot set a value the
-/// build owns.
+/// time from the texture and brush, not as user-set attributes — are NOT displayed at all (they
+/// are still computed, maintained and serialized, just not surfaced in the editor), so the user is
+/// never shown a value the build owns.
 /// </summary>
 public sealed class FacePropsEditabilityTests
 {
@@ -90,7 +90,7 @@ public sealed class FacePropsEditabilityTests
             .ToDictionary(gp => gp.Key, gp => gp.First());
 
     [AvaloniaFact]
-    public void Authored_Flags_Are_Editable_And_Build_Derived_Flags_Are_Read_Only()
+    public void Authored_Flags_Are_Editable_And_Build_Derived_Flags_Are_Not_Displayed()
     {
         Dictionary<string, CheckBox> boxes = FlagCheckBoxes(BindSelectedFace());
 
@@ -102,8 +102,7 @@ public sealed class FacePropsEditabilityTests
 
         foreach (string label in Derived)
         {
-            Assert.True(boxes.ContainsKey(label), $"missing read-only indicator '{label}'");
-            Assert.False(boxes[label].IsEnabled, $"'{label}' is build-derived and must be read-only");
+            Assert.False(boxes.ContainsKey(label), $"build-derived flag '{label}' must no longer be displayed");
         }
     }
 }

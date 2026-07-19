@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
     Builds a self-contained, SINGLE-FILE Release publish of Glacier and packages it with
-    the README, LICENSE and licensing-info.txt for distribution. Supports win-x64 (zip)
-    and linux-x64 (tar.gz + AppImage).
+    LICENSE, licensing-info.txt, the offline help reference (docs\help.html) and the bundled
+    scripts library for distribution. Supports win-x64 (zip) and linux-x64 (tar.gz + AppImage).
 
 .DESCRIPTION
     Publishes src/Ged.App as a self-contained single-file app (native libraries embedded

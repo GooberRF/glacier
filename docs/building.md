@@ -43,7 +43,7 @@ pwsh tools/package.ps1 -Runtime all        # win zip + linux tar.gz + AppImage
 ```
 
 Each archive contains the single `Glacier` binary (native libraries self-extracted) plus
-`scripts/`, `README.md`, `LICENSE`, and `licensing-info.txt`.
+`scripts/`, `LICENSE`, `licensing-info.txt`, and the offline help reference (`help.html`).
 
 The linux-x64 target also produces `dist/Glacier-<ver>-linux-x86_64.AppImage`. On a
 **Windows** host the AppDir assembly and `appimagetool` run under **WSL2** (invoked
