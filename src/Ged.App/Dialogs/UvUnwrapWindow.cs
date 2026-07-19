@@ -35,6 +35,10 @@ internal sealed class UvUnwrapWindow : Window
     private readonly Func<string, Bitmap?> _loadTexture;
     private readonly Action _onCommitted;
 
+    // Item 3b(4): outlines the hovered/selected face in the main 3D viewport. Null when the host did
+    // not wire it. Called with an empty list to clear (hover ends / window closes).
+    private readonly Action<IReadOnlyList<(int Uid, int Face)>>? _onHighlightFaces;
+
     private readonly List<(int Brush, int Face, int Corner)> _refs = new();
     private readonly List<Uv> _uvs = new();
     private readonly HashSet<int> _sel = new();
@@ -42,6 +46,15 @@ internal sealed class UvUnwrapWindow : Window
     // Per-face corner rings (indices into _uvs), rebuilt with the working set. Drives
     // polygon drawing and edge/face picking.
     private readonly List<IReadOnlyList<int>> _rings = new();
+
+    // Per-ring identity (brush uid, face index, texture), parallel to _rings — feeds the per-face
+    // colours, the index labels and the status readout.
+    private readonly List<UvWorkingSet.FaceRef> _ringInfo = new();
+
+    // The ring currently under the pointer (-1 = none), for the hover readout + cross-highlight.
+    private int _hoverRing = -1;
+
+    private static readonly Typeface LabelTypeface = new("Segoe UI", FontStyle.Normal, FontWeight.SemiBold);
 
     private Bitmap? _texture;
     private double _zoom = 256;
@@ -83,6 +96,10 @@ internal sealed class UvUnwrapWindow : Window
 
     private readonly UvView _view;
     private readonly TextBlock _status = new() { Margin = new Thickness(6, 2), Foreground = Brushes.Gainsboro };
+
+    // Item 3b(3): the face-identity readout — "Face N: brush U face F — texture" for the hovered or
+    // selected face(s), above the persistent help line so a mixed-texture selection is visible.
+    private readonly TextBlock _faceReadout = new() { Margin = new Thickness(6, 3, 6, 0), FontWeight = FontWeight.SemiBold, Foreground = Brushes.White };
 
     private readonly AppSettings? _settings;
     private readonly Action? _persistSettings;
@@ -130,13 +147,15 @@ internal sealed class UvUnwrapWindow : Window
         Func<string, Bitmap?> loadTexture,
         Action onCommitted,
         AppSettings? settings = null,
-        Action? persistSettings = null)
+        Action? persistSettings = null,
+        Action<IReadOnlyList<(int Uid, int Face)>>? onHighlightFaces = null)
     {
         _be = be;
         _loadTexture = loadTexture;
         _onCommitted = onCommitted;
         _settings = settings;
         _persistSettings = persistSettings;
+        _onHighlightFaces = onHighlightFaces;
 
         Title = "UV Unwrap";
         Width = 940;
@@ -159,6 +178,9 @@ internal sealed class UvUnwrapWindow : Window
 
         Closing += (_, _) =>
         {
+            // Clear the 3D viewport cross-highlight when the editor closes.
+            _onHighlightFaces?.Invoke(System.Array.Empty<(int, int)>());
+
             if (_settings is not null)
             {
                 _settings.UvWindowX = Position.X;
@@ -180,6 +202,7 @@ internal sealed class UvUnwrapWindow : Window
         _view.PointerMoved += OnViewPointerMoved;
         _view.PointerReleased += OnViewPointerReleased;
         _view.PointerWheelChanged += OnViewWheel;
+        _view.PointerExited += OnViewPointerExited;
 
         // Group B — same preset ladders + control as the main toolbar's Rot / Grid pickers.
         // Rotation reuses degrees directly; the UV grid step is a tile-space fraction (no metre
@@ -195,8 +218,11 @@ internal sealed class UvUnwrapWindow : Window
         Control toolbar = BuildToolbar();
         DockPanel.SetDock(toolbar, Avalonia.Controls.Dock.Top);
         root.Children.Add(toolbar);
-        DockPanel.SetDock(_status, Avalonia.Controls.Dock.Bottom);
-        root.Children.Add(_status);
+        var statusBar = new StackPanel { Orientation = Orientation.Vertical };
+        statusBar.Children.Add(_faceReadout);
+        statusBar.Children.Add(_status);
+        DockPanel.SetDock(statusBar, Avalonia.Controls.Dock.Bottom);
+        root.Children.Add(statusBar);
         root.Children.Add(new Border
         {
             Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x1E)),
@@ -208,6 +234,7 @@ internal sealed class UvUnwrapWindow : Window
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         AddHandler(KeyUpEvent, OnKeyUp, RoutingStrategies.Tunnel);
         UpdateStatus();
+        UpdateFaceReadoutAndHighlight();
     }
 
     private void LoadWorkingSet()
@@ -215,33 +242,21 @@ internal sealed class UvUnwrapWindow : Window
         _refs.Clear();
         _uvs.Clear();
         _rings.Clear();
-        string? textureName = null;
-        foreach ((int uid, int fi) in _be.SelectedFaces.OrderBy(f => f.Brush).ThenBy(f => f.Face))
-        {
-            Brush? b = _be.FindBrush(uid);
-            if (b is null || fi < 0 || fi >= b.Geometry.Faces.Count)
-            {
-                continue;
-            }
+        _ringInfo.Clear();
 
-            Face face = b.Geometry.Faces[fi];
-            textureName ??= face.Texture >= 0 && face.Texture < b.Geometry.Textures.Count ? b.Geometry.Textures[face.Texture] : null;
-            var ring = new int[face.Vertices.Count];
-            for (int c = 0; c < face.Vertices.Count; c++)
-            {
-                ring[c] = _uvs.Count;
-                _refs.Add((uid, fi, c));
-                _uvs.Add(face.Vertices[c].TextureCoords);
-            }
+        // Flatten EVERY selected face (across every brush) into the shared working set — one ring per
+        // face, all partitioning _uvs. Pure + unit-tested (see UvWorkingSetTests).
+        UvWorkingSet.Data data = UvWorkingSet.Build(_be);
+        _refs.AddRange(data.Refs);
+        _uvs.AddRange(data.Uvs);
+        _rings.AddRange(data.Rings);
+        _ringInfo.AddRange(data.Faces);
 
-            _rings.Add(ring);
-        }
-
-        if (textureName is not null)
+        if (data.FirstTexture is not null)
         {
             try
             {
-                _texture = _loadTexture(textureName);
+                _texture = _loadTexture(data.FirstTexture);
             }
             catch (Exception)
             {
@@ -269,11 +284,20 @@ internal sealed class UvUnwrapWindow : Window
         panel.Children.Add(NumBox("Scale", _scaleInc, v => _scaleInc = v));
         panel.Children.Add(IncrementFlyout.MakeDropDown(_gridSetting, minWidth: 98));
 
+        // Single-face / fallback line colour. When MULTIPLE faces are loaded each face is drawn in its
+        // own Okabe–Ito colour (with a numbered label) so they are tellable apart, and this dropdown is
+        // ignored — so it is DISABLED in that state (the working set is fixed at window open) rather
+        // than pretending to work. Kept visible for layout stability + single-face discoverability.
+        bool singleFace = _rings.Count <= 1;
         var color = new ComboBox
         {
             ItemsSource = new[] { "Line: Green", "Line: Cyan", "Line: Yellow", "Line: White" },
             SelectedIndex = 0,
             Margin = new Thickness(4, 0),
+            IsEnabled = singleFace,
+            [ToolTip.TipProperty] = singleFace
+                ? "Outline colour for a single loaded face. With several faces, each gets its own colourblind-safe colour + number."
+                : "Per-face colors are used when multiple faces are loaded.",
         };
         color.SelectionChanged += (_, _) =>
         {
@@ -500,6 +524,11 @@ internal sealed class UvUnwrapWindow : Window
                 _view.InvalidateVisual();
             }
         }
+        else
+        {
+            // Plain hover (no button, no drag): identify the face under the pointer + cross-highlight it.
+            UpdateHover(pos);
+        }
     }
 
     private void OnViewPointerReleased(object? sender, PointerReleasedEventArgs e)
@@ -529,6 +558,17 @@ internal sealed class UvUnwrapWindow : Window
         _panning = false;
         _zooming = false;
         _view.InvalidateVisual();
+    }
+
+    /// <summary>Clears the hover readout + cross-highlight when the pointer leaves the canvas.</summary>
+    private void OnViewPointerExited(object? sender, PointerEventArgs e)
+    {
+        if (_hoverRing != -1)
+        {
+            _hoverRing = -1;
+            UpdateFaceReadoutAndHighlight();
+            _view.InvalidateVisual();
+        }
     }
 
     private void OnViewWheel(object? sender, PointerWheelEventArgs e)
@@ -644,6 +684,7 @@ internal sealed class UvUnwrapWindow : Window
         }
 
         UpdateStatus();
+        UpdateFaceReadoutAndHighlight();
         _view.InvalidateVisual();
     }
 
@@ -900,13 +941,21 @@ internal sealed class UvUnwrapWindow : Window
         var tilePen = new Pen(new SolidColorBrush(Color.FromArgb(120, 255, 255, 255)), 1);
         ctx.DrawRectangle(null, tilePen, new Rect(UToScreen(0), VToScreen(0), _zoom, _zoom));
 
-        // UV polygons, with edge / face selection highlight for the active mode.
-        var linePen = new Pen(new SolidColorBrush(_lineColor), 1.4);
+        // UV polygons, per-face coloured (multi-face → Okabe–Ito palette, single face → the toolbar
+        // colour), with edge / face selection highlight for the active mode. Selection stays orange
+        // across every face so "selected" reads unambiguously over the per-face identity colours.
         var edgeHiPen = new Pen(new SolidColorBrush(Colors.Orange), 2.6);
+        var selBrush = new SolidColorBrush(Colors.Orange);
         var faceHi = new SolidColorBrush(Color.FromArgb(52, 255, 165, 0));
-        foreach (IReadOnlyList<int> ring in _rings)
+        bool label = _rings.Count > 1; // number the faces only when there is more than one to tell apart
+        for (int r = 0; r < _rings.Count; r++)
         {
+            IReadOnlyList<int> ring = _rings[r];
             int n = ring.Count;
+            Color faceColor = FaceColor(r);
+            var linePen = new Pen(new SolidColorBrush(faceColor), 1.4);
+            var dotBrush = new SolidColorBrush(faceColor);
+
             if (n >= 3 && RingFullySelected(ring))
             {
                 var geo = new StreamGeometry();
@@ -933,17 +982,20 @@ internal sealed class UvUnwrapWindow : Window
                     new Point(UToScreen(_uvs[a].U), VToScreen(_uvs[a].V)),
                     new Point(UToScreen(_uvs[b].U), VToScreen(_uvs[b].V)));
             }
-        }
 
-        // Vertices.
-        var dot = new SolidColorBrush(_lineColor);
-        var selBrush = new SolidColorBrush(Colors.Orange);
-        for (int i = 0; i < _uvs.Count; i++)
-        {
-            double x = UToScreen(_uvs[i].U);
-            double y = VToScreen(_uvs[i].V);
-            bool sel = _sel.Contains(i);
-            ctx.DrawEllipse(sel ? selBrush : dot, null, new Point(x, y), sel ? 4 : 2.5, sel ? 4 : 2.5);
+            // Vertices, coloured by their owning face (each _uvs entry belongs to exactly one ring).
+            foreach (int vi in ring)
+            {
+                double x = UToScreen(_uvs[vi].U);
+                double y = VToScreen(_uvs[vi].V);
+                bool sel = _sel.Contains(vi);
+                ctx.DrawEllipse(sel ? selBrush : dotBrush, null, new Point(x, y), sel ? 4 : 2.5, sel ? 4 : 2.5);
+            }
+
+            if (label)
+            {
+                DrawRingLabel(ctx, ring, r, faceColor);
+            }
         }
 
         // Rubber-band box overlay while dragging.
@@ -976,6 +1028,143 @@ internal sealed class UvUnwrapWindow : Window
         }
 
         return true;
+    }
+
+    // ---- Multi-face identification (colours / labels / readout / cross-highlight) ----
+
+    /// <summary>The outline/vertex/label colour of ring <paramref name="ringIndex"/> (single face → the toolbar colour).</summary>
+    private Color FaceColor(int ringIndex) => UvFaceIdentity.FaceColor(ringIndex, _rings.Count, _lineColor);
+
+    /// <summary>Draws a face's 1-based index at its UV centroid on a dark pill so it reads over any texture.</summary>
+    private void DrawRingLabel(DrawingContext ctx, IReadOnlyList<int> ring, int ringIndex, Color color)
+    {
+        if (ring.Count == 0)
+        {
+            return;
+        }
+
+        double cx = 0, cy = 0;
+        foreach (int vi in ring)
+        {
+            cx += UToScreen(_uvs[vi].U);
+            cy += VToScreen(_uvs[vi].V);
+        }
+
+        cx /= ring.Count;
+        cy /= ring.Count;
+
+        string text = (ringIndex + 1).ToString(CultureInfo.InvariantCulture);
+        var ft = new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, LabelTypeface, 13, new SolidColorBrush(color));
+        var pill = new Rect(cx - (ft.Width / 2) - 3, cy - (ft.Height / 2) - 1, ft.Width + 6, ft.Height + 2);
+        ctx.DrawRectangle(new SolidColorBrush(Color.FromArgb(200, 20, 22, 26)), null, new RoundedRect(pill, 3));
+        ctx.DrawText(ft, new Point(cx - (ft.Width / 2), cy - (ft.Height / 2)));
+    }
+
+    /// <summary>The status readout for one loaded face (or empty when the index is out of range).</summary>
+    private string RingReadout(int ringIndex)
+    {
+        if (ringIndex < 0 || ringIndex >= _ringInfo.Count)
+        {
+            return string.Empty;
+        }
+
+        UvWorkingSet.FaceRef info = _ringInfo[ringIndex];
+        return UvFaceIdentity.Readout(ringIndex, info.BrushUid, info.FaceIndex, info.Texture);
+    }
+
+    /// <summary>The rings that own at least one currently-selected vertex.</summary>
+    private List<int> SelectedRings()
+    {
+        var rings = new List<int>();
+        for (int r = 0; r < _rings.Count; r++)
+        {
+            foreach (int v in _rings[r])
+            {
+                if (_sel.Contains(v))
+                {
+                    rings.Add(r);
+                    break;
+                }
+            }
+        }
+
+        return rings;
+    }
+
+    /// <summary>Pushes the given rings' brush faces to the 3D viewport cross-highlight (empty clears it).</summary>
+    private void PushHighlight(IReadOnlyList<int> rings)
+    {
+        if (_onHighlightFaces is null)
+        {
+            return;
+        }
+
+        var faces = new List<(int Uid, int Face)>(rings.Count);
+        foreach (int r in rings)
+        {
+            if (r >= 0 && r < _ringInfo.Count)
+            {
+                faces.Add((_ringInfo[r].BrushUid, _ringInfo[r].FaceIndex));
+            }
+        }
+
+        _onHighlightFaces(faces);
+    }
+
+    /// <summary>
+    /// Refreshes the face-identity readout and the 3D cross-highlight: a hovered ring wins; otherwise
+    /// the selected face(s) are shown (a mixed-texture selection is surfaced explicitly); otherwise a
+    /// hint. The highlight follows the same target so the viewport always outlines what the readout names.
+    /// </summary>
+    private void UpdateFaceReadoutAndHighlight()
+    {
+        if (_hoverRing >= 0)
+        {
+            _faceReadout.Text = RingReadout(_hoverRing);
+            PushHighlight(new[] { _hoverRing });
+            return;
+        }
+
+        List<int> selRings = SelectedRings();
+        if (selRings.Count == 1)
+        {
+            _faceReadout.Text = RingReadout(selRings[0]);
+        }
+        else if (selRings.Count > 1)
+        {
+            string tex = UvFaceIdentity.TextureSummary(selRings.Select(r => _ringInfo[r].Texture));
+            _faceReadout.Text = $"{selRings.Count} faces selected — {tex}";
+        }
+        else if (_ringInfo.Count == 1)
+        {
+            _faceReadout.Text = RingReadout(0);
+        }
+        else
+        {
+            _faceReadout.Text = _ringInfo.Count > 1 ? $"{_ringInfo.Count} faces loaded — hover a face to identify it" : string.Empty;
+        }
+
+        PushHighlight(selRings);
+    }
+
+    /// <summary>Resolves the ring under the pointer (face polygon, else nearest vertex) and refreshes on change.</summary>
+    private void UpdateHover(Point pos)
+    {
+        float u = (float)ScreenToU(pos.X);
+        float v = (float)ScreenToV(pos.Y);
+        int ring = UvSelection.FaceContainingPoint(_uvs, _rings, u, v);
+        if (ring < 0)
+        {
+            int nv = UvSelection.NearestVertex(_uvs, u, v, (float)(10.0 / _zoom));
+            ring = nv >= 0 ? RingOf(nv) : -1;
+        }
+
+        if (ring != _hoverRing)
+        {
+            _hoverRing = ring;
+            UpdateFaceReadoutAndHighlight();
+            _view.InvalidateVisual();
+        }
     }
 
     // ---- 2D gizmo (held M/R/S) ------------------------------------------------

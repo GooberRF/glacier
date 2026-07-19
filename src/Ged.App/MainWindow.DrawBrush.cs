@@ -46,6 +46,10 @@ public sealed partial class MainWindow
         {
             if (BrushEd is null)
             {
+                // With no document the tool can't arm, so the exclusive state stays on Select.
+                // Re-sync the toolbar so the ToggleButton that Avalonia auto-checked on the click
+                // reverts — otherwise Draw Brush would look armed while Select is still the floor.
+                UpdateToolButtons();
                 _dispatcher.ShowMessage("Open or create a level first.");
                 return;
             }

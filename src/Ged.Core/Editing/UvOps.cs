@@ -220,49 +220,97 @@ public static class UvOps
         return new Uv(u / f.Vertices.Count, v / f.Vertices.Count);
     }
 
-    // ---- Fit to tile (combined-bbox, aspect-preserving) -----------------------
+    // ---- Fit to tile (WORLD-projection based) ---------------------------------
 
     /// <summary>
-    /// The affine that maps a face selection's combined UV bounding box into the base
-    /// [0,1] tile: subtract the box minimum, scale, then centre. When
-    /// <see cref="ScaleU"/> / <see cref="ScaleV"/> are equal the fit is uniform
-    /// (aspect-preserving) so a square face fills the tile edge-to-edge and a circle
-    /// keeps its shape. A zero scale on an axis (a degenerate, zero-extent axis) maps that
-    /// axis to the tile centre (0.5).
+    /// A world-position→UV fit: planar-projects a face corner's <em>world</em> position onto the
+    /// shared plane's two dominant axes (<see cref="UAxis"/> / <see cref="VAxis"/>, chosen by
+    /// <see cref="GeometryUtil.DominantProjection"/> exactly as the box/planar map ops derive theirs),
+    /// then normalises that projected coordinate into the base [0,1] tile. When <see cref="ScaleU"/> /
+    /// <see cref="ScaleV"/> are equal the fit is uniform (world-aspect-preserving); a zero scale on an
+    /// axis (a degenerate, zero-extent projected axis) maps that axis to the tile centre (0.5). V is
+    /// negated before normalising, matching the map ops' +V-points-down convention so Fit and Planar
+    /// agree on orientation. The caller supplies WORLD positions (<c>pos + rotation.Transform(local)</c>).
     /// </summary>
-    public readonly record struct UvFitTransform(float MinU, float MinV, float ScaleU, float ScaleV, float OffsetU, float OffsetV)
+    public readonly record struct UvFitTransform(
+        int UAxis, int VAxis, float MinU, float MinV, float ScaleU, float ScaleV, float OffsetU, float OffsetV)
     {
-        /// <summary>The identity fit (used when there is nothing to fit).</summary>
-        public static UvFitTransform Identity => new(0f, 0f, 1f, 1f, 0f, 0f);
+        /// <summary>The identity fit (used when there is nothing to fit): +Z projection, unit scale.</summary>
+        public static UvFitTransform Identity => new(0, 1, 0f, 0f, 1f, 1f, 0f, 0f);
 
-        /// <summary>Maps a UV through the fit transform.</summary>
-        public Uv Apply(Uv uv) => new(
-            ScaleU > 0f ? ((uv.U - MinU) * ScaleU) + OffsetU : 0.5f,
-            ScaleV > 0f ? ((uv.V - MinV) * ScaleV) + OffsetV : 0.5f);
+        /// <summary>Projects a WORLD-space vertex position to its fitted tile UV.</summary>
+        public Uv Apply(Vec3 worldPos)
+        {
+            float pu = worldPos.Component(UAxis);
+            float pv = -worldPos.Component(VAxis);
+            return new Uv(
+                ScaleU > 0f ? ((pu - MinU) * ScaleU) + OffsetU : 0.5f,
+                ScaleV > 0f ? ((pv - MinV) * ScaleV) + OffsetV : 0.5f);
+        }
     }
 
+    /// <summary>The brush transform of one face for the world-space Fit: its rotation matrix and world position.</summary>
+    public readonly record struct FitFace(Geometry Geometry, Face Face, Mat3 Rotation, Vec3 Position);
+
     /// <summary>
-    /// Item 4 — Fit: computes the transform that stretches the COMBINED UV bounding box of
-    /// <paramref name="faces"/> to fit exactly inside one [0,1] tile. Aspect-preserving by
-    /// default: a uniform scale makes the larger bbox dimension span exactly 1.0 and centres
-    /// the shorter dimension within [0,1] (so squares fill the tile and circles stay circles).
-    /// Set <paramref name="preserveAspect"/> false to stretch each axis independently.
-    /// Combined across the whole selection, so a multi-face selection fits as one bbox.
+    /// Fit (WORLD-projection): planar-projects the selected faces onto one shared plane computed in
+    /// WORLD space (the area-weighted average of each face's world normal — its Newell normal rotated
+    /// by its brush's rotation; a single face uses its own plane) and normalises the combined WORLD
+    /// footprint to one [0,1] tile. The projection axes come from
+    /// <see cref="GeometryUtil.DominantProjection"/> of that world normal, so the texture spans the
+    /// group by real geometry — two side-by-side brushes tile continuously instead of overlapping, and
+    /// a rotated brush projects by its face's true world orientation. Aspect-preserving by default (a
+    /// uniform scale makes the larger extent span 1.0 and centres the shorter); set
+    /// <paramref name="preserveAspect"/> false to stretch each axis independently so a single
+    /// axis-aligned quad maps corner-to-corner 1:1. For an un-rotated brush at the origin world == local.
     /// </summary>
-    public static UvFitTransform ComputeFitTransform(IEnumerable<Face> faces, bool preserveAspect = true)
+    public static UvFitTransform ComputeFitTransform(IEnumerable<FitFace> faces, bool preserveAspect = true)
     {
         ArgumentNullException.ThrowIfNull(faces);
+        List<FitFace> items = faces.ToList();
+
+        // Shared plane: the area-weighted average WORLD normal (each face's Newell normal, whose
+        // magnitude is twice its area, rotated into world by the brush rotation — a rotation preserves
+        // length, so the area weighting survives — then summed).
+        Vec3 sum = default;
+        Vec3 firstNormal = new(0f, 0f, 1f);
+        bool haveFirst = false;
+        foreach (FitFace item in items)
+        {
+            Vec3 worldNrm = item.Rotation.Transform(NewellNormal(item.Geometry, item.Face));
+            if (!haveFirst && worldNrm.LengthSquared() > 1e-20f)
+            {
+                firstNormal = worldNrm;
+                haveFirst = true;
+            }
+
+            sum = sum.Add(worldNrm);
+        }
+
+        // Cancellation (e.g. opposed faces) or all-degenerate input falls back to the first real
+        // world normal, then to +Z, so the axes stay finite and sane.
+        Vec3 shared = sum.LengthSquared() > 1e-12f ? sum : (haveFirst ? firstNormal : new Vec3(0f, 0f, 1f));
+        (int uAxis, int vAxis) = GeometryUtil.DominantProjection(shared);
+
+        // Projected bounds across every corner's WORLD position (V negated to match the map ops).
         float minU = float.MaxValue, maxU = float.MinValue, minV = float.MaxValue, maxV = float.MinValue;
         int n = 0;
-        foreach (Face f in faces)
+        foreach (FitFace item in items)
         {
-            foreach (FaceVertex fv in f.Vertices)
+            foreach (FaceVertex fv in item.Face.Vertices)
             {
-                Uv uv = fv.TextureCoords;
-                minU = MathF.Min(minU, uv.U);
-                maxU = MathF.Max(maxU, uv.U);
-                minV = MathF.Min(minV, uv.V);
-                maxV = MathF.Max(maxV, uv.V);
+                if (fv.Index < 0 || fv.Index >= item.Geometry.Vertices.Count)
+                {
+                    continue;
+                }
+
+                Vec3 world = item.Position.Add(item.Rotation.Transform(item.Geometry.Vertices[fv.Index]));
+                float pu = world.Component(uAxis);
+                float pv = -world.Component(vAxis);
+                minU = MathF.Min(minU, pu);
+                maxU = MathF.Max(maxU, pu);
+                minV = MathF.Min(minV, pv);
+                maxV = MathF.Max(maxV, pv);
                 n++;
             }
         }
@@ -289,31 +337,88 @@ public static class UvOps
 
         float offU = (1f - (du * su)) * 0.5f;
         float offV = (1f - (dv * sv)) * 0.5f;
-        return new UvFitTransform(minU, minV, su, sv, offU, offV);
-    }
-
-    /// <summary>Applies a precomputed <see cref="UvFitTransform"/> to every corner of a face.</summary>
-    public static void ApplyFit(Face f, UvFitTransform t)
-    {
-        foreach (FaceVertex fv in f.Vertices)
-        {
-            fv.TextureCoords = t.Apply(fv.TextureCoords);
-        }
+        return new UvFitTransform(uAxis, vAxis, minU, minV, su, sv, offU, offV);
     }
 
     /// <summary>
-    /// Fit — stretches the UVs of <paramref name="faces"/> so their combined bounding box
-    /// fills one [0,1] tile (see <see cref="ComputeFitTransform"/>). Convenience wrapper for
-    /// tests and non-undo callers; the editor computes the transform once and applies it
-    /// per-face through the undo system so the whole selection is one undo step.
+    /// Adapter for callers with no brush transform (standalone geometry / tests): projects each face
+    /// with an identity rotation at the origin, so world == local. Existing single-face expectations
+    /// are unchanged by the world-space fit.
     /// </summary>
-    public static void FitFacesToTile(IReadOnlyCollection<Face> faces, bool preserveAspect = true)
+    public static UvFitTransform ComputeFitTransform(IEnumerable<(Geometry Geometry, Face Face)> faces, bool preserveAspect = true)
+    {
+        ArgumentNullException.ThrowIfNull(faces);
+        return ComputeFitTransform(faces.Select(t => new FitFace(t.Geometry, t.Face, Mat3.Identity, Vec3.Zero)), preserveAspect);
+    }
+
+    /// <summary>
+    /// Re-projects every corner of <paramref name="f"/> through a precomputed <see cref="UvFitTransform"/>,
+    /// transforming each corner into world space by the brush <paramref name="rotation"/> /
+    /// <paramref name="position"/> first (the transform's projection basis is world-space).
+    /// </summary>
+    public static void ApplyFit(Geometry g, Face f, Mat3 rotation, Vec3 position, UvFitTransform t)
+    {
+        ArgumentNullException.ThrowIfNull(g);
+        ArgumentNullException.ThrowIfNull(f);
+        foreach (FaceVertex fv in f.Vertices)
+        {
+            if (fv.Index >= 0 && fv.Index < g.Vertices.Count)
+            {
+                Vec3 world = position.Add(rotation.Transform(g.Vertices[fv.Index]));
+                fv.TextureCoords = t.Apply(world);
+            }
+        }
+    }
+
+    /// <summary>Adapter: applies a fit to a face with no brush transform (identity rotation at the origin).</summary>
+    public static void ApplyFit(Geometry g, Face f, UvFitTransform t) => ApplyFit(g, f, Mat3.Identity, Vec3.Zero, t);
+
+    /// <summary>
+    /// Fit — world-projects <paramref name="faces"/> onto their shared plane and normalises the WORLD
+    /// footprint to one [0,1] tile (see <see cref="ComputeFitTransform(IEnumerable{FitFace},bool)"/>).
+    /// Convenience wrapper for tests and non-undo callers; the editor computes the transform once and
+    /// applies it per-face through the undo system so the whole selection is one undo step.
+    /// </summary>
+    public static void FitFacesToTile(IReadOnlyCollection<FitFace> faces, bool preserveAspect = true)
     {
         UvFitTransform t = ComputeFitTransform(faces, preserveAspect);
-        foreach (Face f in faces)
+        foreach (FitFace item in faces)
         {
-            ApplyFit(f, t);
+            ApplyFit(item.Geometry, item.Face, item.Rotation, item.Position, t);
         }
+    }
+
+    /// <summary>Adapter: fits standalone geometry (no brush transform) — world == local.</summary>
+    public static void FitFacesToTile(IReadOnlyCollection<(Geometry Geometry, Face Face)> faces, bool preserveAspect = true) =>
+        FitFacesToTile(faces.Select(t => new FitFace(t.Geometry, t.Face, Mat3.Identity, Vec3.Zero)).ToList(), preserveAspect);
+
+    /// <summary>
+    /// The area-weighted (Newell) normal of a face from its brush-local corner positions: its
+    /// direction is the face normal and its magnitude is twice the polygon area, so summing these
+    /// (rotated into world) across faces yields an area-weighted average normal. Degenerate faces contribute ~0.
+    /// </summary>
+    private static Vec3 NewellNormal(Geometry g, Face f)
+    {
+        Vec3 n = default;
+        int count = f.Vertices.Count;
+        for (int i = 0; i < count; i++)
+        {
+            int ia = f.Vertices[i].Index;
+            int ib = f.Vertices[(i + 1) % count].Index;
+            if (ia < 0 || ia >= g.Vertices.Count || ib < 0 || ib >= g.Vertices.Count)
+            {
+                continue;
+            }
+
+            Vec3 a = g.Vertices[ia];
+            Vec3 b = g.Vertices[ib];
+            n = new Vec3(
+                n.X + ((a.Y - b.Y) * (a.Z + b.Z)),
+                n.Y + ((a.Z - b.Z) * (a.X + b.X)),
+                n.Z + ((a.X - b.X) * (a.Y + b.Y)));
+        }
+
+        return n;
     }
 
     // ---- Copy / paste ---------------------------------------------------------

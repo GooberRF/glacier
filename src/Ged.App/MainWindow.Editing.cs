@@ -29,7 +29,9 @@ namespace Ged.App;
 /// </summary>
 public sealed partial class MainWindow
 {
-    private readonly BrushCreateParams _brushParams = new();
+    // The shared brush-type template the Brush panel's "Air (else Solid)" checkbox and the
+    // Draw Brush tool both create from — seeded from the launch default below.
+    private readonly BrushCreateParams _brushParams = NewDefaultBrushParams();
     private bool _coordLocal;
     private bool _clipCut;
     private bool _clipFlip;
@@ -48,6 +50,15 @@ public sealed partial class MainWindow
     private CoreVec3 _brushDragApplied;
 
     private BrushEditor? BrushEd => _session.BrushEditor;
+
+    /// <summary>
+    /// The launch-default brush-type template (owner decision: Air on every launch). The
+    /// single shared <see cref="_brushParams"/> — used by both the Brush panel's cookie
+    /// cutter and the Draw Brush tool — is seeded from this. It is never persisted to
+    /// settings.cfg, so the type always resets to Air at startup while the panel's
+    /// "Air (else Solid)" checkbox toggles it freely in-session.
+    /// </summary>
+    internal static BrushCreateParams NewDefaultBrushParams() => new() { Air = true };
 
     private void InitEditing()
     {

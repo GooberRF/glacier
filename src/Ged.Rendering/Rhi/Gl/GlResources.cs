@@ -117,12 +117,25 @@ internal sealed class GlDepthStencilState : IDepthStencilState
     }
 }
 
-/// <summary>A GL blend state token (blending on/off; the alpha equation is the fixed source-over set).</summary>
+/// <summary>The blend equation a <see cref="GlBlendState"/> selects.</summary>
+internal enum GlBlendMode
+{
+    /// <summary>Blending disabled (opaque).</summary>
+    Off,
+
+    /// <summary>Straight-alpha source-over.</summary>
+    Alpha,
+
+    /// <summary>Additive (src=ONE, dst=ONE).</summary>
+    Additive,
+}
+
+/// <summary>A GL blend state token selecting one of the fixed blend equations.</summary>
 internal sealed class GlBlendState : IBlendState
 {
-    public GlBlendState(bool enabled) => Enabled = enabled;
+    public GlBlendState(GlBlendMode mode) => Mode = mode;
 
-    public bool Enabled { get; }
+    public GlBlendMode Mode { get; }
 
     public void Dispose()
     {

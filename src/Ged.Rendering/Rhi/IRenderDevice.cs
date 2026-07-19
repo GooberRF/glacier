@@ -43,6 +43,9 @@ public interface IRenderDevice : IDisposable
     /// <summary>Straight-alpha source-over blending.</summary>
     IBlendState BlendAlpha { get; }
 
+    /// <summary>Additive blending (src=ONE, dst=ONE) for glow/effect (VFX) draws.</summary>
+    IBlendState BlendAdditive { get; }
+
     /// <summary>The shared linear-wrap sampler.</summary>
     IGpuSampler LinearWrapSampler { get; }
 

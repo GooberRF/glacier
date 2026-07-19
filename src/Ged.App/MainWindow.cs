@@ -305,6 +305,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         lines.AddRange(BuildEditingOverlays());
         lines.AddRange(_clipPreview);
         lines.AddRange(_holeLines);
+        lines.AddRange(_uvFaceHighlight); // UV Unwrap cross-highlight (hovered/selected face → 3D outline)
 
         // Item (a): highlight only the last pick that actually SELECTED something in-mode. Drawing
         // the raw _lastPick here highlighted out-of-mode picks the router already rejected (an
@@ -1647,6 +1648,13 @@ public sealed partial class MainWindow : Window, IEditorHost
 
         _layers.Refresh();
         _buildController?.Attach();
+
+        // Every freshly created or opened document starts on the Select tool — this shared
+        // post-load routine runs for New Level, Open (dialog / Open Recent / drag-drop / --open),
+        // and crash recovery. Re-asserting Select cancels any Draw/Ruler armed on the previous
+        // document and (via the tool state's Changed handler) re-syncs the toolbar so ONLY Select
+        // is lit, clearing the stuck "both Select and Draw Brush active" state after a load.
+        _toolState.Reset();
     }
 
     private void CarveSelected()

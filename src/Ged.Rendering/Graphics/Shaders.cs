@@ -118,7 +118,9 @@ float4 PSMain(VSOut i) : SV_Target
     float head = saturate(dot(n, toCam));
     // A fixed top key light adds form so a face viewed flat-on still shows shape.
     float key = saturate(dot(n, normalize(float3(0.35, 0.85, 0.4))));
-    float shade = min(0.35 + 0.5 * head + 0.2 * key, 1.1);
+    // HasLightmap doubles as the mesh fullbright flag (meshes never sample a lightmap):
+    // VFX fullbright / self-illuminated draws bypass lighting and render at full brightness.
+    float shade = (HasLightmap != 0) ? 1.0 : min(0.35 + 0.5 * head + 0.2 * key, 1.1);
     float3 outc = baseC.rgb * shade * Tint.rgb;
     outc = ApplyFog(outc, i.wp);
     return float4(outc, baseC.a * Tint.a * Params.x);
@@ -307,7 +309,8 @@ void main()
     vec3 toCam = normalize(CameraPos.xyz - vWp);
     float head = clamp(dot(n, toCam), 0.0, 1.0);
     float key = clamp(dot(n, normalize(vec3(0.35, 0.85, 0.4))), 0.0, 1.0);
-    float shade = min(0.35 + 0.5 * head + 0.2 * key, 1.1);
+    // HasLightmap doubles as the mesh fullbright flag (VFX fullbright / self-illuminated).
+    float shade = (HasLightmap != 0u) ? 1.0 : min(0.35 + 0.5 * head + 0.2 * key, 1.1);
     vec3 outc = baseC.rgb * shade * Tint.rgb;
     outc = ApplyFog(outc, vWp);
     fragColor = vec4(outc, baseC.a * Tint.a * Params.x);

@@ -71,8 +71,9 @@ internal sealed class GlRenderDevice : IRenderDevice
     private readonly GlDepthStencilState _dsDefault = new(DepthFunction.Less, write: true);
     private readonly GlDepthStencilState _dsNoWrite = new(DepthFunction.Lequal, write: false);
     private readonly GlDepthStencilState _dsNoTest = new(DepthFunction.Always, write: false);
-    private readonly GlBlendState _blendOpaque = new(enabled: false);
-    private readonly GlBlendState _blendAlpha = new(enabled: true);
+    private readonly GlBlendState _blendOpaque = new(GlBlendMode.Off);
+    private readonly GlBlendState _blendAlpha = new(GlBlendMode.Alpha);
+    private readonly GlBlendState _blendAdditive = new(GlBlendMode.Additive);
     private readonly GlSampler _sampler;
 
     public GlRenderDevice(IGlContext context, bool ownsContext)
@@ -109,6 +110,8 @@ internal sealed class GlRenderDevice : IRenderDevice
     public IBlendState BlendOpaque => _blendOpaque;
 
     public IBlendState BlendAlpha => _blendAlpha;
+
+    public IBlendState BlendAdditive => _blendAdditive;
 
     public IGpuSampler LinearWrapSampler => _sampler;
 

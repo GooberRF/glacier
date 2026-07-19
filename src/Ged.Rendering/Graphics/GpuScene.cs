@@ -24,6 +24,14 @@ internal sealed class GpuBatch
     public bool IsPortal;
 }
 
+/// <summary>The blend/pass a mesh draw uses (VFX effects map onto Alpha/Additive; V3M stays Opaque).</summary>
+internal enum MeshDrawBlend
+{
+    Opaque,
+    Alpha,
+    Additive,
+}
+
 /// <summary>A single uploaded mesh draw (one V3M batch instance).</summary>
 internal sealed class GpuMesh
 {
@@ -31,6 +39,15 @@ internal sealed class GpuMesh
     public IGpuBuffer IndexBuffer = null!;
     public int IndexCount;
     public IGpuTexture Diffuse = null!;
+
+    /// <summary>Blend/pass for this draw. Opaque for V3M/V3C; Alpha/Additive for VFX effects.</summary>
+    public MeshDrawBlend Blend;
+
+    /// <summary>Render unlit at full brightness (VFX fullbright / self-illuminated).</summary>
+    public bool Fullbright;
+
+    /// <summary>Per-draw colour/opacity tint (VFX opacity + color-only material); white for V3M.</summary>
+    public Vector4 Tint = Vector4.One;
 
     /// <summary>
     /// The instance world matrix, stored UN-transposed. The shaders use
@@ -414,6 +431,27 @@ public sealed class GpuScene : IDisposable
             texName = ov;
         }
 
+        // Effect (VFX) material state carried through the V3d adapter: blend/pass,
+        // fullbright, and a colour/opacity tint. V3M/V3C batches leave these at the
+        // opaque, lit, white defaults, so their draws are unchanged.
+        MeshDrawBlend blend = batch.Blend switch
+        {
+            V3dBatchBlend.Additive => MeshDrawBlend.Additive,
+            V3dBatchBlend.Alpha => MeshDrawBlend.Alpha,
+            _ => MeshDrawBlend.Opaque,
+        };
+        Vector3 tintRgb = batch.SolidColor is { } c
+            ? new Vector3(c.R / 255f, c.G / 255f, c.B / 255f)
+            : Vector3.One;
+        float op = Math.Clamp(batch.Opacity, 0f, 1f);
+        Vector4 tint = blend switch
+        {
+            // Additive (dst=ONE) ignores dest alpha, so fold opacity into brightness.
+            MeshDrawBlend.Additive => new Vector4(tintRgb * op, 1f),
+            MeshDrawBlend.Alpha => new Vector4(tintRgb, op),
+            _ => new Vector4(tintRgb, 1f),
+        };
+
         // The diffuse texture is cache-owned (not disposed per-mesh), so the two draws can
         // share it; each draw owns its own vertex/index buffers.
         void Emit(List<uint> indexList, bool isDoubleSided)
@@ -432,6 +470,9 @@ public sealed class GpuScene : IDisposable
                 World = world,
                 PickId = pick,
                 DoubleSided = isDoubleSided,
+                Blend = blend,
+                Fullbright = batch.Unlit,
+                Tint = tint,
             });
         }
 

@@ -38,6 +38,11 @@ public sealed partial class MainWindow
     private int _texCylinderAxis = 1; // Y
     private Uv[]? _uvClipboard;
 
+    // UV Unwrap cross-highlight: the 3D-viewport outline of the face(s) whose UV elements are
+    // hovered/selected in the open UV editor. Rides the selection-overlay channel (not the gizmo
+    // channel) so it composes with the manipulator instead of clobbering it.
+    private List<Ged.Rendering.Scene.LineSegment> _uvFaceHighlight = new();
+
     private StackPanel? _texPropsHost;
     private WrapPanel? _texGridHost;
     private TextBlock? _texGridInfo;
@@ -156,9 +161,14 @@ public sealed partial class MainWindow
         root.Children.Add(Row(Btn("Snap Map", ApplySnapMap), Btn("Resize Map…", () => _ = ResizeMapDialogAsync())));
         root.Children.Add(Row(Btn("Flip X", () => ApplyUvFace("Flip map X", (g, fi) => UvOps.FlipU(g.Faces[fi]))), Btn("Flip Y", () => ApplyUvFace("Flip map Y", (g, fi) => UvOps.FlipV(g.Faces[fi])))));
         root.Children.Add(Row(Btn("UV Copy", () => TexCopyUv()), Btn("UV Paste", () => TexPasteUv()), Btn("Scale…", () => _ = ScaleUvDialogAsync())));
-        // Item 4: stretch the whole face selection's combined UV bbox to fill one tile,
-        // aspect-preserving, as a single undo step.
-        root.Children.Add(Row(Btn("Fit", FitUvs), Btn("UV Unwrap…", OpenUvUnwrap)));
+        // Item 4: planar-project the selected face(s) onto their shared world plane and normalize the
+        // projected footprint to fill one tile, as a single undo step (world geometry drives the layout,
+        // continuous across coplanar neighbours). "Fit" normalizes U and V independently (ignore aspect)
+        // so an axis-aligned quad maps corner-to-corner 1:1 with the texture; "Fit (Keep Aspect)"
+        // uniform-scales so world proportions are kept and the shorter axis centres. UV Unwrap sits on
+        // its own row below the two Fits.
+        root.Children.Add(Row(Btn("Fit", () => FitUvs(preserveAspect: false)), Btn("Fit (Keep Aspect)", () => FitUvs(preserveAspect: true))));
+        root.Children.Add(Row(Btn("UV Unwrap…", OpenUvUnwrap)));
         root.Children.Add(Note("Box maps each face on its own axis; Planar shares one projection; Cylinder wraps the chosen axis. Ctrl+C/V copy/paste UVs between faces."));
 
         // Per-face properties.
@@ -512,13 +522,19 @@ public sealed partial class MainWindow
     }
 
     /// <summary>
-    /// Item 4 — Fit: stretches the selected faces' combined UV bounding box to fill one [0,1]
-    /// tile, aspect-preserving (uniform scale, shorter axis centred), across a multi-face
-    /// selection as one bbox. The transform is computed once from the pre-edit UVs, then
-    /// applied per face through <see cref="BrushEditor.EditSelectedFaces"/> so the whole
-    /// operation is a single undo step, consistent with the neighbouring UV operators.
+    /// Item 4 — Fit: planar-projects the selected face(s) onto one shared plane in WORLD geometry
+    /// (the area-weighted average world face normal; a single face uses its own plane) and normalizes
+    /// the combined WORLD footprint to fill one [0,1] tile — so the texture spans the group by real
+    /// geometry, continuous across neighbouring brushes and correct for rotated ones, regardless of
+    /// the faces' prior UVs. Each selected face carries its brush's rotation + position so its corners
+    /// are projected in world space (<c>pos + rotation·local</c>). When <paramref name="preserveAspect"/>
+    /// is false (the "Fit" button) U and V are normalized independently so an axis-aligned quad maps
+    /// corner-to-corner onto the whole tile; when true (the "Fit (Keep Aspect)" button) a uniform scale
+    /// keeps the world proportions and centres the shorter projected axis. The transform (one shared
+    /// projection basis) is computed once from the pre-edit geometry, then applied per face through
+    /// <see cref="BrushEditor.EditSelectedFaces"/> so the whole operation is a single undo step.
     /// </summary>
-    private void FitUvs()
+    private void FitUvs(bool preserveAspect)
     {
         if (Be is null || Be.SelectedFaces.Count == 0)
         {
@@ -526,14 +542,31 @@ public sealed partial class MainWindow
             return;
         }
 
-        var faces = TexSelectedFaces().Select(t => t.F).ToList();
+        // Gather each selected face WITH its brush's world transform; also index the transform by the
+        // brush's Geometry instance so the per-face apply (which only receives the geometry) can recover it.
+        var faces = new List<UvOps.FitFace>();
+        var xform = new Dictionary<Geometry, (Mat3 Rot, Vec3 Pos)>();
+        foreach ((int uid, int fi) in Be.SelectedFaces)
+        {
+            if (Be.FindBrush(uid) is Brush b && fi >= 0 && fi < b.Geometry.Faces.Count)
+            {
+                faces.Add(new UvOps.FitFace(b.Geometry, b.Geometry.Faces[fi], b.Rotation, b.Position));
+                xform[b.Geometry] = (b.Rotation, b.Position);
+            }
+        }
+
         if (faces.Count == 0)
         {
             return;
         }
 
-        UvOps.UvFitTransform fit = UvOps.ComputeFitTransform(faces);
-        Report(Be.EditSelectedFaces("Fit UVs to tile", (g, fi) => UvOps.ApplyFit(g.Faces[fi], fit)));
+        UvOps.UvFitTransform fit = UvOps.ComputeFitTransform(faces, preserveAspect);
+        string desc = preserveAspect ? "Fit UVs to tile (keep aspect)" : "Fit UVs to tile";
+        Report(Be.EditSelectedFaces(desc, (g, fi) =>
+        {
+            (Mat3 rot, Vec3 pos) = xform.TryGetValue(g, out (Mat3 Rot, Vec3 Pos) t) ? t : (Mat3.Identity, Vec3.Zero);
+            UvOps.ApplyFit(g, g.Faces[fi], rot, pos, fit);
+        }));
         AfterBrushEdit();
     }
 
@@ -545,8 +578,26 @@ public sealed partial class MainWindow
             return;
         }
 
-        var win = new Dialogs.UvUnwrapWindow(Be, LoadTextureBitmap, () => { AfterBrushEdit(); }, _settings, Persist);
+        var win = new Dialogs.UvUnwrapWindow(Be, LoadTextureBitmap, () => { AfterBrushEdit(); }, _settings, Persist, SetUvFaceHighlight);
         win.Show(this);
+    }
+
+    /// <summary>
+    /// UV Unwrap cross-highlight: outlines the given brush faces (the one(s) hovered/selected in the
+    /// UV editor) in the 3D viewport. An empty list clears it — the editor calls this on hover
+    /// changes, selection changes and when it closes. Uses the selection-overlay channel so the
+    /// manipulator gizmo is left intact.
+    /// </summary>
+    private void SetUvFaceHighlight(IReadOnlyList<(int Uid, int Face)> faces)
+    {
+        var lines = new List<Ged.Rendering.Scene.LineSegment>();
+        foreach ((int uid, int fi) in faces)
+        {
+            lines.AddRange(_session.BuildBrushFaceOutline(uid, fi, DragGhost.FaceTint));
+        }
+
+        _uvFaceHighlight = lines;
+        RefreshSelectionOverlay();
     }
 
     private Bitmap? LoadTextureBitmap(string name)

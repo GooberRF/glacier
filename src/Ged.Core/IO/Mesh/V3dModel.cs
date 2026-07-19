@@ -192,12 +192,44 @@ public sealed class V3dBatch
     public V3dBoneLink[] BoneLinks { get; set; } = Array.Empty<V3dBoneLink>();
 
     public short[] MorphMap { get; set; } = Array.Empty<short>();
+
+    /// <summary>Render pass/blend for this batch. Always <see cref="V3dBatchBlend.Opaque"/> for V3M/V3C.</summary>
+    public V3dBatchBlend Blend { get; set; } = V3dBatchBlend.Opaque;
+
+    /// <summary>
+    /// Render unlit at full brightness (VFX fullbright / self-illuminated meshes,
+    /// RED mesh flags 0x10 / 0x2000). Ignored for lit V3M/V3C batches.
+    /// </summary>
+    public bool Unlit { get; set; }
+
+    /// <summary>Whole-batch opacity in [0, 1] applied on top of the texture (VFX). 1 for V3M/V3C.</summary>
+    public float Opacity { get; set; } = 1f;
+
+    /// <summary>Flat colour for a color-only VFX material (no texture); null when textured.</summary>
+    public RfColor? SolidColor { get; set; }
 }
 
 /// <summary>A triangle: three vertex indices plus 16-bit flags (0x20 = double-sided).</summary>
 public record struct V3dTriangle(ushort I0, ushort I1, ushort I2, ushort Flags)
 {
     public const ushort DoubleSided = 0x20;
+}
+
+/// <summary>
+/// The blend/pass a mesh batch draws in. V3M/V3C batches are always
+/// <see cref="Opaque"/>; the VFX adapter sets <see cref="Alpha"/> / <see cref="Additive"/>
+/// from effect-material state so effect meshes route to the matching render pass.
+/// </summary>
+public enum V3dBatchBlend
+{
+    /// <summary>Solid, depth-writing (the only value V3M/V3C ever uses).</summary>
+    Opaque = 0,
+
+    /// <summary>Alpha-blended (src-alpha / inv-src-alpha), depth test on, write off.</summary>
+    Alpha = 1,
+
+    /// <summary>Additive (src=ONE, dst=ONE), depth test on, write off.</summary>
+    Additive = 2,
 }
 
 /// <summary>Per-vertex bone binding: up to four weights (0-255) and bone indices (0xFF = unused).</summary>

@@ -70,6 +70,7 @@ internal sealed unsafe class D3D11RenderDevice : IRenderDevice
     private readonly D3D11DepthStencilState _dsNoTest;
     private readonly D3D11BlendState _blendOpaque;
     private readonly D3D11BlendState _blendAlpha;
+    private readonly D3D11BlendState _blendAdditive;
     private readonly D3D11Sampler _sampler;
 
     public D3D11RenderDevice()
@@ -90,7 +91,7 @@ internal sealed unsafe class D3D11RenderDevice : IRenderDevice
 
         (_rsSolid, _rsSolidCull, _rsWireframe) = CreateRasterizerStates();
         (_dsDefault, _dsNoWrite, _dsNoTest) = CreateDepthStates();
-        (_blendOpaque, _blendAlpha) = CreateBlendStates();
+        (_blendOpaque, _blendAlpha, _blendAdditive) = CreateBlendStates();
         _sampler = CreateSampler();
     }
 
@@ -123,6 +124,8 @@ internal sealed unsafe class D3D11RenderDevice : IRenderDevice
     public IBlendState BlendOpaque => _blendOpaque;
 
     public IBlendState BlendAlpha => _blendAlpha;
+
+    public IBlendState BlendAdditive => _blendAdditive;
 
     public IGpuSampler LinearWrapSampler => _sampler;
 
@@ -212,7 +215,7 @@ internal sealed unsafe class D3D11RenderDevice : IRenderDevice
         return (new D3D11DepthStencilState(def), new D3D11DepthStencilState(noWrite), new D3D11DepthStencilState(noTest));
     }
 
-    private (D3D11BlendState, D3D11BlendState) CreateBlendStates()
+    private (D3D11BlendState, D3D11BlendState, D3D11BlendState) CreateBlendStates()
     {
         var opaque = new BlendDesc();
         opaque.RenderTarget[0] = new RenderTargetBlendDesc
@@ -238,7 +241,23 @@ internal sealed unsafe class D3D11RenderDevice : IRenderDevice
         ComPtr<ID3D11BlendState> blendAlpha = default;
         SilkMarshal.ThrowHResult(_device.CreateBlendState(in alpha, ref blendAlpha));
 
-        return (new D3D11BlendState(blendOpaque), new D3D11BlendState(blendAlpha));
+        // Additive (src=ONE, dst=ONE): VFX glow/flame/explosion effects.
+        var additive = new BlendDesc();
+        additive.RenderTarget[0] = new RenderTargetBlendDesc
+        {
+            BlendEnable = 1,
+            SrcBlend = Blend.One,
+            DestBlend = Blend.One,
+            BlendOp = BlendOp.Add,
+            SrcBlendAlpha = Blend.One,
+            DestBlendAlpha = Blend.One,
+            BlendOpAlpha = BlendOp.Add,
+            RenderTargetWriteMask = (byte)ColorWriteEnable.All,
+        };
+        ComPtr<ID3D11BlendState> blendAdditive = default;
+        SilkMarshal.ThrowHResult(_device.CreateBlendState(in additive, ref blendAdditive));
+
+        return (new D3D11BlendState(blendOpaque), new D3D11BlendState(blendAlpha), new D3D11BlendState(blendAdditive));
     }
 
     private D3D11Sampler CreateSampler()
@@ -480,6 +499,7 @@ internal sealed unsafe class D3D11RenderDevice : IRenderDevice
     public void Dispose()
     {
         _sampler.Dispose();
+        _blendAdditive.Dispose();
         _blendAlpha.Dispose();
         _blendOpaque.Dispose();
         _dsNoTest.Dispose();

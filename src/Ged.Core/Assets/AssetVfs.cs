@@ -19,7 +19,7 @@ namespace Ged.Core.Assets;
 /// </remarks>
 public sealed class AssetVfs : IDisposable
 {
-    private static readonly string[] MeshExtensions = { ".v3m", ".v3c", ".vcm", ".v3d" };
+    private static readonly string[] MeshExtensions = { ".v3m", ".v3c", ".vcm", ".v3d", ".vfx" };
 
     private readonly List<IAssetSource> _sources;
     private IReadOnlyList<AssetCategory>? _categoriesCache;
@@ -220,12 +220,13 @@ public sealed class AssetVfs : IDisposable
 
     /// <summary>
     /// Loads a mesh by name. Accepts an explicit extension, or bare/.v3d names which
-    /// are probed against the real mesh extensions (.v3m/.v3c/.vcm/.v3d).
+    /// are probed against the real mesh extensions (.v3m/.v3c/.vcm/.v3d/.vfx). VFX
+    /// effect files are adapted into the same <see cref="V3dFile"/> shape as V3M/V3C.
     /// </summary>
     public V3dFile? LoadMesh(string meshName)
     {
         byte[]? data = ReadMeshBytes(meshName);
-        return data is null ? null : V3dReader.Read(data);
+        return data is null ? null : MeshLoader.Read(data);
     }
 
     /// <summary>Resolves and reads a mesh file's raw bytes, or null.</summary>

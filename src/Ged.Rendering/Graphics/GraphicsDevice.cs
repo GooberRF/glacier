@@ -117,6 +117,8 @@ public sealed class GraphicsDevice : IDisposable
 
     internal IBlendState BlendAlpha => _device.BlendAlpha;
 
+    internal IBlendState BlendAdditive => _device.BlendAdditive;
+
     internal IGpuSampler Sampler => _device.LinearWrapSampler;
 
     // ---- Resource creation (delegated) ----

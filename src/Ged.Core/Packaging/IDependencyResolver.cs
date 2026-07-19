@@ -25,7 +25,7 @@ public interface IDependencyResolver
 /// </summary>
 public sealed class VfsDependencyResolver : IDependencyResolver
 {
-    private static readonly string[] MeshExtensions = { ".v3m", ".v3c", ".vcm" };
+    private static readonly string[] MeshExtensions = { ".v3m", ".v3c", ".vcm", ".vfx" };
 
     private static readonly string[] AnimExtensions = { ".rfa", ".mvf" };
 

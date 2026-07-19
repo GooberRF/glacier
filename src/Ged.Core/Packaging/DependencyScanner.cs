@@ -292,8 +292,9 @@ public static class DependencyScanner
                     return;
                 }
 
-                V3dFile mesh = V3dReader.Read(bytes);
-                foreach (string tex in MeshTextures(mesh))
+                // MeshLoader handles both V3M/V3C and VFX effect meshes; a VFX pulls
+                // in its mesh/global/particle material bitmaps too.
+                foreach (string tex in MeshLoader.ReferencedTextures(bytes))
                 {
                     queue.Enqueue(new DependencyRef(tex, DependencyKind.MeshObjectTexture, $"mesh '{dep.FileName}'", ParentFile: dep.FileName));
                 }
@@ -317,32 +318,6 @@ public static class DependencyScanner
         catch (Exception)
         {
             // Best-effort expansion: a malformed mesh/ATX simply contributes no sub-dependencies.
-        }
-    }
-
-    private static IEnumerable<string> MeshTextures(V3dFile mesh)
-    {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (V3dSubmesh sm in mesh.Submeshes)
-        {
-            foreach (V3dMaterial mat in sm.Materials)
-            {
-                if (!string.IsNullOrWhiteSpace(mat.DiffuseMapName) && seen.Add(mat.DiffuseMapName))
-                {
-                    yield return mat.DiffuseMapName;
-                }
-            }
-
-            foreach (V3dLod lod in sm.Lods)
-            {
-                foreach (V3dLodTexture t in lod.Textures)
-                {
-                    if (!string.IsNullOrWhiteSpace(t.Filename) && seen.Add(t.Filename))
-                    {
-                        yield return t.Filename;
-                    }
-                }
-            }
         }
     }
 

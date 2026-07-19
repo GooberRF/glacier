@@ -89,17 +89,25 @@ internal sealed unsafe class GlRenderContext : IRenderContext
     public void SetBlendState(IBlendState state)
     {
         var s = (GlBlendState)state;
-        if (s.Enabled)
+        switch (s.Mode)
         {
-            _gl.Enable(EnableCap.Blend);
-            _gl.BlendEquation(GLEnum.FuncAdd);
-            _gl.BlendFuncSeparate(
-                BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha,
-                BlendingFactor.One, BlendingFactor.OneMinusSrcAlpha);
-        }
-        else
-        {
-            _gl.Disable(EnableCap.Blend);
+            case GlBlendMode.Alpha:
+                _gl.Enable(EnableCap.Blend);
+                _gl.BlendEquation(GLEnum.FuncAdd);
+                _gl.BlendFuncSeparate(
+                    BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha,
+                    BlendingFactor.One, BlendingFactor.OneMinusSrcAlpha);
+                break;
+            case GlBlendMode.Additive:
+                _gl.Enable(EnableCap.Blend);
+                _gl.BlendEquation(GLEnum.FuncAdd);
+                _gl.BlendFuncSeparate(
+                    BlendingFactor.One, BlendingFactor.One,
+                    BlendingFactor.One, BlendingFactor.One);
+                break;
+            default:
+                _gl.Disable(EnableCap.Blend);
+                break;
         }
     }
 

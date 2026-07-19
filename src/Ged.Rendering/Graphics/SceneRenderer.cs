@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Numerics;
 using Ged.Rendering.Picking;
 using Ged.Rendering.Rhi;
@@ -149,20 +150,21 @@ public sealed class SceneRenderer : IDisposable
 
         IRenderContext ctx = Ctx;
         SetProgram(_gd.Programs.Mesh, pick);
-        SetDepth(write: true);
-        SetBlend(!pick && mode == RenderMode.SeeThrough);
         ctx.SetPrimitiveTopology(PrimitiveTopology.TriangleList);
         int stride = Scene.MeshVertex.SizeInBytes;
         bool wire = mode.IsWireframe();
 
-        foreach (GpuMesh m in scene.Meshes)
+        void Draw(GpuMesh m)
         {
             // Cull single-sided meshes with the solid pass; the 0x20 double-sided draw
-            // and wireframe/pick always render both faces.
+            // (all VFX effect faces) and wireframe/pick always render both faces.
             ctx.SetRasterizerState(wire ? _gd.RasterWireframe
                 : cull && !m.DoubleSided ? _gd.RasterSolidCull
                 : _gd.RasterSolid);
-            UpdateDraw(m.World, Vector4.One, m.PickId, hasLightmap: false);
+
+            // The Mesh shader reads HasLightmap as a fullbright flag (meshes never sample
+            // a lightmap): VFX fullbright/self-illuminated draws bypass scene lighting.
+            UpdateDraw(m.World, pick ? Vector4.One : m.Tint, m.PickId, hasLightmap: !pick && m.Fullbright);
             ctx.SetVertexBuffer(m.VertexBuffer, stride);
             ctx.SetIndexBuffer(m.IndexBuffer);
             if (!pick)
@@ -171,6 +173,49 @@ public sealed class SceneRenderer : IDisposable
             }
 
             ctx.DrawIndexed(m.IndexCount);
+        }
+
+        // Picking treats every mesh as opaque so effect meshes stay clickable.
+        if (pick)
+        {
+            SetDepth(write: true);
+            SetBlend(false);
+            foreach (GpuMesh m in scene.Meshes)
+            {
+                Draw(m);
+            }
+
+            return;
+        }
+
+        // Opaque meshes (all V3M/V3C, and non-blended VFX): depth-writing solid pass.
+        SetDepth(write: true);
+        SetBlend(mode == RenderMode.SeeThrough);
+        foreach (GpuMesh m in scene.Meshes)
+        {
+            if (m.Blend == MeshDrawBlend.Opaque)
+            {
+                Draw(m);
+            }
+        }
+
+        // Blended VFX effect meshes (alpha / additive): depth-tested, no depth write,
+        // so glow/flame draws layer over the scene without occluding it.
+        if (scene.Meshes.Any(m => m.Blend != MeshDrawBlend.Opaque))
+        {
+            SetDepth(write: false);
+            foreach (GpuMesh m in scene.Meshes)
+            {
+                if (m.Blend == MeshDrawBlend.Opaque)
+                {
+                    continue;
+                }
+
+                ctx.SetBlendState(m.Blend == MeshDrawBlend.Additive ? _gd.BlendAdditive : _gd.BlendAlpha);
+                Draw(m);
+            }
+
+            SetDepth(write: true);
         }
     }
 
