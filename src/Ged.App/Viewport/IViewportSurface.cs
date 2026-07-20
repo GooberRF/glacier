@@ -193,6 +193,10 @@ public interface IViewportSurface
     /// <summary>Sets the manipulator/gizmo overlay lines, drawn on top of the scene.</summary>
     void SetGizmoOverlay(IReadOnlyList<LineSegment> lines);
 
+    /// <summary>Sets (or clears with null) a small on-top overlay scene — the transform-drag numeric
+    /// label — updated per drag frame without re-emitting the whole level scene.</summary>
+    void SetOverlayScene(RenderScene? scene, AssetVfs? vfs);
+
     /// <summary>Frames a bounds box in this pane's camera.</summary>
     void Frame(Ged.Core.Model.Aabb bounds);
 

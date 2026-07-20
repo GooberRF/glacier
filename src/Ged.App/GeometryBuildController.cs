@@ -169,8 +169,20 @@ public sealed class GeometryBuildController
     /// </summary>
     public bool PreviewLightingEnabled { get; set; }
 
+    /// <summary>
+    /// While true, an interactive transform drag is in progress: <see cref="OnBrushesChanged"/> still
+    /// accumulates the dirty flags + per-brush stale-fragment set (cheap, needed for a correct commit)
+    /// but does NOT arm the debounced live-CSG preview or fire <see cref="StateChanged"/> each frame.
+    /// The shell clears it on drag commit/cancel and calls <see cref="ArmLivePreviewIfPending"/> ONCE,
+    /// so the preview + status refresh happen exactly once for the whole drag — never per mouse-move.
+    /// </summary>
+    public bool SuspendLivePreview { get; set; }
+
     /// <summary>True while a debounced Preview-Lighting relight is pending (test hook).</summary>
     internal bool AutoRelightPending => _relightTimer.IsEnabled;
+
+    /// <summary>True while the debounced live-CSG geometry preview is armed (test hook).</summary>
+    internal bool LivePreviewPending => _previewTimer.IsEnabled;
 
     /// <summary>The accumulated changed-light influence region for the next incremental relight (test hook).</summary>
     internal Aabb? PendingLightRegion => _dirtyLightRegion;
@@ -289,8 +301,31 @@ public sealed class GeometryBuildController
             _session.StaleFragmentBrushUids.Clear();
         }
 
+        // During an interactive drag the dirty state above is accumulated per frame (cheap), but the
+        // status refresh + debounced preview are deferred to the single drag commit (ArmLivePreviewIfPending)
+        // so a drag of N steps never re-arms the debounce N times.
+        if (SuspendLivePreview)
+        {
+            return;
+        }
+
         StateChanged?.Invoke();
         if (LivePreviewEnabled && BrushCount() > 0 && BrushCount() <= LivePreviewBrushLimit)
+        {
+            _previewTimer.Stop();
+            _previewTimer.Start();
+        }
+    }
+
+    /// <summary>
+    /// Fires the deferred status refresh and arms the debounced live-CSG preview ONCE — the drag-commit
+    /// counterpart to the per-frame work <see cref="OnBrushesChanged"/> skips while
+    /// <see cref="SuspendLivePreview"/> is set. Idempotent and safe to call when nothing is dirty.
+    /// </summary>
+    public void ArmLivePreviewIfPending()
+    {
+        StateChanged?.Invoke();
+        if (GeometryDirty && LivePreviewEnabled && BrushCount() > 0 && BrushCount() <= LivePreviewBrushLimit)
         {
             _previewTimer.Stop();
             _previewTimer.Start();

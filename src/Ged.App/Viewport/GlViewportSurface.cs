@@ -89,6 +89,9 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
     private bool _selectionDirty;
     private IReadOnlyList<LineSegment> _pendingOverlay = NoLines;
     private bool _overlayDirty;
+    private RenderScene? _pendingOverlayScene;
+    private AssetVfs? _pendingOverlayVfs;
+    private bool _overlaySceneDirty;
     private CameraPose _pose = CameraPose.Default;
     private bool _hasPendingPick;
     private int _pickX, _pickY;
@@ -530,6 +533,20 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
         RequestNextFrameRendering();
     }
 
+    /// <summary>Sets (or clears) the on-top transform-label overlay scene. The GpuScene it builds
+    /// must be created on the GL render thread, so it is handed off through the gate like the scene.</summary>
+    public void SetOverlayScene(RenderScene? scene, AssetVfs? vfs)
+    {
+        lock (_gate)
+        {
+            _pendingOverlayScene = scene;
+            _pendingOverlayVfs = vfs;
+            _overlaySceneDirty = true;
+        }
+
+        RequestNextFrameRendering();
+    }
+
     public void Frame(Ged.Core.Model.Aabb bounds) => ModifyPose(cam => cam.Frame(bounds));
 
     public void FramePoint(Vector3 p)
@@ -626,6 +643,9 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
             AssetVfs? newVfs = null;
             IReadOnlyList<LineSegment>? newSelection = null;
             IReadOnlyList<LineSegment>? newOverlay = null;
+            bool overlaySceneChanged = false;
+            RenderScene? newOverlayScene = null;
+            AssetVfs? newOverlayVfs = null;
             CameraPose pose;
             bool pick;
             int px, py, w, h;
@@ -649,6 +669,14 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
                 {
                     newOverlay = _pendingOverlay;
                     _overlayDirty = false;
+                }
+
+                if (_overlaySceneDirty)
+                {
+                    overlaySceneChanged = true;
+                    newOverlayScene = _pendingOverlayScene;
+                    newOverlayVfs = _pendingOverlayVfs;
+                    _overlaySceneDirty = false;
                 }
 
                 pose = _pose;
@@ -681,6 +709,11 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
             if (newOverlay is not null)
             {
                 _viewport.SetGizmoOverlay(newOverlay);
+            }
+
+            if (overlaySceneChanged)
+            {
+                _viewport.SetOverlayScene(newOverlayScene, newOverlayVfs);
             }
 
             _viewport.Mode = _mode;

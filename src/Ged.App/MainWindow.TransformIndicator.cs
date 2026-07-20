@@ -71,15 +71,14 @@ public sealed partial class MainWindow
     }
 
     /// <summary>Clears all indicator state on drag commit/cancel (indicators vanish).</summary>
-    private void EndTransformIndicator(bool rebuildIfLabeled)
+    private void EndTransformIndicator()
     {
-        bool hadLabel = _xformLabelInScene;
         _xformLabelText = null;
-        _xformLabelInScene = false;
         _xformScaleGhost = Array.Empty<LineSegment>();
-        if (hadLabel && rebuildIfLabeled)
+        if (_xformLabelInScene)
         {
-            RebuildScene(); // drop the baked label billboard from the scene
+            _viewportGrid.SetOverlayScene(null, null); // drop the on-top label overlay
+            _xformLabelInScene = false;
         }
     }
 
@@ -113,13 +112,26 @@ public sealed partial class MainWindow
         }
     }
 
-    /// <summary>Injects the live label into a freshly built scene (called by RebuildScene).</summary>
-    private void AppendTransformIndicatorLabel(RenderScene scene)
+    /// <summary>
+    /// Pushes the live Δ/∠/% label onto its own tiny on-top overlay scene (or clears it), so the
+    /// numeric readout tracks the SNAPPED value every drag frame WITHOUT re-emitting/re-uploading the
+    /// whole level scene. Called from <see cref="RefreshSelectionOverlay"/>, which every drag frame
+    /// already runs cheaply. A gizmo drag is the only producer of the label (M/N brush drags show the
+    /// readout in the status bar only), so it is gated on <see cref="_gizmoDragging"/>.
+    /// </summary>
+    private void RefreshTransformOverlayLabel()
     {
         if (_gizmoDragging && _xformLabelText is { } text)
         {
+            var scene = new RenderScene();
             _session.AppendOverlayLabel(scene, text, _xformLabelPos);
+            _viewportGrid.SetOverlayScene(scene, _session.Vfs);
             _xformLabelInScene = true;
+        }
+        else if (_xformLabelInScene)
+        {
+            _viewportGrid.SetOverlayScene(null, null);
+            _xformLabelInScene = false;
         }
     }
 

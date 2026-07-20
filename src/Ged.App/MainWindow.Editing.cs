@@ -113,7 +113,7 @@ public sealed partial class MainWindow
             s.NudgeRotate += OnNudgeRotate;
             s.BrushDragStarted += OnBrushDragStarted;
             s.BrushDragPixels += OnBrushDragPixels;
-            s.BrushDragEnded += () => { _dragEpoch++; DisarmGeometrySnap(); };
+            s.BrushDragEnded += () => { _dragEpoch++; DisarmGeometrySnap(); CommitInteractiveTransform(); };
         });
 
         InitTexture();
@@ -697,6 +697,7 @@ public sealed partial class MainWindow
         _brushDragActive = false;
         _brushDragAccum = default;
         _brushDragApplied = default;
+        BeginInteractiveTransform(); // defer the O(level) rebuild to drag end; live ghost only per frame
         ArmGeometrySnap(); // B1: snap the M/N drag to geometry too
     }
 
@@ -763,6 +764,13 @@ public sealed partial class MainWindow
 
     private void AfterBrushEdit()
     {
+        if (_session.InteractiveTransformActive)
+        {
+            _interactiveEditApplied = true;
+            RefreshSelectionOverlay(); // cheap per-frame drag ghost; full rebuild deferred to commit
+            return;
+        }
+
         RebuildScene();
         RefreshSelectionOverlay();
         _history.Refresh();

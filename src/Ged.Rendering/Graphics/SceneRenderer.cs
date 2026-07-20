@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Numerics;
 using Ged.Rendering.Picking;
 using Ged.Rendering.Rhi;
@@ -14,6 +13,11 @@ namespace Ged.Rendering.Graphics;
 /// </summary>
 public sealed class SceneRenderer : IDisposable
 {
+    /// <summary>The transparent passes, in draw order. A static readonly array so the per-frame
+    /// <see cref="Render"/> loop never allocates one (GC pressure on the render hot path shows up as
+    /// intermittent camera-orbit hitches).</summary>
+    private static readonly RenderPass[] TransparentPasses = { RenderPass.Sky, RenderPass.Liquid, RenderPass.Alpha };
+
     private readonly GraphicsDevice _gd;
     private readonly IGpuBuffer _frameCb;
     private readonly IGpuBuffer _drawCb;
@@ -83,7 +87,7 @@ public sealed class SceneRenderer : IDisposable
         ctx.SetRasterizerState(wire ? _gd.RasterWireframe : _gd.RasterSolid);
         SetProgram(_gd.Programs.World, pick: false);
         SetDepth(write: false);
-        foreach (RenderPass pass in new[] { RenderPass.Sky, RenderPass.Liquid, RenderPass.Alpha })
+        foreach (RenderPass pass in TransparentPasses)
         {
             SetBlend(pass != RenderPass.Sky || mode == RenderMode.SeeThrough);
             foreach (GpuBatch b in scene.Batches)
@@ -199,9 +203,20 @@ public sealed class SceneRenderer : IDisposable
             }
         }
 
-        // Blended VFX effect meshes (alpha / additive): depth-tested, no depth write,
-        // so glow/flame draws layer over the scene without occluding it.
-        if (scene.Meshes.Any(m => m.Blend != MeshDrawBlend.Opaque))
+        // Blended VFX effect meshes (alpha / additive): depth-tested, no depth write, so glow/flame
+        // draws layer over the scene without occluding it. A manual scan (not LINQ .Any) so the
+        // per-frame render path never boxes a List enumerator (render-hot-path GC pressure).
+        bool anyBlended = false;
+        foreach (GpuMesh m in scene.Meshes)
+        {
+            if (m.Blend != MeshDrawBlend.Opaque)
+            {
+                anyBlended = true;
+                break;
+            }
+        }
+
+        if (anyBlended)
         {
             SetDepth(write: false);
             foreach (GpuMesh m in scene.Meshes)
@@ -325,6 +340,28 @@ public sealed class SceneRenderer : IDisposable
         ctx.SetPrimitiveTopology(PrimitiveTopology.LineList);
         ctx.SetVertexBuffer(vertexBuffer!, Scene.LineVertex.SizeInBytes);
         ctx.Draw(vertexCount);
+    }
+
+    /// <summary>
+    /// Draws a small independent overlay scene's billboards over the already-rendered frame — the
+    /// transform-drag Δ/∠/% label, carried on its own tiny <see cref="GpuScene"/> so it updates every
+    /// drag frame WITHOUT re-emitting/re-uploading the whole level scene. Call after
+    /// <see cref="Render"/>, before Present. No-op for an empty overlay scene, so normal rendering
+    /// (no drag) is byte-identical.
+    /// </summary>
+    internal void DrawOverlayBillboards(Camera camera, GpuScene scene)
+    {
+        if (scene.BillboardIndexCount == 0 && scene.ParticleGroups.Count == 0 &&
+            scene.BillboardOnTopIndexCount == 0 && scene.OnTopGroups.Count == 0)
+        {
+            return;
+        }
+
+        UpdateFrame(camera, 1f, 0, FogSettings.Off);
+        BindConstants();
+        BindSampler();
+        Ctx.SetRasterizerState(_gd.RasterSolid);
+        DrawBillboards(scene, pick: false);
     }
 
     private void DrawLines(GpuScene scene)

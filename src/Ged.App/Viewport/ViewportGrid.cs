@@ -200,6 +200,16 @@ public sealed class ViewportGrid : UserControl
         }
     }
 
+    /// <summary>Sets (or clears) the on-top transform-label overlay scene on every pane, so a drag's
+    /// live Δ/∠/% readout reads in all panes without a whole-scene rebuild.</summary>
+    public void SetOverlayScene(Ged.Rendering.Scene.RenderScene? scene, AssetVfs? vfs)
+    {
+        foreach (ViewportPane p in _panes)
+        {
+            p.Surface.SetOverlayScene(scene, vfs);
+        }
+    }
+
     public void ForEachSurface(Action<IViewportSurface> action)
     {
         foreach (ViewportPane p in _panes)

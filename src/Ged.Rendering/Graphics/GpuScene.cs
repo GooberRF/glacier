@@ -110,9 +110,12 @@ public sealed class GpuScene : IDisposable
         UploadMeshes(scene, vfs);
     }
 
-    internal IReadOnlyList<GpuBatch> Batches => _batches;
+    // Exposed as the concrete List (not IReadOnlyList) so the per-frame SceneRenderer foreach uses
+    // List's struct enumerator instead of boxing an interface enumerator every frame (render-hot-path
+    // GC pressure → intermittent camera-orbit hitches). Consumers are internal + read-only in practice.
+    internal List<GpuBatch> Batches => _batches;
 
-    internal IReadOnlyList<GpuMesh> Meshes => _meshes;
+    internal List<GpuMesh> Meshes => _meshes;
 
     internal IGpuBuffer? BillboardVertexBuffer => _billboardVb;
 

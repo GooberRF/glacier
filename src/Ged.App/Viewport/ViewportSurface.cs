@@ -62,6 +62,7 @@ public sealed class ViewportSurface : NativeControlHost, IViewportInput, IViewpo
     private bool _hasPendingPick;
     private int _pickX, _pickY;
     private bool _pickCtrl;
+    private Func<string, bool>? _stillPhysicallyDown; // cached held-key predicate (no per-frame delegate alloc)
 
     private Func<IViewportSurface, int, int, bool>? _gizmoHitTestAt;
 
@@ -71,6 +72,8 @@ public sealed class ViewportSurface : NativeControlHost, IViewportInput, IViewpo
 
     private RenderScene? _scene;
     private AssetVfs? _vfs;
+    private RenderScene? _overlayScene;
+    private AssetVfs? _overlayVfs;
     private IReadOnlyList<LineSegment> _selection = Array.Empty<LineSegment>();
     private IReadOnlyList<LineSegment> _gizmoOverlay = Array.Empty<LineSegment>();
     private CameraPose _pose = CameraPose.Default;
@@ -521,6 +524,15 @@ public sealed class ViewportSurface : NativeControlHost, IViewportInput, IViewpo
         Invalidate();
     }
 
+    /// <summary>Sets (or clears) the on-top transform-label overlay scene (drag Δ/∠/% readout).</summary>
+    public void SetOverlayScene(RenderScene? scene, AssetVfs? vfs)
+    {
+        _overlayScene = scene;
+        _overlayVfs = vfs;
+        _viewport?.SetOverlayScene(scene, vfs);
+        Invalidate();
+    }
+
     /// <summary>Frames a bounds box in this pane's camera. Updates the persisted pose even
     /// when the native surface is absent (detached pane), so a "frame the brush / jump to"
     /// from another panel reaches the perspective pane and survives to its next realization
@@ -690,6 +702,11 @@ public sealed class ViewportSurface : NativeControlHost, IViewportInput, IViewpo
                 _viewport.SetSelection(_selection);
                 _viewport.SetGizmoOverlay(_gizmoOverlay);
             }
+
+            if (_overlayScene is not null)
+            {
+                _viewport.SetOverlayScene(_overlayScene, _overlayVfs);
+            }
         }
         catch (Exception ex)
         {
@@ -739,10 +756,11 @@ public sealed class ViewportSurface : NativeControlHost, IViewportInput, IViewpo
 
         // Reconcile the held-key set against the real keyboard before driving the camera:
         // a swallowed KeyUp (NumpadEnter interleaving, alt-tab) can otherwise leave a
-        // navigation key stuck down forever (item 6b). Only runs while keys are held.
+        // navigation key stuck down forever (item 6b). Only runs while keys are held. The
+        // predicate is cached so keyboard-fly frames don't allocate a fresh delegate each tick.
         if (_input.HeldKeys.Count > 0)
         {
-            _input.ValidateHeld(StillPhysicallyDown);
+            _input.ValidateHeld(_stillPhysicallyDown ??= StillPhysicallyDown);
         }
 
         CameraPose before = default;

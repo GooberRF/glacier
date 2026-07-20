@@ -327,6 +327,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         // The prefab-unit padlock badge rides the same on-top channel as the gizmo so it reads over
         // geometry and its CPU pick (against the pick ray) matches what the user sees.
         _viewportGrid.SetGizmoOverlay(BuildGizmoLines().Concat(BuildTransformIndicatorLines()).Concat(BuildPrefabBadge()).ToList());
+        RefreshTransformOverlayLabel(); // the drag Δ/∠/% numeric label rides its own tiny on-top overlay scene
         _statusSelection.Text = "Sel: " + BuildSelectionReadout();
     }
 
@@ -1546,7 +1547,6 @@ public sealed partial class MainWindow : Window, IEditorHost
         }
 
         Ged.Rendering.Scene.RenderScene scene = _session.BuildScene();
-        AppendTransformIndicatorLabel(scene); // live Δ/∠/% label while a gizmo drag is active
         _viewportGrid.RefreshScene(scene, _session.Vfs);
         RefreshSelectionOverlay();
     }
@@ -1608,7 +1608,9 @@ public sealed partial class MainWindow : Window, IEditorHost
             UpdateGizmoState();
         };
         Document.VisibilityChanged += () => _outliner.Refresh();
-        Document.DirtyChanged += () => { UpdateTitle(); _history.Refresh(); };
+        // UpdateTitle is cheap; the History panel rebuild is deferred during an interactive drag (the
+        // no-transaction M/N brush drag fires DirtyChanged per frame) — it refreshes once on commit.
+        Document.DirtyChanged += () => { UpdateTitle(); if (!_session.InteractiveTransformActive) { _history.Refresh(); } };
         Document.LinksChanged += () => { RebuildScene(); _linkGraph.Refresh(); _properties.Refresh(); };
         Document.AnnotationsChanged += () => { RebuildScene(); _outliner.Refresh(); SaveAnnotationSidecar(); };
 
@@ -1625,6 +1627,14 @@ public sealed partial class MainWindow : Window, IEditorHost
                     {
                         pf.MarkMemberModified(uid);
                     }
+                }
+
+                // During an interactive drag the per-frame edit updates only the cheap overlay (via
+                // AfterBrushEdit); the full rebuild + panel refresh run once on commit. The MarkMemberModified
+                // accumulation above still runs each frame (cheap, idempotent) so prefab-modified state is exact.
+                if (_session.InteractiveTransformActive)
+                {
+                    return;
                 }
 
                 RebuildScene();
@@ -1730,8 +1740,82 @@ public sealed partial class MainWindow : Window, IEditorHost
 
     private void AfterMutation()
     {
+        if (_session.InteractiveTransformActive)
+        {
+            _interactiveEditApplied = true;
+            RefreshSelectionOverlay(); // cheap per-frame drag ghost; heavy refresh deferred to commit
+            return;
+        }
+
         RebuildScene();
         RefreshPanels();
+    }
+
+    /// <summary>True once any model edit has been applied during the current interactive drag, so the
+    /// commit knows whether a heavy refresh is actually needed (a no-move press stays a no-op).</summary>
+    private bool _interactiveEditApplied;
+
+    /// <summary>
+    /// Enters interactive-transform mode (gizmo handle drag or M/N brush drag): per-frame edits keep
+    /// applying to the model for live feedback, but the O(level) scene rebuild + panel refresh +
+    /// live-CSG stash/debounce churn are deferred to <see cref="CommitInteractiveTransform"/>. Only the
+    /// cheap selection/gizmo overlay (the drag ghost) updates each frame.
+    /// </summary>
+    private void BeginInteractiveTransform()
+    {
+        _session.InteractiveTransformActive = true;
+        _interactiveEditApplied = false;
+        if (_buildController is { } bc)
+        {
+            bc.SuspendLivePreview = true;
+        }
+    }
+
+    /// <summary>
+    /// Commits an interactive drag: runs the deferred heavy refresh EXACTLY ONCE (identical end state
+    /// to today's per-frame path, one undo entry), then arms the live-CSG preview once. A drag that
+    /// moved nothing (press with no applied edit) refreshes only the overlay — no wasted rebuild.
+    /// </summary>
+    private void CommitInteractiveTransform()
+    {
+        if (!_session.InteractiveTransformActive)
+        {
+            return;
+        }
+
+        _session.InteractiveTransformActive = false;
+        bool applied = _interactiveEditApplied;
+        _interactiveEditApplied = false;
+
+        if (_buildController is { } bc)
+        {
+            bc.SuspendLivePreview = false;
+        }
+
+        if (applied)
+        {
+            RebuildScene();
+            RefreshPanels();
+            _layers.Refresh();
+            UpdateStatusStatics();
+            _buildController?.ArmLivePreviewIfPending();
+        }
+
+        RefreshSelectionOverlay();
+    }
+
+    /// <summary>Ends interactive-transform mode WITHOUT committing (ESC cancel / rollback): clears the
+    /// gate and re-arms the deferred preview so the controller state matches a single-edit aftermath.
+    /// The caller performs the rollback + full refresh (the geometry is back to its pre-drag state).</summary>
+    private void CancelInteractiveTransform()
+    {
+        _session.InteractiveTransformActive = false;
+        _interactiveEditApplied = false;
+        if (_buildController is { } bc)
+        {
+            bc.SuspendLivePreview = false;
+            bc.ArmLivePreviewIfPending();
+        }
     }
 
     /// <summary>Arms the texture eyedropper: the next face pick samples its texture (item 6).</summary>

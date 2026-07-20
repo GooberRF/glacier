@@ -56,6 +56,21 @@ public sealed class EditorSession : IDisposable
     /// <summary>The brush-editing service for the open document (null before a document is open).</summary>
     public BrushEditor? BrushEditor { get; private set; }
 
+    /// <summary>
+    /// True while an interactive transform drag (gizmo handle or M/N brush drag) is in progress.
+    /// Set by the shell at drag start and cleared on commit/cancel. It is the gate the shell's
+    /// after-edit path reads to defer the O(level) scene rebuild + panel refresh + live-CSG stash
+    /// churn to the single drag-commit, updating only the cheap selection/gizmo overlay per frame.
+    /// </summary>
+    public bool InteractiveTransformActive { get; set; }
+
+    /// <summary>
+    /// Count of full <see cref="BuildScene"/> emissions since construction — the headless-measurable
+    /// proxy for "scene rebuilds". A drag of N steps must add exactly ONE (the commit), not N (perf
+    /// regression guard: <c>SceneRebuildDeferralTests</c>); a pure camera move must add zero.
+    /// </summary>
+    public int SceneBuildCount { get; private set; }
+
     public string? LevelPath => Document?.Path;
 
     /// <summary>The loaded entity catalog (null when no install is mounted).</summary>
@@ -417,6 +432,7 @@ public sealed class EditorSession : IDisposable
 
     public RenderScene BuildScene()
     {
+        SceneBuildCount++;
         if (Document is null)
         {
             return new RenderScene();

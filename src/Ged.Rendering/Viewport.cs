@@ -19,6 +19,7 @@ public sealed class Viewport : IDisposable
     private readonly SceneRenderer _renderer;
     private readonly ISwapChainTarget _surface;
     private GpuScene _gpuScene;
+    private GpuScene? _overlayScene;
     private IPickTarget? _pick;
     private IGpuBuffer? _overlayVb;
     private int _overlayVertexCount;
@@ -98,6 +99,18 @@ public sealed class Viewport : IDisposable
         _overlayVertexCount = verts.Length;
     }
 
+    /// <summary>
+    /// Sets (or clears with null) a small independent OVERLAY scene drawn on top of the main scene —
+    /// the transform-drag numeric label. It lives on its own <see cref="GpuScene"/> so a drag frame
+    /// can update just the label without re-emitting/re-uploading the whole level. For GL this MUST be
+    /// called on the render thread (GPU-resource affinity), matching <see cref="SetScene"/>.
+    /// </summary>
+    public void SetOverlayScene(RenderScene? scene, AssetVfs? vfs)
+    {
+        _overlayScene?.Dispose();
+        _overlayScene = scene is null ? null : new GpuScene(_gd, scene, vfs);
+    }
+
     /// <summary>Sets the manipulator/gizmo line overlay, drawn ON TOP of the scene (depth test
     /// disabled) so its handles are never occluded by geometry in front of the selection (item 12).</summary>
     public void SetGizmoOverlay(IReadOnlyList<LineSegment> lines)
@@ -134,6 +147,11 @@ public sealed class Viewport : IDisposable
         _renderer.Render(Camera, Mode, _gpuScene, _surface);
         _renderer.DrawOverlayLines(Camera, _overlayVb, _overlayVertexCount);
         _renderer.DrawOverlayLines(Camera, _gizmoOverlayVb, _gizmoOverlayVertexCount, onTop: true);
+        if (_overlayScene is not null)
+        {
+            _renderer.DrawOverlayBillboards(Camera, _overlayScene);
+        }
+
         _surface.Present(VSync);
     }
 
@@ -149,6 +167,7 @@ public sealed class Viewport : IDisposable
     {
         _overlayVb?.Dispose();
         _gizmoOverlayVb?.Dispose();
+        _overlayScene?.Dispose();
         _pick?.Dispose();
         _gpuScene.Dispose();
         _surface.Dispose();

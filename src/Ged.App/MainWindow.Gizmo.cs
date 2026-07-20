@@ -418,6 +418,7 @@ public sealed partial class MainWindow
 
         _dragSurface = s;
         _gizmoDragging = true;
+        BeginInteractiveTransform(); // per-frame edits update only the cheap overlay; heavy work waits for commit
         _dragPose = ComputeGizmoPose(s);
         _dragPivot = _dragPose.Pivot;
         // B1: arm snap-to-geometry for a move drag (vertex/midpoint/face targets).
@@ -487,9 +488,8 @@ public sealed partial class MainWindow
         _gizmoDragging = false;
         _dragSurface = null;
         DisarmGeometrySnap();
-        EndTransformIndicator(rebuildIfLabeled: true); // indicators vanish on commit
-        _history.Refresh();
-        RefreshSelectionOverlay();
+        EndTransformIndicator();        // indicators vanish on commit (label overlay cleared)
+        CommitInteractiveTransform();   // the deferred full rebuild + panel refresh + preview arm, ONCE
     }
 
     private void OnGizmoDragCancelled()
@@ -499,7 +499,8 @@ public sealed partial class MainWindow
         _gizmoDragging = false;
         _dragSurface = null;
         DisarmGeometrySnap();
-        EndTransformIndicator(rebuildIfLabeled: false); // the RebuildScene below drops the label
+        EndTransformIndicator();        // the RebuildScene below drops any residual overlay
+        CancelInteractiveTransform();   // clear the drag gate; geometry is back to its pre-drag state
         RebuildScene();
         RefreshSelectionOverlay();
         _properties.Refresh();
