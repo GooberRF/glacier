@@ -35,7 +35,12 @@ internal static class GpuHost
         {
             lock (Lock)
             {
-                return _device ??= new GraphicsDevice(_backend);
+                // preferWindowingGl: this shared off-viewport device lives on the UI thread
+                // alongside the windowing-system GL compositor. On Linux/X11 that means its
+                // offscreen context must use GLX (not EGL) to coexist with Avalonia's GLX
+                // compositor on the same thread; otherwise an EGL context left current there
+                // makes Avalonia's glXMakeContextCurrent fail and the app crashes at first paint.
+                return _device ??= new GraphicsDevice(_backend, preferWindowingGl: true);
             }
         }
     }
