@@ -284,11 +284,20 @@
       <strong>Everything</strong> (including hints). The threshold gates only the toasts — the status
       bar and Log always record everything.</p>
 
+      <h3>Undo application</h3>
+      <p><em>Settings ▸ General ▸ Undo application</em> sets how an undo is applied.
+      <strong>Instant</strong> (the default) snaps straight to the target state in a single refresh;
+      <strong>Replay</strong> walks visibly through each intermediate history entry. Both reach the
+      same result — the choice governs plain Undo / Redo (<kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd>) as
+      well as jumps through the edit history.</p>
+
       <div class="note"><strong>Locked brushes and objects are protected.</strong> Locking an item
       (the padlock in the Outliner or Layers panel, or <kbd>Q</kbd> / <kbd>Shift+Q</kbd> to lock /
       unlock) makes it <strong>unselectable and untransformable</strong> until you unlock it — a click
       that lands only on a locked item is refused with a hint — so you can work around fixed geometry
-      without disturbing it.</div>
+      without disturbing it. <strong>Unlock All</strong> (<kbd>Shift+Q</kbd>, or the Layers panel's
+      Unlock button) also clears brush locks that shipped saved in the level file, so a file-locked
+      brush becomes selectable and editable again.</div>
     </section>
 
     <!-- 3 -->
@@ -307,7 +316,8 @@
         <div class="tile"><h4>Orbit</h4><p>Tumble and dolly around the selection or a focus point,
         good for inspecting a piece of geometry from all sides.</p></div>
         <div class="tile"><h4>UnrealEd</h4><p>The UnrealEd-style mouse-button navigation many level
-        designers already have in muscle memory.</p></div>
+        designers already have in muscle memory: a left click selects, and a left drag flies the
+        camera instead of drawing a selection box.</p></div>
       </div>
 
       <div class="note"><strong>Continuous camera movement uses fixed held keys.</strong> The
@@ -343,6 +353,15 @@
           <tr><td><strong>Group</strong></td><td>Named groups of brushes and objects, moved and edited as a unit.</td></tr>
         </tbody>
       </table></div>
+      <div class="note"><strong>Edits keep every face flat.</strong> When a vertex, edge or face edit
+      would bend a face off its plane, Glacier automatically triangulates that face — exactly as RED
+      does — so brush faces never go non-planar. A move that slides along a face's own plane leaves
+      it intact.</div>
+      <div class="note"><strong>Selection follows the mode.</strong> Switching mode drops any
+      selection the new mode cannot use — an object is deselected when you enter Brush, Face, Vertex
+      or Edge mode. <strong>Group</strong> mode keeps both kinds: click a brush or an object to select
+      it, and hold <kbd>Ctrl</kbd> to add across brushes and objects together. Clicking empty space,
+      a locked item, or a wrong-kind item always clears the current selection.</div>
     </section>
 
     <!-- 5 -->
@@ -357,6 +376,11 @@
         <li><strong>Detail</strong> — decoration that does not carve the world BSP, so it never
         creates new rooms or leaks.</li>
       </ul>
+      <div class="note"><strong>Portal brushes stay visible and selectable.</strong> An
+      <strong>air</strong> portal brush (a portal that also carves) always shows its real textured
+      faces, in every editing mode. A <strong>solid</strong> portal brush's faces instead follow the
+      per-pane <em>View ▸ Portal Faces</em> option (don't draw / see-thru / non-see-thru). Either
+      way, a portal brush is always selectable in every mode.</div>
       <p>Boolean and construction operators available on brushes and selections include
       <strong>boolean</strong> (subtract / intersect), <strong>clip</strong>, <strong>carve</strong>,
       <strong>fuse</strong>, <strong>stretch</strong>, <strong>bend</strong>, <strong>twist</strong>,
@@ -411,8 +435,9 @@
     <section id="objects">
       <h2>8. Objects &amp; events</h2>
       <p>Objects are everything that is not world geometry: entities, items, clutter, lights,
-      triggers, movers, particle emitters, ambient sounds, decals, cutscene path nodes, room effects
-      and the full catalogue of <strong>events</strong> (148 event types).</p>
+      triggers, movers, particle emitters, ambient sounds, decals, cutscene path nodes, room effects,
+      EAX environmental-audio zones and the full catalogue of <strong>events</strong> (148 event
+      types).</p>
 
       <h3>Placing objects</h3>
       <p>Drag a class straight out of the <strong>Object palette</strong> (entities, clutter, items,
@@ -432,9 +457,11 @@
       <h3>Inspectors</h3>
       <p>The Properties panel shows a purpose-built inspector for each kind — events (with their
       typed fields and schema), lights, ambient sounds, coronas, meshes (including a per-slot texture
-      override editor) and <strong>Room Effects</strong> (sky / liquid / ambient-light, with the full
-      liquid-property field set). Multi-selection edits apply across the selection with mixed-value
-      handling. Every edit is a single undo step.</p>
+      override editor), <strong>EAX effect zones</strong> (environmental-audio reverb regions, each
+      with a labelled inspector, listed in the Outliner like any other object) and
+      <strong>Room Effects</strong> (sky / liquid / ambient-light, with the full liquid-property field
+      set). Multi-selection edits apply across the selection with mixed-value handling. Every edit is
+      a single undo step.</p>
 
       <h3>Links &amp; the link graph</h3>
       <p>Wire triggers to events to movers by linking objects (<kbd>K</kbd> to link, <kbd>Shift+K</kbd>
@@ -613,7 +640,9 @@
       <p>Launch straight into your level through Alpine Faction. <em>Play Level</em> (<kbd>F7</kbd>)
       and <em>Play Level from Camera</em> (<kbd>F8</kbd>) start single-player; <em>Play in Multi</em>
       (<kbd>F9</kbd>) and <em>Play in Multi from Camera</em> (<kbd>F10</kbd>) start a multiplayer
-      session. The "from Camera" variants drop you in at the current viewport camera position.</p>
+      session. The "from Camera" variants spawn you at the current viewport camera's exact position
+      and heading, in both single-player and multiplayer — Glacier passes the pose through the game's
+      own launch switches, so the first spawn lands where the camera looks.</p>
       <p>Playtesting saves your level first, RED-style: the save writes exactly what you last built and
       does <strong>not</strong> re-bake, so run <em>Geometry ▸ Build</em> and <em>Build ▸ Calculate
       Lighting</em> before playtesting if you have changed geometry or lights. (Unsealed live-preview
