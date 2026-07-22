@@ -629,7 +629,7 @@ public sealed class BrushEditor
             },
             () =>
             {
-                foreach (var (b, index) in captured.Reverse())
+                foreach (var (b, index) in Enumerable.Reverse(captured))
                 {
                     section.Brushes.Insert(Math.Clamp(index, 0, section.Brushes.Count), b);
                 }

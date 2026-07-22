@@ -7,6 +7,7 @@ Version 1.2.0-HASH (Beta 3): Not yet released
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fixed Box, Planar, and Cylinder texture mapping (Texture/UV tools) orienting to each brush's local frame after a brush was rotated, so textures flowed in a different direction on every brush. Mapping now projects in world space like RED: the selected faces map in the same direction with continuous tiling across adjacent brushes, whatever their rotation.
+- Fixed building from source failing when a .NET 9 or newer SDK is installed.
 
 Version 1.1.0-b9e8ed6 (Beta 2): Released 22-07-2026
 --------------------------------

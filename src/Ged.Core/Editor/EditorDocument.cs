@@ -548,7 +548,7 @@ public sealed class EditorDocument
             },
             () =>
             {
-                foreach (var (list, model, index, section) in captured.Reverse())
+                foreach (var (list, model, index, section) in Enumerable.Reverse(captured))
                 {
                     list.Insert(Math.Clamp(index, 0, list.Count), model);
                     section.Dirty = true;
@@ -774,7 +774,7 @@ public sealed class EditorDocument
                     }
                 }
 
-                foreach (var (list, model, index, section) in captured.Reverse())
+                foreach (var (list, model, index, section) in Enumerable.Reverse(captured))
                 {
                     list.Insert(Math.Clamp(index, 0, list.Count), model);
                     section.Dirty = true;
