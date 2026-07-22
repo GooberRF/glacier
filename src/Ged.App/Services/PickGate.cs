@@ -14,11 +14,16 @@ public static class PickGate
 {
     /// <summary>
     /// True when a brush-editor pick (brush / brush face / brush vertex) of
-    /// <paramref name="kind"/> may select under the active chips.
+    /// <paramref name="kind"/> may select under the active chips. A whole-brush hit widens
+    /// to the Groups chip too, so a brush click (and marquee) selects in Group mode exactly
+    /// like an object does — mirroring <see cref="SelectionRouter.Gate"/> (which permits a
+    /// brush selection whenever Brushes OR Groups is active) and
+    /// <see cref="AllowsDocumentSelect"/> (which widens object picks the same way). Without
+    /// this, Group mode dropped every brush pick before the router was ever consulted (B4).
     /// </summary>
     public static bool AllowsBrushEditor(SelectKinds active, PickKind kind) => kind switch
     {
-        PickKind.Brush => (active & SelectKinds.Brushes) != 0,
+        PickKind.Brush => (active & (SelectKinds.Brushes | SelectKinds.Groups)) != 0,
         PickKind.BrushFace => (active & SelectKinds.Faces) != 0,
         PickKind.BrushVertex => (active & SelectKinds.Vertices) != 0,
         _ => false,

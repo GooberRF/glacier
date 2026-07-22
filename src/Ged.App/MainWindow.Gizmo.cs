@@ -23,8 +23,9 @@ namespace Ged.App;
 /// Show Gizmo opt-out. Each handle is CPU ray-picked for hover highlight and
 /// press-to-drag; drags use correct world-ray math (<see cref="GizmoMath"/>) through
 /// the shared <see cref="SnapPolicy"/> (magnet + Alt-invert). ESC reverts the drag
-/// via a transaction rollback; release commits one undo entry. Empty-space LMB-drag
-/// runs a marquee box-select. The keyboard M/R+arrow and M/N+LMB paths are unchanged.
+/// via a transaction rollback; release commits one undo entry. A non-handle LMB-drag
+/// runs a marquee box-select (or camera navigation under the UnrealEd scheme). The
+/// keyboard M/R+arrow and M/N+LMB paths are unchanged.
 /// The two-point Clip dialog lives here too.
 /// </summary>
 public sealed partial class MainWindow
@@ -381,8 +382,20 @@ public sealed partial class MainWindow
 
         GizmoPose pose = ComputeGizmoPose(s);
         GizmoHandle h = GizmoPicker.Pick(pose, _gizmoTool, V(ro), V(rd), PickTol(s, pose.Pivot));
+
+        // Claim the press for a gizmo drag ONLY when a handle is actually hover-highlighted at the
+        // cursor (the lit handle — hover is refreshed on every idle move before the press). A press
+        // that merely lands within the pick tolerance of the gizmo, but not on a lit handle, falls
+        // through to the marquee/click path — so a box-select started near the current selection is
+        // never swallowed by the manipulator (item 1). The lit handle is exactly the grab target.
+        if (h == GizmoHandle.None || _hoverHandle == GizmoHandle.None)
+        {
+            _dragHandle = GizmoHandle.None;
+            return false;
+        }
+
         _dragHandle = h;
-        return h != GizmoHandle.None;
+        return true;
     }
 
     private void OnGizmoHover(IViewportSurface s, int x, int y)
@@ -483,6 +496,10 @@ public sealed partial class MainWindow
 
     private void OnGizmoDragEnded()
     {
+        // RED-parity: a vertex/edge/face transform is applied to the model per-frame (the ghost shows
+        // the bent face mid-drag), and any face bent off-plane is triangulated ONCE on release — joined
+        // to the drag's open undo transaction, so a single undo restores the pre-drag brush exactly.
+        PlanarizeSubGeometryOnCommit();
         _gizmoTx?.Commit();
         _gizmoTx = null;
         _gizmoDragging = false;
@@ -506,6 +523,40 @@ public sealed partial class MainWindow
         _properties.Refresh();
         _history.Refresh();
         _dispatcher.ShowMessage("Transform cancelled.");
+    }
+
+    /// <summary>
+    /// On sub-geometry (vertex/edge/face) drag release, triangulates any brush face the drag bent
+    /// off-plane so faces stay flat (RED parity; see <see cref="Ged.Core.Editing.FacePlanarizer"/>).
+    /// Runs inside the still-open gizmo undo transaction, so it collapses into the one "Move (gizmo)"
+    /// undo entry. A no-move press or a coplanar-preserving slide triangulates nothing.
+    /// </summary>
+    private void PlanarizeSubGeometryOnCommit()
+    {
+        if (!_interactiveEditApplied || BrushEd is not { } be || TransformableKind() != GizmoSelKind.SubGeometry)
+        {
+            return;
+        }
+
+        // The vertices the drag actually moved, grouped by brush (same set GizmoMoveSubGeometry drove) —
+        // so only faces touching a moved vertex are eligible to split; untouched faces are left intact.
+        Dictionary<int, HashSet<int>> movedByBrush = SelectedSubGeometryVertsByBrush();
+        if (movedByBrush.Count == 0)
+        {
+            return;
+        }
+
+        int triangulated = 0;
+        be.EditBrushes(movedByBrush.Keys.ToList(), "Planarize bent faces", b =>
+        {
+            if (movedByBrush.TryGetValue(b.Uid, out HashSet<int>? moved))
+            {
+                triangulated += Ged.Core.Editing.FacePlanarizer.Planarize(b.Geometry, moved);
+            }
+
+            return OpResult.Ok();
+        });
+        NotePlanarized(triangulated);
     }
 
     // ---- Drag math + application ---------------------------------------------
@@ -597,47 +648,7 @@ public sealed partial class MainWindow
             return;
         }
 
-        var byBrush = new Dictionary<int, HashSet<int>>();
-        void Add(int bu, int vi)
-        {
-            if (!byBrush.TryGetValue(bu, out HashSet<int>? set))
-            {
-                set = new HashSet<int>();
-                byBrush[bu] = set;
-            }
-
-            set.Add(vi);
-        }
-
-        if (be.Mode == EditMode.Vertex)
-        {
-            foreach ((int bu, int vi) in be.SelectedVertices)
-            {
-                Add(bu, vi);
-            }
-        }
-        else if (be.Mode == EditMode.Edge)
-        {
-            foreach ((int bu, int v0, int v1) in be.SelectedEdges)
-            {
-                Add(bu, v0);
-                Add(bu, v1);
-            }
-        }
-        else
-        {
-            foreach ((int bu, int fi) in be.SelectedFaces)
-            {
-                if (be.FindBrush(bu) is { } b && fi < b.Geometry.Faces.Count)
-                {
-                    foreach (FaceVertex fv in b.Geometry.Faces[fi].Vertices)
-                    {
-                        Add(bu, fv.Index);
-                    }
-                }
-            }
-        }
-
+        Dictionary<int, HashSet<int>> byBrush = SelectedSubGeometryVertsByBrush();
         if (byBrush.Count == 0)
         {
             return;
@@ -929,12 +940,15 @@ public sealed partial class MainWindow
 
         // Feature F: a member hit selects its WHOLE instance (unit semantics), except the instance
         // currently entered for member editing, and except an instance with a locked member (G point
-        // 4: unselectable as a unit). Non-member hits stay plain.
+        // 4: unselectable as a unit). Non-member hits stay plain. The prefab-membership probe parses
+        // the instance section per hit, so skip it entirely when the level has no instances (item P1:
+        // ctf06 has none — the probe was pure overhead over thousands of marquee hits).
+        bool anyInstances = _prefabInstances?.HasInstances == true;
         var instanceIds = new List<int>();
         var plainHits = new List<int>();
         foreach (int id in hits)
         {
-            if (_prefabUnit?.MemberInstance(id) is { } rec &&
+            if (anyInstances && _prefabUnit?.MemberInstance(id) is { } rec &&
                 _prefabUnit.EnteredInstanceId != rec.InstanceId &&
                 _prefabUnit.CanSelectAsUnit(rec.InstanceId))
             {
@@ -966,27 +980,37 @@ public sealed partial class MainWindow
             BrushEd?.ClearSelection();
         }
 
-        int n = 0;
+        // Item P1: classify every plain hit through the SAME PickGate the click path uses (so box-
+        // select can never drift from click-select — item 2), then apply the whole catch in ONE
+        // batched object mutation + ONE batched brush mutation. The previous per-hit
+        // SelectObject/SelectBrush loop raised a SelectionChanged per caught item, and each event fans
+        // out to a full Outliner/Properties/LinkGraph rebuild — so marqueeing ctf06's object set was
+        // O(n²) panel work and hung the app for minutes. The router batch paths raise one event each.
+        var brushHits = new List<int>();
+        var objectHits = new List<LevelObject>();
         foreach (int id in plainHits)
         {
-            // Route every plain marquee hit through the SAME PickGate the click path uses, so box-
-            // select can never drift from click-select (item 2).
             if (BrushEd is { } be2 && be2.FindBrush(id) is not null &&
                 Ged.App.Services.PickGate.AllowsBrushEditor(active, Ged.Rendering.Picking.PickKind.Brush))
             {
-                if (_session.Selection.SelectBrush(id, additive: true))
-                {
-                    n++;
-                }
+                brushHits.Add(id);
             }
             else if (Document.FindByUid(id) is { } o &&
                 Ged.App.Services.PickGate.AllowsDocumentSelect(active, Ged.Rendering.Picking.PickKind.Object, o.Kind == LevelObjectKind.Mover))
             {
-                if (_session.Selection.SelectObject(o, additive: true))
-                {
-                    n++;
-                }
+                objectHits.Add(o);
             }
+        }
+
+        int n = 0;
+        if (objectHits.Count > 0 && _session.Selection.SelectObjects(objectHits, additive: true))
+        {
+            n += objectHits.Count;
+        }
+
+        if (brushHits.Count > 0 && _session.Selection.SelectBrushes(brushHits, additive: true))
+        {
+            n += brushHits.Count;
         }
 
         // Expanded instance members select as whole units (both kinds, group-like gate, skip locked).

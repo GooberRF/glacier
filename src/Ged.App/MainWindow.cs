@@ -127,7 +127,15 @@ public sealed partial class MainWindow : Window, IEditorHost
     /// longer gets a phantom highlight that masquerades as a selection. <see cref="_lastPick"/>
     /// still records the raw hit for placement/face-hit (which needs the clicked face regardless).
     /// </summary>
-    private PickId _lastPickHighlight = PickId.None;
+    // The last pick that lit a highlight box lives on the session (EditorSession.PickHighlight) so a
+    // mode transition (SyncSelectionToKinds) can drop it centrally — a former object's box must not
+    // linger into a mode where its kind is unselectable (P3).
+    private Ged.Rendering.Picking.PickId LastPickHighlight
+    {
+        get => _session.PickHighlight;
+        set => _session.PickHighlight = value;
+    }
+
     private string? _initialOpenPath;
 
     public MainWindow(string? initialOpenPath = null)
@@ -286,6 +294,82 @@ public sealed partial class MainWindow : Window, IEditorHost
 
     public void RequestSceneRebuild() => RebuildScene();
 
+    /// <summary>
+    /// Time-travels the document to a History-panel node. The "Undo application" setting decides HOW:
+    /// Instant (default) applies the whole jump in one shot with a single scene rebuild; Replay walks
+    /// each intermediate history entry visibly, rebuilding the scene per step (via
+    /// <see cref="Ged.Core.Editor.UndoStack.StepToward"/>). Both reach the identical final document state.
+    /// </summary>
+    public void RequestHistoryJump(Ged.Core.Editor.UndoNode target)
+    {
+        if (Document is not { } doc)
+        {
+            return;
+        }
+
+        if (_settings.UndoReplay)
+        {
+            _ = ReplayHistoryJumpAsync(doc.Undo, target);
+            return;
+        }
+
+        doc.Undo.MoveToNode(target);
+        RefreshAfterHistoryStep();
+    }
+
+    /// <summary>Replays a history jump one entry at a time, refreshing the view between entries so the
+    /// document is seen stepping through its states. The end state equals the Instant jump.</summary>
+    private async System.Threading.Tasks.Task ReplayHistoryJumpAsync(Ged.Core.Editor.UndoStack undo, Ged.Core.Editor.UndoNode target)
+    {
+        const int stepMs = 90; // brief per-entry pause so the walk is visible without dragging on
+        while (undo.StepToward(target))
+        {
+            RefreshAfterHistoryStep();
+            await System.Threading.Tasks.Task.Delay(stepMs);
+        }
+
+        RefreshAfterHistoryStep(); // covers the no-op (target == current) case; otherwise a harmless final refresh
+    }
+
+    private void RefreshAfterHistoryStep()
+    {
+        RebuildScene();
+        RefreshSelectionOverlay();
+        _history.Refresh();
+    }
+
+    /// <summary>
+    /// Plain Ctrl+Z / Ctrl+Y. Routes through the build controller so an undo/redo that changed brush
+    /// geometry re-arms the uncapped live-CSG rebuild (the merged world the moved brush's old spot draws
+    /// from must refresh on any size level — the same reason a transform COMMIT arms it; without this the
+    /// compiled world stayed stale after undo on &gt;350-brush levels). The "Undo application" setting
+    /// decides coalescing: Instant (default) applies a coalesced-drag entry with ONE refresh (no walking
+    /// the brush backward through every drag frame); Replay lets the sub-commands notify so it steps.
+    /// </summary>
+    private void UndoRedo(bool redo)
+    {
+        if (Document is null)
+        {
+            return;
+        }
+
+        bool coalesce = !_settings.UndoReplay;
+        if (_buildController is { } bc)
+        {
+            bc.ApplyUndoRedo(redo, coalesce);
+        }
+        else if (redo)
+        {
+            Document.Undo.Redo(coalesce);
+        }
+        else
+        {
+            Document.Undo.Undo(coalesce);
+        }
+
+        AfterMutation();
+    }
+
     public void RefreshSelectionOverlay()
     {
         var lines = new List<Ged.Rendering.Scene.LineSegment>();
@@ -311,9 +395,9 @@ public sealed partial class MainWindow : Window, IEditorHost
         // the raw _lastPick here highlighted out-of-mode picks the router already rejected (an
         // object clicked in Brush mode, a brush clicked in Object mode) — a purely visual
         // masquerade over correctly-unchanged state.
-        if (!_lastPickHighlight.IsNone)
+        if (!LastPickHighlight.IsNone)
         {
-            lines.AddRange(_session.BuildSelectionLines(_lastPickHighlight));
+            lines.AddRange(_session.BuildSelectionLines(LastPickHighlight));
         }
 
         _viewportGrid.SetSelection(lines);
@@ -950,8 +1034,8 @@ public sealed partial class MainWindow : Window, IEditorHost
         _dispatcher.Bind(CommandIds.FileSave, () => _ = SaveAsync(false), () => Document is not null);
         _dispatcher.Bind(CommandIds.FileSaveAs, () => _ = SaveAsync(true), () => Document is not null);
 
-        _dispatcher.Bind(CommandIds.EditUndo, () => { Document?.Undo.Undo(); AfterMutation(); }, () => Document?.Undo.CanUndo == true);
-        _dispatcher.Bind(CommandIds.EditRedo, () => { Document?.Undo.Redo(); AfterMutation(); }, () => Document?.Undo.CanRedo == true);
+        _dispatcher.Bind(CommandIds.EditUndo, () => { UndoRedo(redo: false); }, () => Document?.Undo.CanUndo == true);
+        _dispatcher.Bind(CommandIds.EditRedo, () => { UndoRedo(redo: true); }, () => Document?.Undo.CanRedo == true);
         _dispatcher.Bind(CommandIds.EditCopy, () => Document?.CopySelection(), () => Document?.Selection.Count > 0);
         _dispatcher.Bind(CommandIds.EditCut, () => { Document?.CutSelection(); AfterMutation(); }, () => Document?.Selection.Count > 0);
         _dispatcher.Bind(CommandIds.EditPaste, () => { Document?.Paste(); AfterMutation(); }, () => Document?.HasClipboard == true);
@@ -971,7 +1055,18 @@ public sealed partial class MainWindow : Window, IEditorHost
         _dispatcher.Bind(CommandIds.VisHideExcept, () => { Document?.HideExceptClutterEntities(); RebuildScene(); });
         _dispatcher.Bind(CommandIds.VisUnhideExcept, () => { Document?.UnhideExceptClutterEntities(); RebuildScene(); });
         _dispatcher.Bind(CommandIds.VisLock, () => Document?.LockSelected());
-        _dispatcher.Bind(CommandIds.VisUnlockAll, () => Document?.UnlockAll());
+        // Unlock All (Shift+Q) clears BOTH the session object-lock set AND the persisted brush lock
+        // state — a level can ship with brushes state=Locked (ctf06 UID 414), and those can only be
+        // unlocked by mutating the brush state (BrushEditor.UnlockAll), never by the object path.
+        _dispatcher.Bind(CommandIds.VisUnlockAll, () =>
+        {
+            Document?.UnlockAll();
+            int brushes = BrushEd?.UnlockAll() ?? 0;
+            if (brushes > 0)
+            {
+                _dispatcher.ShowMessage($"Unlocked {brushes} brush(es).");
+            }
+        });
 
         _dispatcher.Bind(CommandIds.View1Pane, () => _viewportGrid.SetLayout(1));
         _dispatcher.Bind(CommandIds.View2Pane, () => _viewportGrid.SetLayout(2));
@@ -1535,7 +1630,7 @@ public sealed partial class MainWindow : Window, IEditorHost
     {
         _viewportGrid.LoadScene(scene, _session.Vfs, scene.SuggestedCameraPosition, scene.SuggestedCameraTarget);
         _lastPick = PickId.None;
-        _lastPickHighlight = PickId.None;
+        LastPickHighlight = PickId.None;
         RefreshSelectionOverlay();
     }
 
@@ -1798,7 +1893,10 @@ public sealed partial class MainWindow : Window, IEditorHost
             RefreshPanels();
             _layers.Refresh();
             UpdateStatusStatics();
-            _buildController?.ArmLivePreviewIfPending();
+            // Transform commit (gizmo / M-N drag): refresh the merged brushwork stash regardless of
+            // brush count, so the moved brush's OLD location stops drawing stale compiled geometry on
+            // large levels (ctf06 > 350). The full compile is sub-second and runs off-thread (Q3).
+            _buildController?.ArmPostTransformBuild();
         }
 
         RefreshSelectionOverlay();
@@ -1828,7 +1926,7 @@ public sealed partial class MainWindow : Window, IEditorHost
     private void OnPicked(Viewport.IViewportSurface surface, PickId id, bool additive)
     {
         _lastPick = id;
-        _lastPickHighlight = PickId.None; // item (a): only an accepted in-mode selection lights the pick
+        LastPickHighlight = PickId.None; // item (a): only an accepted in-mode selection lights the pick
 
         // Texture eyedropper (item 6): the armed next-click samples the clicked face's
         // texture into the caller (the Face-properties field), consuming the pick.
@@ -1859,9 +1957,10 @@ public sealed partial class MainWindow : Window, IEditorHost
 
         if (HandleModePick(surface, id, additive))
         {
-            // An in-mode brush/face/vertex selection lights the pick; an empty-click CLEAR leaves
-            // id == None, so BuildSelectionLines(None) draws nothing (item (a)).
-            _lastPickHighlight = id;
+            // HandleModePick lights the pick itself — only for an accepted in-mode selection, never
+            // for a clear (empty / wrong-kind / locked-only click). A non-selecting click therefore
+            // leaves LastPickHighlight == None, so BuildSelectionLines draws no phantom highlight
+            // (item (a) + the universal clear-on-empty, item 3).
             RefreshSelectionOverlay();
             return;
         }
@@ -1878,15 +1977,31 @@ public sealed partial class MainWindow : Window, IEditorHost
             bool objectsAllowed = _filter.Allows(Ged.Core.Editing.SelectKinds.Objects)
                 || _filter.Allows(Ged.Core.Editing.SelectKinds.Groups);
             LevelObject? o = _session.ObjectForPick(id);
+            bool selected = false;
             if (o is not null && Ged.App.Services.PickGate.AllowsDocumentSelect(
                     _filter.Active, id.Kind, o.Kind == Ged.Core.Editor.LevelObjectKind.Mover))
             {
-                _lastPickHighlight = id; // in-mode object selection lights the pick (item (a))
-                _session.Selection.SelectObject(o, additive);
+                selected = _session.Selection.SelectObject(o, additive);
+                if (selected)
+                {
+                    LastPickHighlight = id; // only an accepted in-mode object selection lights the pick (item (a))
+                }
             }
-            else if (id.IsNone && objectsAllowed)
+
+            // Universal clear-on-empty (item 3): a non-additive click that selected no allowed object
+            // — empty space, a wrong-kind hit (e.g. a brush in Object mode), or a locked-only hit (its
+            // lock hint already shown) — clears. Group mode clears EVERYTHING (document objects AND
+            // brush group-members) via Selection.ClearAll; Object mode clears the object selection.
+            if (!selected && !additive && objectsAllowed)
             {
-                Document.ClearSelection();
+                if (BrushEd?.Mode == Ged.Core.Editing.EditMode.Group)
+                {
+                    _session.Selection.ClearAll();
+                }
+                else
+                {
+                    Document.ClearSelection();
+                }
             }
         }
 

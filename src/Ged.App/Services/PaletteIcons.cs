@@ -80,6 +80,7 @@ internal static class PaletteIcons
         LevelObjectKind.ClimbRegion => BillboardKind.ClimbRegion,
         LevelObjectKind.PushRegion => BillboardKind.PushRegion,
         LevelObjectKind.RoomEffect => BillboardKind.RoomEffect,
+        LevelObjectKind.Eax => BillboardKind.Eax,
         LevelObjectKind.MeshObject => BillboardKind.Clutter, // scene builder draws mesh objects with the clutter glyph
         LevelObjectKind.NoteObject => BillboardKind.Note,
         LevelObjectKind.CoronaObject => BillboardKind.Corona,

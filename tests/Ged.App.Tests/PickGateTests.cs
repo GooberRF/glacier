@@ -36,12 +36,27 @@ public sealed class PickGateTests
     [InlineData(EditMode.Vertex, PickKind.BrushVertex, true)]
     [InlineData(EditMode.Vertex, PickKind.Brush, false)]
     [InlineData(EditMode.Vertex, PickKind.BrushFace, false)]
-    // Group mode: no direct brush-editor selection (members select at document level).
-    [InlineData(EditMode.Group, PickKind.Brush, false)]
+    // Group mode: a whole-brush pick selects (B4 — brushes are group members, exactly like
+    // objects), but faces/vertices stay strict to their own chip.
+    [InlineData(EditMode.Group, PickKind.Brush, true)]
     [InlineData(EditMode.Group, PickKind.BrushFace, false)]
     [InlineData(EditMode.Group, PickKind.BrushVertex, false)]
     public void BrushEditor_Gate_Matrix(EditMode mode, PickKind kind, bool expected) =>
         Assert.Equal(expected, PickGate.AllowsBrushEditor(StrictDefault(mode), kind));
+
+    // ---- B4: in Group mode a brush pick and an object pick are BOTH admitted, so a brush click
+    //      resolves to a selection exactly like an object click (the click and marquee paths both
+    //      gate on these two predicates). ----
+    [Fact]
+    public void Group_Mode_Admits_Both_Brush_And_Object_Picks_Symmetrically()
+    {
+        SelectKinds group = StrictDefault(EditMode.Group);
+        Assert.True(PickGate.AllowsBrushEditor(group, PickKind.Brush), "a brush pick must select in Group mode");
+        Assert.True(PickGate.AllowsDocumentSelect(group, PickKind.Object, isMoverObject: false), "an object pick selects in Group mode");
+        // Object mode stays asymmetric on purpose: an editable brush is NOT selectable there.
+        SelectKinds obj = StrictDefault(EditMode.Object);
+        Assert.False(PickGate.AllowsBrushEditor(obj, PickKind.Brush));
+    }
 
     [Theory]
     // Object mode: level objects yes; plain brushes NO even when hit first; movers yes.

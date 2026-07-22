@@ -82,6 +82,35 @@ public sealed class SelectionRouter
         return false;
     }
 
+    /// <summary>
+    /// A plain (non-additive) selection of ONE kind must REPLACE the whole cross-kind selection, not
+    /// just its own kind. In Group mode (and any Ctrl+chip state) whole brushes AND objects are
+    /// co-selectable at once, so an object click has to drop a lingering brush selection — and a brush
+    /// click a lingering object selection — otherwise the OTHER kind's highlight lingers over stale
+    /// state (the selection overlay rebuilds BOTH kinds' lines from the live selection every refresh,
+    /// so an uncleared other-kind selection keeps drawing). Clears the other kind only when it is
+    /// currently co-selectable (so single-kind modes, where the other kind was purged on entry, are
+    /// untouched) and only for a non-additive request; additive (Ctrl) keeps both. The clear raises at
+    /// most ONE event on the other editor (ClearSelection no-ops when already empty), so the whole
+    /// replace stays one-event-per-kind — consistent with the marquee's batch semantics.
+    /// </summary>
+    private void ReplaceOtherKind(SelectKinds keptKind, bool additive)
+    {
+        if (additive)
+        {
+            return;
+        }
+
+        if (keptKind == SelectKinds.Objects && Permits(SelectKinds.Brushes))
+        {
+            _brushes()?.ClearSelection();
+        }
+        else if (keptKind == SelectKinds.Brushes && Permits(SelectKinds.Objects))
+        {
+            _doc()?.ClearSelection();
+        }
+    }
+
     // ---- Object / group selection --------------------------------------------
 
     public bool SelectObject(LevelObject o, bool additive = false)
@@ -100,6 +129,7 @@ public sealed class SelectionRouter
             return false;
         }
 
+        ReplaceOtherKind(SelectKinds.Objects, additive);
         _doc()?.Select(o, additive);
         return true;
     }
@@ -112,6 +142,7 @@ public sealed class SelectionRouter
         }
 
         // Batch path (group select, Outliner group): silently skip locked members.
+        ReplaceOtherKind(SelectKinds.Objects, additive);
         _doc()?.SelectMany(objects.Where(o => !IsObjectLocked(o)), additive);
         return true;
     }
@@ -214,7 +245,30 @@ public sealed class SelectionRouter
             return false;
         }
 
+        ReplaceOtherKind(SelectKinds.Brushes, additive);
         _brushes()?.SelectBrush(uid, additive);
+        return true;
+    }
+
+    /// <summary>
+    /// Batch brush selection (box-select): selects many brushes in ONE mutation + ONE
+    /// <see cref="BrushEditor.SelectionChanged"/> event, silently skipping locked ones — the brush
+    /// analogue of <see cref="SelectObjects"/>. The marquee routes through this instead of a
+    /// per-brush <see cref="SelectBrush"/> loop so a big box-select is O(n), not O(n²) (item P1).
+    /// </summary>
+    public bool SelectBrushes(IEnumerable<int> uids, bool additive = false)
+    {
+        if (!Permits(SelectKinds.Brushes))
+        {
+            return Reject(SelectKinds.Brushes);
+        }
+
+        if (_brushes() is { } be)
+        {
+            ReplaceOtherKind(SelectKinds.Brushes, additive);
+            be.SelectBrushes(uids.Where(u => !be.IsBrushLocked(u)), additive);
+        }
+
         return true;
     }
 
@@ -428,19 +482,35 @@ public sealed class SelectionRouter
     {
         EditorDocument? doc = _doc();
         BrushEditor? be = _brushes();
+
+        // Batch by kind so the whole instance folds in with ONE brush event + ONE object event,
+        // not one per member (item P1 — the per-member SelectBrush/Select loop fanned out a full
+        // panel rebuild per member on a marquee that caught many instances).
+        var brushUids = new List<int>();
+        var objects = new List<LevelObject>();
         foreach (int uid in memberUids)
         {
             if (be?.FindBrush(uid) is not null)
             {
                 if (!be.IsBrushLocked(uid))
                 {
-                    be.SelectBrush(uid, additive: true);
+                    brushUids.Add(uid);
                 }
             }
             else if (doc?.FindByUid(uid) is { } o && !doc.IsLocked(o))
             {
-                doc.Select(o, additive: true);
+                objects.Add(o);
             }
+        }
+
+        if (brushUids.Count > 0)
+        {
+            be!.SelectBrushes(brushUids, additive: true);
+        }
+
+        if (objects.Count > 0)
+        {
+            doc!.SelectMany(objects, additive: true);
         }
     }
 

@@ -71,8 +71,8 @@ public static class VertexOps
 
         g.Faces = kept;
         GeometryUtil.CompactUnusedVertices(g);
-        GeometryUtil.RecomputeAllPlanes(g);
-        return OpResult.Ok("Delete vertices");
+        int tri = FacePlanarizer.Planarize(g);
+        return OpResult.Ok("Delete vertices") with { FacesTriangulated = tri };
     }
 
     /// <summary>
@@ -196,7 +196,13 @@ public static class VertexOps
     private static OpResult Finish(Geometry g, string label)
     {
         GeometryUtil.CleanupFaces(g);
-        GeometryUtil.RecomputeAllPlanes(g);
-        return g.Faces.Count == 0 ? OpResult.Fail("Operation removed the whole brush.") : OpResult.Ok(label);
+
+        // RED-parity edit-time planarity guard: triangulate any face this op bent off-plane, so
+        // brush faces stay flat (see FacePlanarizer). Subsumes the plane recompute. Joins the op's
+        // single undo entry because it mutates the same in-place geometry the caller snapshots.
+        int tri = FacePlanarizer.Planarize(g);
+        return g.Faces.Count == 0
+            ? OpResult.Fail("Operation removed the whole brush.")
+            : OpResult.Ok(label) with { FacesTriangulated = tri };
     }
 }

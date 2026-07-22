@@ -29,9 +29,75 @@ public sealed class BrushEditor
     private (HashSet<int> Brushes, HashSet<(int, int)> Faces, HashSet<(int, int)> Vertices, HashSet<(int, int, int)> Edges) _selectionMemory =
         (new(), new(), new(), new());
 
+    // Notification-batch state (item: Instant undo must not animate a coalesced drag). While a batch
+    // is open, per-sub-command BrushesChanged notifications are COALESCED into one fire on close, with
+    // the affected UIDs unioned (any structural/unknown change makes the batched notify structural).
+    private int _changeBatchDepth;
+    private bool _changePending;
+    private bool _changeUidsUnknown;
+    private readonly HashSet<int> _changeUids = new();
+
     public BrushEditor(EditorDocument document)
     {
         _doc = document ?? throw new ArgumentNullException(nameof(document));
+
+        // Let the document's undo stack coalesce a whole atomic Undo/Redo/jump into ONE BrushesChanged:
+        // a multi-command drag entry (the gizmo CompositeCommand, or a coalesced M-N node) otherwise
+        // fires a scene refresh per accumulated sub-command, so an "Instant" undo visibly walked the
+        // brush backward through every drag frame. The Replay path steps node-by-node and does NOT use
+        // this scope, so it still animates deliberately.
+        _doc.Undo.AtomicApplyScope = BatchChanges;
+    }
+
+    /// <summary>
+    /// Opens a scope that COALESCES <see cref="BrushesChanged"/>: notifications raised while the scope
+    /// is open are held and fired exactly once (with the union of affected UIDs) when it closes. Nesting
+    /// is depth-counted; the single fire happens when the outermost scope closes. Used by the undo stack
+    /// to make an Instant undo/redo of a multi-step drag land in one refresh (see the constructor).
+    /// </summary>
+    public IDisposable BatchChanges()
+    {
+        _changeBatchDepth++;
+        return new ChangeBatch(this);
+    }
+
+    /// <summary>Closes one batch level; when the outermost closes, fires the coalesced notification once.</summary>
+    private void EndChangeBatch()
+    {
+        if (--_changeBatchDepth != 0)
+        {
+            return;
+        }
+
+        bool pending = _changePending;
+        IReadOnlyCollection<int>? uids = _changeUidsUnknown ? null : _changeUids.ToList();
+        _changePending = false;
+        _changeUidsUnknown = false;
+        _changeUids.Clear();
+        if (pending)
+        {
+            LastChangedBrushUids = uids;
+            BrushesChanged?.Invoke();
+        }
+    }
+
+    private sealed class ChangeBatch : IDisposable
+    {
+        private readonly BrushEditor _be;
+        private bool _disposed;
+
+        public ChangeBatch(BrushEditor be) => _be = be;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _be.EndChangeBatch();
+        }
     }
 
     /// <summary>Raised after brushes are added/removed/reordered or geometry changes.</summary>
@@ -210,6 +276,28 @@ public sealed class BrushEditor
     internal void ToggleBrush(int uid)
     {
         if (!_selectedBrushes.Remove(uid))
+        {
+            _selectedBrushes.Add(uid);
+        }
+
+        SelectionChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Adds many brushes to the selection in one shot, raising <see cref="SelectionChanged"/>
+    /// EXACTLY ONCE (the batch marquee path — item P1: per-brush <see cref="SelectBrush"/> fired an
+    /// event per caught brush, and each event drove a full panel rebuild, so a big box-select was
+    /// O(n²) work that froze the UI). Mirrors <see cref="EditorDocument.SelectMany"/>.
+    /// </summary>
+    internal void SelectBrushes(IEnumerable<int> uids, bool additive = false)
+    {
+        if (!additive)
+        {
+            CaptureSelectionMemory();
+            _selectedBrushes.Clear();
+        }
+
+        foreach (int uid in uids)
         {
             _selectedBrushes.Add(uid);
         }
@@ -666,6 +754,28 @@ public sealed class BrushEditor
         }
     }
 
+    /// <summary>
+    /// Unlocks EVERY locked brush (stock Shift+Q / "Unlock All"): a brush lock is a PERSISTED
+    /// state field (<see cref="BrushState.Locked"/>) loaded from the RFL — RED's lock/unlock
+    /// command (RED.exe lock_members @ 0x442020) writes the brush state field directly
+    /// (lock: [brush+0x48]=2 @ 0x442073, unlock: [brush+0x48]=0 @ 0x44207c), the same field
+    /// serialized as rfl brush.state ({0 normal, 2 locked, 3 selected}). So a level shipped with
+    /// locked brushes (e.g. ctf06 UID 414, state=2) can be unlocked and re-saved unlocked.
+    /// Undoable and dirties the file (the persisted field changed, so Save must write it and undo
+    /// must restore it — RED writes the field but was not observed to set its modified flag on this
+    /// path); a no-op (nothing locked) leaves the document byte-identical. Returns the count freed.
+    /// </summary>
+    public int UnlockAll()
+    {
+        var lockedUids = Brushes.Where(b => b.State == BrushState.Locked).Select(b => b.Uid).ToList();
+        if (lockedUids.Count > 0)
+        {
+            SetBrushLocked(lockedUids, locked: false);
+        }
+
+        return lockedUids.Count;
+    }
+
     // ---- Brush hide (session-only view state; not persisted, like object lock) ----
 
     private readonly HashSet<int> _hiddenBrushes = new();
@@ -785,6 +895,7 @@ public sealed class BrushEditor
         RflSection host = HostOf(section);
         var before = targets.Select(GeometryClone.Deep).ToList();
         OpResult overall = OpResult.Ok(description);
+        int triangulated = 0;
         foreach (Brush b in targets)
         {
             OpResult r = mutate(b);
@@ -793,6 +904,11 @@ public sealed class BrushEditor
                 overall = r;
                 break;
             }
+
+            // Carry the edit-time planarity-guard count out of the mutate lambda: EditBrushes seeds
+            // `overall` with a fresh Ok(description), so a successful op's FacesTriangulated would
+            // otherwise be dropped (leaving the App's NotePlanarized silent). Summed across brushes.
+            triangulated += r.FacesTriangulated;
         }
 
         if (!overall)
@@ -812,7 +928,7 @@ public sealed class BrushEditor
         _doc.Undo.Execute(new RelayCommand(description,
             () => { for (int i = 0; i < live.Count; i++) { Assign(live[i], snapAfter[i]); } host.Dirty = true; Changed(); },
             () => { for (int i = 0; i < live.Count; i++) { Assign(live[i], snapBefore[i]); } host.Dirty = true; Changed(); }));
-        return overall;
+        return overall with { FacesTriangulated = triangulated };
     }
 
     /// <summary>
@@ -1105,11 +1221,34 @@ public sealed class BrushEditor
     /// </summary>
     private void Changed(IReadOnlyCollection<int>? affectedUids = null)
     {
-        LastChangedBrushUids = affectedUids;
+        // Selection cleanup runs every time (cheap; keeps the selection valid mid-batch).
         _selectedFaces.RemoveWhere(f => FindBrush(f.Brush) is null);
         _selectedVertices.RemoveWhere(v => FindBrush(v.Brush) is null);
         _selectedEdges.RemoveWhere(e => FindBrush(e.Brush) is null);
         _selectedBrushes.RemoveWhere(uid => FindBrush(uid) is null);
+
+        // Inside a batch (an Instant undo/redo of a multi-command drag), hold the notification and union
+        // the affected UIDs; the scope fires BrushesChanged once on close. A structural change (null uids)
+        // makes the whole batch structural, so the stash is invalidated wholesale exactly once.
+        if (_changeBatchDepth > 0)
+        {
+            _changePending = true;
+            if (affectedUids is null)
+            {
+                _changeUidsUnknown = true;
+            }
+            else
+            {
+                foreach (int uid in affectedUids)
+                {
+                    _changeUids.Add(uid);
+                }
+            }
+
+            return;
+        }
+
+        LastChangedBrushUids = affectedUids;
         BrushesChanged?.Invoke();
     }
 }

@@ -1,12 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
 using Ged.Core.Input;
-using Ged.Core.IO.Rfl;
-using Ged.Core.IO.Rfl.Sections;
-using Ged.Core.Model;
 using Ged.Core.Playtest;
 
 namespace Ged.App;
@@ -17,9 +13,11 @@ namespace Ged.App;
 /// so a playtest launches with whatever geometry / lighting is on disk), stages the .rfl
 /// into <c>&lt;install&gt;\user_maps\&lt;single|multi&gt;</c>, and launches the
 /// configured Alpine Faction launcher (<c>-level</c> / <c>-levelm</c>; a manually
-/// configured non-launcher exe still runs, gated to single-player). "From Camera"
-/// temporarily relocates the Player Start to the active camera in the staged copy
-/// only — the saved level keeps its real spawn.
+/// configured non-launcher exe still runs, gated to single-player). "From Camera" (F8/F10)
+/// appends RED's real <c>-startpos</c> / <c>-startdir</c> spawn-override switches for the
+/// active perspective camera's eye + forward, exactly as RED.exe does — the staged copy is a
+/// byte-for-byte copy of the saved .rfl in every mode (the document and saved file are never
+/// touched).
 /// </summary>
 public sealed partial class MainWindow
 {
@@ -57,9 +55,8 @@ public sealed partial class MainWindow
 
         // Ensure the user's level is saved (RED-style: the save writes what was last built and never
         // bakes — F7 after brush edits launches with whatever lighting is on disk, stock-RED behavior).
-        // "From Camera" does NOT persist the relocated spawn to the user's file. A save the seal guard
-        // aborts (a build in flight, or the geometry re-seal did not complete) must abort the launch too
-        // — its notification already fired.
+        // A save the seal guard aborts (a build in flight, or the geometry re-seal did not complete)
+        // must abort the launch too — its notification already fired.
         bool saved = await SaveAsync(saveAs: Document.Path is null);
         if (!saved || Document.Path is not string levelPath)
         {
@@ -69,9 +66,25 @@ public sealed partial class MainWindow
         try
         {
             string levelName = Path.GetFileName(levelPath);
-            PlaytestCommand cmd = GameLauncher.BuildCommand(exe, installDir, levelName, mode, fromCamera, _settings.PlaytestExtraArgs);
 
-            byte[] rflBytes = fromCamera ? SaveBytesWithCameraSpawn() : File.ReadAllBytes(levelPath);
+            // From Camera (F8/F10): pass the active perspective camera's eye + forward so
+            // BuildCommand appends RED's -startpos/-startdir switches. Plain Play emits neither.
+            // Staging is a plain copy of the on-disk .rfl in EVERY mode — no spawn relocation,
+            // no re-serialization, so the byte-identity gates are never touched.
+            PlaytestCommand cmd;
+            if (fromCamera)
+            {
+                var cameraSurface = _viewportGrid.CameraSurface;
+                cmd = GameLauncher.BuildCommand(
+                    exe, installDir, levelName, mode, fromCamera: true, _settings.PlaytestExtraArgs,
+                    cameraSurface.CameraPosition, cameraSurface.CameraForward);
+            }
+            else
+            {
+                cmd = GameLauncher.BuildCommand(exe, installDir, levelName, mode, fromCamera: false, _settings.PlaytestExtraArgs);
+            }
+
+            byte[] rflBytes = File.ReadAllBytes(levelPath);
             GameLauncher.StageLevel(cmd, rflBytes);
 
             // Compose through the launch template (blank = direct on Windows; "wine {exe} {args}"
@@ -113,41 +126,5 @@ public sealed partial class MainWindow
         }
 
         return guess;
-    }
-
-    /// <summary>
-    /// Serializes the level with the Player Start temporarily moved to the active
-    /// camera (position + orientation), then restores it. The editor document and the
-    /// user's saved file are left unchanged — only the returned (staged) bytes carry
-    /// the camera spawn. This is GED's stand-in for RED's Play-from-camera (which
-    /// injects the camera into the running game — a mechanism GED cannot replicate
-    /// cheaply); the difference is the spawn is a real Player Start move, not a
-    /// live-camera handoff.
-    /// </summary>
-    private byte[] SaveBytesWithCameraSpawn()
-    {
-        RflSection? section = Document!.Rfl.Sections.FirstOrDefault(s => s.Content is PlayerStartSection);
-        if (section?.Content is not PlayerStartSection ps || _viewportGrid.ActiveSurface.Camera is not { } cam)
-        {
-            return Document.SaveToBytes();
-        }
-
-        Vec3 oldPos = ps.Position;
-        Mat3 oldRot = ps.Rotation;
-        bool oldDirty = section.Dirty;
-
-        ps.Position = new Vec3(cam.Position.X, cam.Position.Y, cam.Position.Z);
-        ps.Rotation = new Mat3(
-            new Vec3(cam.Forward.X, cam.Forward.Y, cam.Forward.Z),
-            new Vec3(cam.Right.X, cam.Right.Y, cam.Right.Z),
-            new Vec3(cam.Up.X, cam.Up.Y, cam.Up.Z)).Orthonormalize();
-        section.Dirty = true;
-
-        byte[] bytes = Document.SaveToBytes();
-
-        ps.Position = oldPos;
-        ps.Rotation = oldRot;
-        section.Dirty = oldDirty;
-        return bytes;
     }
 }

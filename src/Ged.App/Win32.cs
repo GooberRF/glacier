@@ -34,6 +34,7 @@ internal static class Win32
     private const uint WmMouseWheel = 0x020A;
     private const uint WmMouseLeave = 0x02A3;
     private const uint WmKillFocus = 0x0008;
+    private const uint WmSetFocus = 0x0007;
 
     /// <summary>lParam bit 24: the key is an extended key (NumpadEnter, arrows, right modifiers).</summary>
     private const long ExtendedKeyFlag = 0x01000000;
@@ -137,9 +138,17 @@ internal static class Win32
 
                 case WmKillFocus:
                     // Losing keyboard focus (alt-tab, clicking another pane/panel) can
-                    // swallow the KeyUp of a held navigation key — drop the held set so
-                    // no key stays "stuck down" (item 6b defense-in-depth).
+                    // swallow the KeyUp of a held navigation key OR a held modifier — drop
+                    // the held set AND the modifier bitfield so nothing stays "stuck down"
+                    // (item 6b defense-in-depth; the dead Ctrl+Z/Ctrl+Y fix).
                     input.OnFocusLost();
+                    return 0;
+
+                case WmSetFocus:
+                    // Regaining focus (re-click, alt-tab back): re-derive the modifiers from
+                    // physical key state so a modifier held across the focus change — whose
+                    // KeyDown this pane never saw — is picked up before the first gesture.
+                    input.OnFocusGained();
                     return 0;
 
                 case WmMouseMove:

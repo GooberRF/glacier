@@ -95,6 +95,27 @@ public sealed class UndoStack
     /// <summary>Raised after any change to the undo/redo state.</summary>
     public event Action? Changed;
 
+    /// <summary>
+    /// Optional scope opened around the command application of a SINGLE atomic Undo / Redo / MoveToNode
+    /// (the "Instant" path), so a multi-command entry — a gizmo <see cref="CompositeCommand"/> drag, or a
+    /// coalesced M-N node — coalesces the model notifications its sub-commands raise into one refresh
+    /// instead of animating the change frame by frame. Null = no coalescing (each sub-command notifies as
+    /// it applies). <see cref="StepToward"/> (the Replay path) never uses this, so a replay steps visibly.
+    /// </summary>
+    public Func<IDisposable>? AtomicApplyScope { get; set; }
+
+    private sealed class NullScope : IDisposable
+    {
+        public static readonly NullScope Instance = new();
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private IDisposable EnterApply(bool coalesce) =>
+        coalesce ? AtomicApplyScope?.Invoke() ?? NullScope.Instance : NullScope.Instance;
+
     /// <summary>The tree root (the clean baseline, no command).</summary>
     public UndoNode Root => _root;
 
@@ -197,19 +218,30 @@ public sealed class UndoStack
         PruneIfNeeded();
     }
 
-    public void Undo()
+    /// <summary>
+    /// Undoes the last command on the current branch. When <paramref name="coalesce"/> (the default,
+    /// "Instant" behaviour), the sub-command notifications of a multi-command entry are coalesced into
+    /// one refresh via <see cref="AtomicApplyScope"/>; pass false ("Replay") to let each apply notify so
+    /// the change steps visibly.
+    /// </summary>
+    public void Undo(bool coalesce = true)
     {
         if (_current == _root)
         {
             return;
         }
 
-        StepUp();
+        using (EnterApply(coalesce))
+        {
+            StepUp();
+        }
+
         _coalesceBarrier = true;
         Changed?.Invoke();
     }
 
-    public void Redo()
+    /// <summary>Redoes the next command on the current branch. See <see cref="Undo(bool)"/> for <paramref name="coalesce"/>.</summary>
+    public void Redo(bool coalesce = true)
     {
         UndoNode? target = _current.RedoChild;
         if (target is null)
@@ -217,7 +249,11 @@ public sealed class UndoStack
             return;
         }
 
-        StepDown(target);
+        using (EnterApply(coalesce))
+        {
+            StepDown(target);
+        }
+
         _coalesceBarrier = true;
         Changed?.Invoke();
     }
@@ -279,27 +315,72 @@ public sealed class UndoStack
             targetPath.Add(n);
         }
 
-        // Undo up until the current node lies on the target's root-path (that node is the LCA).
-        while (!targetPath.Contains(_current))
+        // The whole jump is ONE atomic (Instant) application — coalesce every crossed node's sub-command
+        // notifications into a single refresh (Replay steps via StepToward, which does not use this).
+        using (EnterApply(coalesce: true))
         {
-            StepUp();
-        }
+            // Undo up until the current node lies on the target's root-path (that node is the LCA).
+            while (!targetPath.Contains(_current))
+            {
+                StepUp();
+            }
 
-        // Redo down the LCA→target path.
-        var down = new List<UndoNode>();
-        for (UndoNode n = target; n != _current; n = n.Parent!)
-        {
-            down.Add(n);
-        }
+            // Redo down the LCA→target path.
+            var down = new List<UndoNode>();
+            for (UndoNode n = target; n != _current; n = n.Parent!)
+            {
+                down.Add(n);
+            }
 
-        down.Reverse();
-        foreach (UndoNode c in down)
-        {
-            StepDown(c);
+            down.Reverse();
+            foreach (UndoNode c in down)
+            {
+                StepDown(c);
+            }
         }
 
         _coalesceBarrier = true;
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Performs a SINGLE step toward <paramref name="target"/> (one command's Do or Undo) and returns
+    /// true if it moved, false when already there. Looping this to completion reaches the same document
+    /// state as <see cref="MoveToNode"/> — the LCA→target path applied one entry at a time — but lets a
+    /// caller REPLAY the jump visibly, refreshing the view between entries (the "Replay" undo mode).
+    /// Each step: if the current node is an ancestor of the target, redo one child toward it; otherwise
+    /// undo up toward the lowest common ancestor. Fires <see cref="Changed"/> per step so a history view
+    /// can track the walk.
+    /// </summary>
+    public bool StepToward(UndoNode target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        if (ReferenceEquals(target, _current))
+        {
+            return false;
+        }
+
+        // Walk target→root. If we pass through the current node, it is an ancestor of the target, and
+        // `child` (trailing one behind) is the current node's child on the path down to the target.
+        UndoNode? child = null;
+        for (UndoNode? n = target; n is not null; n = n.Parent)
+        {
+            if (ReferenceEquals(n, _current))
+            {
+                StepDown(child!); // redo one entry toward the target
+                _coalesceBarrier = true;
+                Changed?.Invoke();
+                return true;
+            }
+
+            child = n;
+        }
+
+        // The current node is not on the target's root-path — undo one entry toward the common ancestor.
+        StepUp();
+        _coalesceBarrier = true;
+        Changed?.Invoke();
+        return true;
     }
 
     /// <summary>

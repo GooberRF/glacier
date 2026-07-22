@@ -894,6 +894,13 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+
+        // Refresh the modifier bitfield from Avalonia's fresh KeyModifiers before routing the
+        // key — exactly as the pointer/wheel handlers already do. Without this, a modifier whose
+        // KeyUp was swallowed by a focus change (alt-tab, a modal dialog) would stay latched and
+        // corrupt the resolved chord (dead Ctrl+Z/Ctrl+Y). GL has no real per-key state, so this
+        // Avalonia route is its equivalent of the D3D pane's physical-state reconcile.
+        SyncModifiers(e.KeyModifiers);
         if (RouteKey(e.Key, down: true))
         {
             e.Handled = true;
@@ -903,6 +910,7 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
+        SyncModifiers(e.KeyModifiers);
         if (RouteKey(e.Key, down: false))
         {
             e.Handled = true;
@@ -968,11 +976,17 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
 
     void IViewportInput.OnFocusLost() => _router.OnFocusLost();
 
+    // GL re-syncs modifiers from Avalonia's KeyModifiers on each key event, so a focus-gain
+    // reconcile is unnecessary (and UsesPhysicalKeyState is false, making it a no-op anyway).
+    void IViewportInput.OnFocusGained() => _router.OnFocusGained();
+
     // ---- IViewportInputHost (the router's surface-specific callbacks) ----
 
     ViewType IViewportInputHost.ViewType => _viewType;
 
     bool IViewportInputHost.IsNavigating() => _scheme.IsNavigating(_input);
+
+    bool IViewportInputHost.LeftClickSelectsDragNavigates => _scheme.LeftClickSelectsDragNavigates;
 
     bool IViewportInputHost.SchemeConsumesKey(string token)
     {
@@ -1043,6 +1057,10 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
     // GL relies on Avalonia's reliable KeyUp + lost-focus to release held keys, so no
     // physical-key reconciliation is needed (and none is available cross-platform).
     bool IViewportInputHost.IsKeyPhysicallyDown(int virtualKey) => true;
+
+    // GL's IsKeyPhysicallyDown is not real physical state (always true), so the router must NOT
+    // reconcile modifiers from it — GL stays on the Avalonia-KeyModifiers route (SyncModifiers).
+    bool IViewportInputHost.UsesPhysicalKeyState => false;
 
     // ---- Helpers ----
 

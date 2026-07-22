@@ -68,12 +68,14 @@ public sealed class GlViewportKeyRoutingTests
     [AvaloniaFact]
     public void ShiftS_In_Face_Mode_Fires_Through_The_Real_Avalonia_Key_Path()
     {
-        // Drives OnKeyDown → RouteKey → AvaloniaKeyToVirtualKey → the shared router, not the raw
-        // OnKey entry point — the exact path a focused GL pane takes for a physical key press.
+        // Drives OnKeyDown → SyncModifiers → RouteKey → AvaloniaKeyToVirtualKey → the shared
+        // router, not the raw OnKey entry point — the exact path a focused GL pane takes for a
+        // physical key press. Real Avalonia carries the live modifier state (KeyModifiers.Shift)
+        // on every event while Shift is held, which is what OnKeyDown now re-syncs from.
         (GlViewportSurface surface, _, var calls) = Build(CommandScope.Face);
 
-        RaiseKeyDown(surface, Key.LeftShift);
-        RaiseKeyDown(surface, Key.S);
+        RaiseKeyDown(surface, Key.LeftShift, KeyModifiers.Shift);
+        RaiseKeyDown(surface, Key.S, KeyModifiers.Shift);
 
         Assert.Equal(1, calls.GetValueOrDefault(CommandIds.SelectGrow));
     }
@@ -103,6 +105,6 @@ public sealed class GlViewportKeyRoutingTests
         Assert.Equal(VkD, GestureConvert.AvaloniaKeyToVirtualKey(Key.D));
     }
 
-    private static void RaiseKeyDown(Control c, Key key) =>
-        c.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = key, Source = c });
+    private static void RaiseKeyDown(Control c, Key key, KeyModifiers modifiers = KeyModifiers.None) =>
+        c.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = key, KeyModifiers = modifiers, Source = c });
 }

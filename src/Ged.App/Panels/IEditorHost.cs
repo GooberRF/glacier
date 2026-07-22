@@ -29,6 +29,12 @@ internal interface IEditorHost
     /// <summary>Refreshes the selection highlight overlay across viewports.</summary>
     void RefreshSelectionOverlay();
 
+    /// <summary>
+    /// Time-travels the document to a History-panel node, honoring the "Undo application" setting:
+    /// Instant (one jump + rebuild) or Replay (walk each intermediate entry, refreshing per step).
+    /// </summary>
+    void RequestHistoryJump(UndoNode target);
+
     /// <summary>Frames an object in the active viewport ("Jump To" / double-click).</summary>
     void FrameObject(LevelObject o);
 

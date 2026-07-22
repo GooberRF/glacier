@@ -22,6 +22,7 @@ internal sealed class GpuBatch
     public System.Numerics.Vector2 Scroll;
     public System.Numerics.Vector4 Tint = System.Numerics.Vector4.One;
     public bool IsPortal;
+    public bool PickOnly;
 }
 
 /// <summary>The blend/pass a mesh draw uses (VFX effects map onto Alpha/Additive; V3M stays Opaque).</summary>
@@ -169,6 +170,7 @@ public sealed class GpuScene : IDisposable
                 Scroll = new System.Numerics.Vector2(batch.ScrollU, batch.ScrollV),
                 Tint = batch.Tint,
                 IsPortal = batch.IsPortal,
+                PickOnly = batch.PickOnly,
             };
 
             gpu.Lightmap = gpu.HasLightmap

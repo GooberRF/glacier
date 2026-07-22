@@ -181,7 +181,17 @@ public sealed partial class MainWindow
             return;
         }
 
-        BrushEd.EditBrushes(SelectedBrushUids(), "Snap to grid", b => { BrushTransform.SnapVerticesToGrid(b, _settings.GridSize); return OpResult.Ok(); });
+        // Snapping every vertex to the grid moves them independently, so a face can end up bent —
+        // triangulate any that did so brush faces stay flat (RED parity; see FacePlanarizer). Whole-
+        // brush rigid transforms (Move/Rotate/Reorient/Stretch) are affine and never need this.
+        int triangulated = 0;
+        BrushEd.EditBrushes(SelectedBrushUids(), "Snap to grid", b =>
+        {
+            BrushTransform.SnapVerticesToGrid(b, _settings.GridSize);
+            triangulated += FacePlanarizer.Planarize(b.Geometry);
+            return OpResult.Ok();
+        });
+        NotePlanarized(triangulated);
         AfterBrushEdit();
     }
 
@@ -350,6 +360,7 @@ public sealed partial class MainWindow
         var groups = BrushEd.SelectedFaces.GroupBy(f => f.Brush).ToList();
         Ged.Core.Editor.UndoStack.Transaction? tx = groups.Count > 1 ? Document!.Undo.BeginTransaction(desc) : null;
         OpResult worst = OpResult.Ok();
+        int triangulated = 0;
         foreach (var grp in groups)
         {
             var faces = grp.Select(f => f.Face).OrderByDescending(i => i).ToList();
@@ -358,10 +369,13 @@ public sealed partial class MainWindow
             {
                 worst = r;
             }
+
+            triangulated += r.FacesTriangulated;
         }
 
         tx?.Commit();
         Report(worst);
+        NotePlanarized(triangulated); // face ops that bend neighbours (Collapse, Mesh Smooth) triangulate them
         AfterBrushEdit();
     }
 
@@ -376,6 +390,7 @@ public sealed partial class MainWindow
         var groups = BrushEd.SelectedVertices.GroupBy(v => v.Brush).ToList();
         Ged.Core.Editor.UndoStack.Transaction? tx = groups.Count > 1 ? Document!.Undo.BeginTransaction(desc) : null;
         OpResult worst = OpResult.Ok();
+        int triangulated = 0;
         foreach (var grp in groups)
         {
             var verts = grp.Select(v => v.Vertex).ToList();
@@ -384,10 +399,13 @@ public sealed partial class MainWindow
             {
                 worst = r;
             }
+
+            triangulated += r.FacesTriangulated;
         }
 
         tx?.Commit();
         Report(worst);
+        NotePlanarized(triangulated);
         AfterBrushEdit();
     }
 
@@ -406,8 +424,26 @@ public sealed partial class MainWindow
             return;
         }
 
-        BrushEd.EditBrushes(uids, desc, b => { deform(b.Geometry); return GeometryUtil.Validate(b.Geometry); });
+        // RED-parity: a deformer (stretch/bend/twist/jitter) can bend faces off-plane; triangulate
+        // those to stay flat, joined to the deformer's single undo entry (see FacePlanarizer).
+        int triangulated = 0;
+        BrushEd.EditBrushes(uids, desc, b =>
+        {
+            deform(b.Geometry);
+            triangulated += FacePlanarizer.Planarize(b.Geometry);
+            return GeometryUtil.Validate(b.Geometry);
+        });
+        NotePlanarized(triangulated);
         AfterBrushEdit();
+    }
+
+    /// <summary>Surfaces the RED-parity edit-time planarity guard when it fired (discoverability).</summary>
+    private void NotePlanarized(int count)
+    {
+        if (count > 0)
+        {
+            _dispatcher.ShowMessage($"{count} face(s) triangulated to stay planar.");
+        }
     }
 
     private IReadOnlyCollection<int>? SelectedFaceVertexSet()
@@ -453,6 +489,7 @@ public sealed partial class MainWindow
     private static OpResult Aggregate(IReadOnlyList<int> faces, Func<int, OpResult> op)
     {
         OpResult worst = OpResult.Ok();
+        int triangulated = 0;
         foreach (int f in faces)
         {
             OpResult r = op(f);
@@ -460,9 +497,13 @@ public sealed partial class MainWindow
             {
                 worst = r;
             }
+
+            triangulated += r.FacesTriangulated;
         }
 
-        return worst;
+        // Preserve the planarity-guard count across the per-face fold so FaceOpEach/FaceOpMulti can
+        // surface it (a single-face op's OpResult would otherwise be discarded into `worst`).
+        return worst with { FacesTriangulated = triangulated };
     }
 
     private void Report(OpResult r)

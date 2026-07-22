@@ -54,8 +54,17 @@ internal sealed class ViewportInputState
 
     public bool Held(string token) => HeldKeys.Contains(token);
 
-    /// <summary>Clears every held key (native focus loss / viewport switch — item 6b).</summary>
-    public void ClearHeld() => HeldKeys.Clear();
+    /// <summary>Clears every held key AND the modifier bitfield (native focus loss / viewport
+    /// switch — item 6b). Clearing <see cref="Modifiers"/> too is the core fix for the dead
+    /// Ctrl+Z/Ctrl+Y defect: a modifier whose KeyUp is swallowed by the focus change (alt-tab,
+    /// a modal Save-As / progress dialog stealing focus) would otherwise stay latched and
+    /// corrupt every later chord in the pane. On the native path modifiers are additionally
+    /// reconciled against the real keyboard on each key event and on focus gain.</summary>
+    public void ClearHeld()
+    {
+        HeldKeys.Clear();
+        Modifiers = GestureModifiers.None;
+    }
 
     /// <summary>
     /// Drops any held-key token whose physical key is no longer down, per
@@ -84,6 +93,13 @@ internal interface ICameraScheme
 
     /// <summary>True while a drag that should capture the pointer is active.</summary>
     bool IsNavigating(ViewportInputState s);
+
+    /// <summary>
+    /// True when a bare left button is click-to-select / drag-to-navigate (UnrealEd): the router
+    /// click-picks on a no-drag release and hands a left drag to the camera, with no plain-left
+    /// marquee. The marquee schemes leave this false (a bare left drag box-selects instead).
+    /// </summary>
+    bool LeftClickSelectsDragNavigates => false;
 
     /// <summary>
     /// True when the scheme consumes this bare held-key token for continuous camera
@@ -489,5 +505,10 @@ internal sealed class UnrealEdScheme : ICameraScheme
         CameraSchemes.ApplyWheelSpeed(s, delta);
     }
 
-    public bool IsNavigating(ViewportInputState s) => s.LeftDown || s.RightDown;
+    // A bare LMB press no longer counts as "navigating": the router arms a click-or-navdrag on it
+    // (a no-drag release click-selects), and promotes a left DRAG to camera navigation itself — so
+    // a click selects and a drag still dollies/turns. RMB (and LMB+RMB) navigate as before.
+    public bool IsNavigating(ViewportInputState s) => s.RightDown;
+
+    public bool LeftClickSelectsDragNavigates => true;
 }

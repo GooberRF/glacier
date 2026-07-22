@@ -61,35 +61,32 @@ public sealed partial class MainWindow
         int? brushUid = id.Kind == PickKind.Brush ? id.Index
             : (_session.TryResolveBrushFace(id, out int u, out _) ? u : (int?)null);
 
-        if (id.IsNone || brushUid is not int bu || BrushEd.FindBrush(bu) is not Brush b)
+        bool selected = false;
+        if (brushUid is int bu && BrushEd.FindBrush(bu) is Brush b &&
+            surface.LastPickRay is (Vector3 ro, Vector3 rd))
         {
-            if (id.IsNone && !additive)
+            var worldEdges = EdgeTopology.Edges(b.Geometry)
+                .Select(e => (e, WorldVertex(b, e.V0), WorldVertex(b, e.V1)))
+                .ToList();
+            float tol = EdgePickTol(surface, b);
+            if (EdgePicker.Pick(worldEdges, Cv(ro), Cv(rd), tol) is { } hit)
             {
-                BrushEd.ClearSelection();
+                selected = additive
+                    ? _session.Selection.ToggleEdge(bu, hit.V0, hit.V1)
+                    : _session.Selection.SelectEdge(bu, hit.V0, hit.V1);
+                if (selected)
+                {
+                    LastPickHighlight = id; // an accepted edge select lights its owning brush's pick
+                }
             }
-
-            return true;
         }
 
-        if (surface.LastPickRay is not (Vector3 ro, Vector3 rd))
+        // Universal clear-on-empty (item 3): a non-additive click that selected no edge — empty
+        // space, a wrong-kind hit, a brush with no edge under the cursor, or a locked brush (its
+        // lock hint raised inside SelectEdge) — clears the edge selection.
+        if (!selected && !additive)
         {
-            return true;
-        }
-
-        var worldEdges = EdgeTopology.Edges(b.Geometry)
-            .Select(e => (e, WorldVertex(b, e.V0), WorldVertex(b, e.V1)))
-            .ToList();
-        float tol = EdgePickTol(surface, b);
-        if (EdgePicker.Pick(worldEdges, Cv(ro), Cv(rd), tol) is { } hit)
-        {
-            if (additive)
-            {
-                _session.Selection.ToggleEdge(bu, hit.V0, hit.V1);
-            }
-            else
-            {
-                _session.Selection.SelectEdge(bu, hit.V0, hit.V1);
-            }
+            BrushEd.ClearSelection();
         }
 
         return true;
@@ -140,14 +137,41 @@ public sealed partial class MainWindow
         }
 
         Ged.Core.Editor.UndoStack.Transaction? tx = groups.Count > 1 ? Document!.Undo.BeginTransaction("Move edges") : null;
+        int triangulated = 0;
         foreach (var grp in groups)
         {
             var edges = grp.Select(e => BrushEdge.Canonical(e.V0, e.V1)).ToList();
-            Report(BrushEd.EditBrushes(new[] { grp.Key }, "Move edges", b => EdgeOps.Move(b.Geometry, edges, delta)));
+            var endpoints = EdgeEndpointSet(edges);
+            Report(BrushEd.EditBrushes(new[] { grp.Key }, "Move edges", b =>
+            {
+                // EdgeOps.Move keeps no per-frame planarize (the gizmo reuses it every drag frame),
+                // so triangulate the faces this discrete move bent, scoped to the moved endpoints.
+                OpResult r = EdgeOps.Move(b.Geometry, edges, delta);
+                if (r)
+                {
+                    triangulated += FacePlanarizer.Planarize(b.Geometry, endpoints);
+                }
+
+                return r;
+            }));
         }
 
         tx?.Commit();
+        NotePlanarized(triangulated);
         AfterBrushEdit();
+    }
+
+    /// <summary>The distinct pool-index endpoints of a set of edges — the planarize scope for an edge move.</summary>
+    private static HashSet<int> EdgeEndpointSet(IEnumerable<BrushEdge> edges)
+    {
+        var set = new HashSet<int>();
+        foreach (BrushEdge e in edges)
+        {
+            set.Add(e.V0);
+            set.Add(e.V1);
+        }
+
+        return set;
     }
 
     /// <summary>Applies a single-edge op to the first selected edge (topology-changing ops).</summary>
@@ -160,7 +184,9 @@ public sealed partial class MainWindow
         }
 
         (int brush, int v0, int v1) = BrushEd.SelectedEdges.First();
-        Report(BrushEd.EditBrushes(new[] { brush }, description, b => op(b.Geometry, BrushEdge.Canonical(v0, v1))));
+        OpResult r = BrushEd.EditBrushes(new[] { brush }, description, b => op(b.Geometry, BrushEdge.Canonical(v0, v1)));
+        Report(r);
+        NotePlanarized(r.FacesTriangulated); // Collapse/Bevel triangulate faces they bent (Extrude: 0)
         AfterBrushEdit();
     }
 

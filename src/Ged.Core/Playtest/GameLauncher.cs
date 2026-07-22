@@ -1,5 +1,7 @@
 using System;
+using System.Globalization;
 using System.IO;
+using System.Numerics;
 
 namespace Ged.Core.Playtest;
 
@@ -65,10 +67,18 @@ public static class GameLauncher
     /// Builds the launch command. Throws <see cref="NotSupportedException"/> when a
     /// multiplayer launch is requested for a stock exe (callers should gate on
     /// <see cref="SupportsMulti"/> first).
+    /// <para>
+    /// When <paramref name="fromCamera"/> is set and a camera pose is supplied, RED's real
+    /// spawn-override switches are appended so the game drops the player at the editor's
+    /// camera on first spawn: <c>-startpos &lt;eye&gt; -startdir &lt;forward&gt;</c>. Plain
+    /// Play Level / Play in Multi (no camera) emit neither switch. See
+    /// <see cref="EncodeVector"/> for the encoding.
+    /// </para>
     /// </summary>
     public static PlaytestCommand BuildCommand(
         string exePath, string installDir, string levelFileName,
-        PlaytestMode mode, bool fromCamera, string? extraArgs = null)
+        PlaytestMode mode, bool fromCamera, string? extraArgs = null,
+        Vector3? cameraEye = null, Vector3? cameraForward = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(exePath);
         ArgumentException.ThrowIfNullOrEmpty(installDir);
@@ -90,7 +100,45 @@ public static class GameLauncher
             args += " " + extraArgs.Trim();
         }
 
+        // From-camera: append RED's real spawn-override switches (recovered from RED.exe
+        // FUN_00447b90; format string @ 0x005784b4), which stock RF.exe 1.20na natively
+        // parses and applies once at first player spawn (player_create FUN_004a4130).
+        // -startpos = the camera EYE position; -startdir = the NORMALIZED camera forward.
+        // Both are emitted in the document's own left-handed world units (x, y, z) with no
+        // axis remap — RED reads the in-memory transform straight out and RF reconstructs
+        // the vectors in the same order. Order matches RED (-startpos then -startdir). Single
+        // and multi from-camera behave identically; only the level flag (-level / -levelm)
+        // differs. Roll is not transmittable (RF's -startdir is a forward vector only) — a
+        // faithful match to RED, not a Glacier limitation.
+        if (fromCamera && cameraEye is { } eye && cameraForward is { } forward)
+        {
+            args += $" -startpos {EncodeVector(eye)} -startdir {EncodeVector(NormalizeForward(forward))}";
+        }
+
         return new PlaytestCommand(exePath, args, installDir, destPath, mode, fromCamera);
+    }
+
+    /// <summary>
+    /// Encodes a world vector as RED's three <c>sign,magnitude</c> pairs joined by <c>;</c> —
+    /// the exact <c>-startpos</c> / <c>-startdir</c> payload recovered from RED.exe. Per
+    /// component: the sign flag is <c>c &gt; 0 ? 1 : 0</c> (strictly greater than zero; zero
+    /// and negatives encode 0), and the magnitude is <c>|c|</c> at two decimals with the
+    /// invariant <c>.</c> decimal (RED's C <c>printf %0.2f</c>). Components are emitted in the
+    /// native <c>(x, y, z)</c> order — no axis remap. e.g. <c>-3.20 → "0,3.20"</c>,
+    /// <c>5.50 → "1,5.50"</c>, <c>0 → "0,0.00"</c>.
+    /// </summary>
+    public static string EncodeVector(Vector3 v) =>
+        $"{EncodeComponent(v.X)};{EncodeComponent(v.Y)};{EncodeComponent(v.Z)}";
+
+    private static string EncodeComponent(float c) =>
+        string.Create(CultureInfo.InvariantCulture, $"{(c > 0f ? 1 : 0)},{MathF.Abs(c):0.00}");
+
+    /// <summary>Returns the camera forward as a unit vector (RED sends the normalized forward
+    /// matrix row); a degenerate near-zero forward falls back to world +Z (forward).</summary>
+    private static Vector3 NormalizeForward(Vector3 forward)
+    {
+        float len = forward.Length();
+        return len > 1e-6f ? forward / len : Vector3.UnitZ;
     }
 
     /// <summary>

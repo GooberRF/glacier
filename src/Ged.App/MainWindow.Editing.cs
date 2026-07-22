@@ -149,8 +149,11 @@ public sealed partial class MainWindow
         _showCutterGhost = mode == EditMode.Brush;
         SetModePanel(mode);
         _filter.SyncFromMode(mode);
-        ClearInvalidSelection();
         UpdateFilterChips();
+        // Single mode-transition chokepoint (P3): prune the selection to the kinds the new mode
+        // allows AND drop the transient pick highlight, so nothing unselectable in this mode stays
+        // visually selected (an EAX region selected in Object mode must not linger into Brush mode).
+        _session.SyncSelectionToKinds(_filter.Active);
         RebuildScene();
         RefreshSelectionOverlay();
         UpdateGizmoState();
@@ -365,54 +368,78 @@ public sealed partial class MainWindow
             return HandleEdgePick(surface, id, additive);
         }
 
-        if (id.Kind == PickKind.Brush && Ged.App.Services.PickGate.AllowsBrushEditor(allow, id.Kind))
-        {
-            Toggle(_session.Selection.SelectBrush, _session.Selection.ToggleBrush, id.Index, additive);
-            return true;
-        }
+        // Try the most-specific in-mode selection for the hit kind (chip-gated). `selected` tracks
+        // whether an in-mode selection was actually produced — false means empty space, a wrong-kind
+        // hit, or a locked-only hit (its lock hint is raised inside the SelectionRouter call).
+        bool selected = false;
 
-        if (id.Kind == PickKind.BrushFace && Ged.App.Services.PickGate.AllowsBrushEditor(allow, id.Kind) &&
+        // Vertex mode (B2): the CPU screen-space nearest-vertex search is AUTHORITATIVE, not a
+        // fallback. The GPU id buffer is a single-pixel read of tiny dots and mis-resolves them
+        // under occlusion — it can hand back a vertex BEHIND the one under the cursor, or the
+        // whole-brush face id, so a click that is visibly on a dot could select the wrong vertex or
+        // (even after the 8 px radius fix) fail outright. Resolving the vertex by a true screen-space
+        // nearest search FIRST makes the pick reliable; when a vertex is within the radius this click
+        // IS a vertex interaction (a select, or a locked-brush refusal that already hinted) and must
+        // never fall through to the whole-brush id path, which would grab the brush the dot sits on.
+        bool vertexMode = BrushEd.Mode == EditMode.Vertex && (allow & Ged.Core.Editing.SelectKinds.Vertices) != 0;
+        if (vertexMode && NearestBrushVertexOnRay(surface, out int nUid, out int nVert))
+        {
+            selected = additive ? _session.Selection.ToggleVertex(nUid, nVert) : _session.Selection.SelectVertex(nUid, nVert);
+        }
+        else if (id.Kind == PickKind.Brush && Ged.App.Services.PickGate.AllowsBrushEditor(allow, id.Kind))
+        {
+            selected = additive ? _session.Selection.ToggleBrush(id.Index) : _session.Selection.SelectBrush(id.Index, false);
+            if (selected)
+            {
+                LastPickHighlight = id; // only the accepted direct hit lights the pick (item (a))
+            }
+        }
+        else if (id.Kind == PickKind.BrushFace && Ged.App.Services.PickGate.AllowsBrushEditor(allow, id.Kind) &&
             _session.TryResolveBrushFace(id, out int fUid, out int face))
         {
-            if (additive)
+            selected = additive ? _session.Selection.ToggleFace(fUid, face) : _session.Selection.SelectFace(fUid, face);
+            if (selected)
             {
-                _session.Selection.ToggleFace(fUid, face);
+                LastPickHighlight = id;
             }
-            else
-            {
-                _session.Selection.SelectFace(fUid, face);
-            }
-
-            if (TextureToolsActive)
-            {
-                RefreshTexturePanelSelection();
-            }
-
-            return true;
         }
-
-        if (id.Kind == PickKind.BrushVertex && Ged.App.Services.PickGate.AllowsBrushEditor(allow, id.Kind) &&
+        else if (id.Kind == PickKind.BrushVertex && Ged.App.Services.PickGate.AllowsBrushEditor(allow, id.Kind) &&
             _session.TryResolveBrushVertex(id, out int vUid, out int vert))
         {
-            if (additive)
+            // Reached only when the CPU search found no vertex within the radius but the id buffer
+            // still reports a vertex pixel — kept as a defensive fallback.
+            selected = additive ? _session.Selection.ToggleVertex(vUid, vert) : _session.Selection.SelectVertex(vUid, vert);
+            if (selected)
             {
-                _session.Selection.ToggleVertex(vUid, vert);
+                LastPickHighlight = id;
             }
-            else
+        }
+
+        if (selected)
+        {
+            if (TextureToolsActive)
             {
-                _session.Selection.SelectVertex(vUid, vert);
+                RefreshTexturePanelSelection();
             }
 
             return true;
         }
 
-        // Empty click while a brush-geometry kind is active clears the brush sub-selection.
-        if (id.IsNone && brushGeom)
+        // No in-mode selection was produced. In a brush-geometry mode a non-additive click clears
+        // the sub-selection — whether it was empty space, a wrong-kind hit (e.g. a face pixel in
+        // vertex mode), or a locked-only hit (its lock hint already shown). This is the universal
+        // "clicking where no valid selection exists clears" rule (item 3). Additive (Ctrl) clicks
+        // keep the selection. Object/Group modes fall through (return false) to OnPicked's
+        // document-selection path, which applies the same rule there.
+        if (brushGeom)
         {
-            BrushEd.ClearSelection();
-            if (TextureToolsActive)
+            if (!additive)
             {
-                RefreshTexturePanelSelection();
+                BrushEd.ClearSelection();
+                if (TextureToolsActive)
+                {
+                    RefreshTexturePanelSelection();
+                }
             }
 
             return true;
@@ -421,16 +448,26 @@ public sealed partial class MainWindow
         return false;
     }
 
-    private static void Toggle(Func<int, bool, bool> select, Func<int, bool> toggle, int uid, bool additive)
+    private const float VertexPickPixels = 8f;
+
+    /// <summary>
+    /// The nearest registered brush vertex to the surface's last pick ray within
+    /// <see cref="VertexPickPixels"/> screen pixels, or false. A ray/point CPU search over the
+    /// scene's vertex registry (world positions), so it recovers a near-miss on a tiny vertex dot
+    /// regardless of whether a face occluded the dot's id in the pick buffer.
+    /// </summary>
+    private bool NearestBrushVertexOnRay(Viewport.IViewportSurface surface, out int brushUid, out int vertexIndex)
     {
-        if (additive)
+        brushUid = vertexIndex = -1;
+        if (_session.BrushPickVertices is not { Count: > 0 } verts || surface.LastPickRay is not (Vector3 ro, Vector3 rd))
         {
-            toggle(uid);
+            return false;
         }
-        else
-        {
-            select(uid, false);
-        }
+
+        return Ged.App.Services.VertexPickSearch.TryNearest(
+            verts, ro, rd,
+            w => surface.Camera?.WorldPerPixel(w, surface.SurfaceHeight) ?? 1f,
+            VertexPickPixels, out brushUid, out vertexIndex);
     }
 
     private string BuildSelectionReadout()
@@ -616,14 +653,13 @@ public sealed partial class MainWindow
 
         var delta = new CoreVec3(dir.X, dir.Y, dir.Z).Scale(_settings.GridSize);
 
-        // Edge mode: translate both endpoints of every selected edge (the world delta is
-        // converted to each brush's local frame), reusing EdgeOps.Move.
-        if (BrushEd.Mode == EditMode.Edge && BrushEd.SelectedEdges.Count > 0)
+        // Sub-geometry modes (vertex/face/edge): translate the selected sub-geometry, then triangulate
+        // any face the move bent off-plane — one undo entry, scoped to the moved vertices. The same
+        // bending the gizmo drag guards against (PlanarizeSubGeometryOnCommit) happens on a keyboard
+        // nudge, which never runs through the gizmo lifecycle (RED parity; see FacePlanarizer).
+        if (BrushEd.Mode is EditMode.Vertex or EditMode.Face or EditMode.Edge)
         {
-            Dictionary<int, List<BrushEdge>> byBrush = EdgesByBrush();
-            BrushEd.EditBrushes(byBrush.Keys.ToList(), "Move edges",
-                b => EdgeOps.Move(b.Geometry, byBrush[b.Uid], b.Rotation.InverseTransform(delta)));
-            AfterBrushEdit();
+            NudgeSubGeometryMove(delta);
             return;
         }
 
@@ -637,6 +673,7 @@ public sealed partial class MainWindow
         BrushEd.EditBrushesCoalesced(moveUids, "Move", b => { BrushTransform.Move(b, delta); return OpResult.Ok(); }, null);
         _prefabInstances?.ApplyRigidTransform(moveUids, Mat3.Identity, delta, default);
         AfterBrushEdit();
+        _buildController?.ArmPostTransformBuild(); // keyboard-nudge move: refresh the merged stash on any size level (Q3)
     }
 
     private void OnNudgeRotate(Vector3 axis)
@@ -656,18 +693,12 @@ public sealed partial class MainWindow
             return;
         }
 
-        // Edge mode: rotate the selected edges about the selection pivot (per-brush local frame).
-        if (BrushEd.Mode == EditMode.Edge && BrushEd.SelectedEdges.Count > 0)
+        // Sub-geometry modes (vertex/face/edge): rotate the selected sub-geometry about its pivot,
+        // then triangulate any face the rotation bent off-plane — one undo entry (RED parity; see
+        // FacePlanarizer). Matches the gizmo edge rotate, extended to vertex/face selections.
+        if (BrushEd.Mode is EditMode.Vertex or EditMode.Face or EditMode.Edge)
         {
-            CoreVec3 worldPivot = SubGeometryPivot();
-            Dictionary<int, List<BrushEdge>> byBrush = EdgesByBrush();
-            BrushEd.EditBrushes(byBrush.Keys.ToList(), "Rotate edges", b =>
-            {
-                Mat3 localRot = Mat3Math.Compose(b.Rotation.Transpose(), Mat3Math.Compose(rot, b.Rotation));
-                CoreVec3 localPivot = b.Rotation.InverseTransform(worldPivot.Sub(b.Position));
-                return EdgeOps.Rotate(b.Geometry, byBrush[b.Uid], localRot, localPivot);
-            });
-            AfterBrushEdit();
+            NudgeSubGeometryRotate(rot);
             return;
         }
 
@@ -683,12 +714,151 @@ public sealed partial class MainWindow
         BrushEd.EditBrushes(uids, "Rotate", b => { BrushTransform.RotateAboutPivot(b, rot, pivot); return OpResult.Ok(); });
         _prefabInstances?.ApplyRigidTransform(uids, rot, CoreVec3.Zero, pivot);
         AfterBrushEdit();
+        _buildController?.ArmPostTransformBuild(); // keyboard-nudge rotate: refresh the merged stash on any size level (Q3)
     }
 
-    /// <summary>Groups the selected edges by brush uid as canonical <see cref="BrushEdge"/> lists.</summary>
-    private Dictionary<int, List<BrushEdge>> EdgesByBrush() =>
-        BrushEd!.SelectedEdges.GroupBy(e => e.Brush)
-            .ToDictionary(g => g.Key, g => g.Select(e => BrushEdge.Canonical(e.V0, e.V1)).ToList());
+    /// <summary>
+    /// The pool vertices the current sub-geometry selection covers, grouped by brush uid — the exact
+    /// set the gizmo sub-geometry move and its planarize pass drive. Shared by the gizmo commit
+    /// (<see cref="PlanarizeSubGeometryOnCommit"/>, <c>GizmoMoveSubGeometry</c>) and the keyboard-nudge
+    /// sub-geometry ops so all three carry identical moved-vertex scoping.
+    /// </summary>
+    private Dictionary<int, HashSet<int>> SelectedSubGeometryVertsByBrush()
+    {
+        var byBrush = new Dictionary<int, HashSet<int>>();
+        if (BrushEd is not { } be)
+        {
+            return byBrush;
+        }
+
+        void Add(int bu, int vi)
+        {
+            if (!byBrush.TryGetValue(bu, out HashSet<int>? set))
+            {
+                byBrush[bu] = set = new HashSet<int>();
+            }
+
+            set.Add(vi);
+        }
+
+        if (be.Mode == EditMode.Vertex)
+        {
+            foreach ((int bu, int vi) in be.SelectedVertices)
+            {
+                Add(bu, vi);
+            }
+        }
+        else if (be.Mode == EditMode.Edge)
+        {
+            foreach ((int bu, int v0, int v1) in be.SelectedEdges)
+            {
+                Add(bu, v0);
+                Add(bu, v1);
+            }
+        }
+        else if (be.Mode == EditMode.Face)
+        {
+            foreach ((int bu, int fi) in be.SelectedFaces)
+            {
+                if (be.FindBrush(bu) is { } b && fi >= 0 && fi < b.Geometry.Faces.Count)
+                {
+                    foreach (FaceVertex fv in b.Geometry.Faces[fi].Vertices)
+                    {
+                        Add(bu, fv.Index);
+                    }
+                }
+            }
+        }
+
+        return byBrush;
+    }
+
+    /// <summary>
+    /// Keyboard-nudge translate of the selected sub-geometry (vertex/face/edge) by a world delta, as
+    /// one undo entry, triangulating any face the move bent off-plane scoped to the moved vertices
+    /// (RED-parity guard; see <see cref="FacePlanarizer"/>). No-op when nothing is sub-selected.
+    /// </summary>
+    private void NudgeSubGeometryMove(CoreVec3 worldDelta)
+    {
+        if (BrushEd is not { } be)
+        {
+            return;
+        }
+
+        Dictionary<int, HashSet<int>> byBrush = SelectedSubGeometryVertsByBrush();
+        if (byBrush.Count == 0)
+        {
+            return;
+        }
+
+        int triangulated = 0;
+        be.EditBrushes(byBrush.Keys.ToList(), "Move", b =>
+        {
+            if (byBrush.TryGetValue(b.Uid, out HashSet<int>? verts))
+            {
+                CoreVec3 local = b.Rotation.InverseTransform(worldDelta);
+                foreach (int vi in verts)
+                {
+                    if (vi >= 0 && vi < b.Geometry.Vertices.Count)
+                    {
+                        b.Geometry.Vertices[vi] = b.Geometry.Vertices[vi].Add(local);
+                    }
+                }
+
+                GeometryUtil.RecomputeAllPlanes(b.Geometry);
+                triangulated += FacePlanarizer.Planarize(b.Geometry, verts);
+            }
+
+            return OpResult.Ok();
+        });
+        NotePlanarized(triangulated);
+        AfterBrushEdit();
+    }
+
+    /// <summary>
+    /// Keyboard-nudge rotate of the selected sub-geometry about its selection pivot, as one undo
+    /// entry, triangulating any face the rotation bent off-plane (RED-parity guard). No-op when
+    /// nothing is sub-selected.
+    /// </summary>
+    private void NudgeSubGeometryRotate(Mat3 worldRot)
+    {
+        if (BrushEd is not { } be)
+        {
+            return;
+        }
+
+        Dictionary<int, HashSet<int>> byBrush = SelectedSubGeometryVertsByBrush();
+        if (byBrush.Count == 0)
+        {
+            return;
+        }
+
+        CoreVec3 worldPivot = SubGeometryPivot();
+        int triangulated = 0;
+        be.EditBrushes(byBrush.Keys.ToList(), "Rotate", b =>
+        {
+            if (byBrush.TryGetValue(b.Uid, out HashSet<int>? verts))
+            {
+                // Convert the world rotation about the world pivot into this brush's local frame.
+                Mat3 localRot = Mat3Math.Compose(b.Rotation.Transpose(), Mat3Math.Compose(worldRot, b.Rotation));
+                CoreVec3 localPivot = b.Rotation.InverseTransform(worldPivot.Sub(b.Position));
+                foreach (int vi in verts)
+                {
+                    if (vi >= 0 && vi < b.Geometry.Vertices.Count)
+                    {
+                        b.Geometry.Vertices[vi] = localPivot.Add(localRot.Transform(b.Geometry.Vertices[vi].Sub(localPivot)));
+                    }
+                }
+
+                GeometryUtil.RecomputeAllPlanes(b.Geometry);
+                triangulated += FacePlanarizer.Planarize(b.Geometry, verts);
+            }
+
+            return OpResult.Ok();
+        });
+        NotePlanarized(triangulated);
+        AfterBrushEdit();
+    }
 
     private void OnBrushDragStarted()
     {

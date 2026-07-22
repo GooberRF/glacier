@@ -193,4 +193,73 @@ public sealed class UndoStackTests
         stack.BeginTransaction("outer");
         Assert.Throws<System.InvalidOperationException>(() => stack.BeginTransaction("inner"));
     }
+
+    // ---- Q4: Replay (StepToward) reaches the same state as the Instant (MoveToNode) jump ----
+
+    [Fact]
+    public void StepToward_Walks_One_Entry_Per_Step_To_The_Same_State_As_MoveToNode()
+    {
+        // Replay undo: StepToward applied to completion reaches the identical document state as the
+        // Instant MoveToNode jump — it just applies one history entry at a time so the view can refresh
+        // between them. Here: root → 1 → 2 → 3, then jump back to the tip from the baseline.
+        var cell = new[] { 0 };
+        var stack = new UndoStack();
+        stack.Execute(Set(cell, 1));
+        stack.Execute(Set(cell, 2));
+        stack.Execute(Set(cell, 3));
+        UndoNode tip = stack.Current;
+
+        // Instant reference: undo to baseline, then one MoveToNode → value 3.
+        stack.MoveTo(0);
+        Assert.Equal(0, cell[0]);
+        stack.MoveToNode(tip);
+        int instant = cell[0];
+        Assert.Equal(3, instant);
+
+        // Replay: undo to baseline, then StepToward one entry at a time → 3 steps, identical end state.
+        stack.MoveTo(0);
+        Assert.Equal(0, cell[0]);
+        int steps = 0;
+        while (stack.StepToward(tip))
+        {
+            steps++;
+        }
+
+        Assert.Equal(3, steps);            // root→1, 1→2, 2→3
+        Assert.Equal(instant, cell[0]);    // same final state as the Instant jump
+        Assert.Same(tip, stack.Current);
+        Assert.False(stack.StepToward(tip)); // already there → no further step
+    }
+
+    [Fact]
+    public void StepToward_Crosses_Branches_To_The_Same_State_As_MoveToNode()
+    {
+        // A fork at value 1: branch A tip = 2, branch B tip = 9. Jumping between the tips must undo
+        // across the common ancestor and redo down the other branch. Replay does it one entry at a time.
+        var cell = new[] { 0 };
+        var stack = new UndoStack();
+        stack.Execute(Set(cell, 1));
+        UndoNode fork = stack.Current;
+        stack.Execute(Set(cell, 2));
+        UndoNode branchA = stack.Current;
+
+        stack.MoveToNode(fork);
+        stack.Execute(Set(cell, 9));
+        UndoNode branchB = stack.Current;
+
+        // Instant reference: from B's tip, MoveToNode to A's tip → value 2.
+        stack.MoveToNode(branchA);
+        Assert.Equal(2, cell[0]);
+
+        // Replay: from A's tip, StepToward B's tip one entry at a time → undo 2, redo 9 (2 steps).
+        int steps = 0;
+        while (stack.StepToward(branchB))
+        {
+            steps++;
+        }
+
+        Assert.Equal(2, steps);
+        Assert.Same(branchB, stack.Current);
+        Assert.Equal(9, cell[0]); // the same state MoveToNode(branchB) would produce
+    }
 }

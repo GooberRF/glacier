@@ -50,7 +50,7 @@ public sealed class SelectionScopeTests
 
     [Theory]
     [InlineData(EditMode.Object, false, false, false, true)]
-    [InlineData(EditMode.Group, false, false, false, true)]
+    [InlineData(EditMode.Group, true, false, false, true)] // Group keeps BOTH whole-brush AND object (group members)
     [InlineData(EditMode.Brush, true, false, false, false)]
     [InlineData(EditMode.Face, false, true, false, false)] // Face (incl. the Texture/UV tab) picks faces
     [InlineData(EditMode.Vertex, false, false, true, false)]

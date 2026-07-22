@@ -43,6 +43,8 @@ public sealed class TriggerMpFlagTests
         public SelectionRouter Selection => _s.Selection;
         public CommandDispatcher Dispatcher => _dispatcher;
         public void RequestSceneRebuild() { }
+
+        public void RequestHistoryJump(Ged.Core.Editor.UndoNode target) { }
         public void RefreshSelectionOverlay() { }
         public void FrameObject(LevelObject o) { }
         public void FrameBrush(int uid) { }

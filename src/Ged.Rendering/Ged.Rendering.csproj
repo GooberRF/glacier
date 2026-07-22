@@ -13,6 +13,11 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Ged.Rendering.Tests" />
+    <!-- The App-layer end-to-end pick regression (GroupModeBrushPickGpuTests) drives the real
+         GPU id-buffer pick (SceneRenderer.RenderPick / GraphicsDevice.CreatePickTarget) against a
+         scene built by the real EditorSession.BuildScene — the only faithful reproduction of the
+         Group-mode brush-pick depth resolution. -->
+    <InternalsVisibleTo Include="Ged.App.Tests" />
   </ItemGroup>
 
   <ItemGroup>

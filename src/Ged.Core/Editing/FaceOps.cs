@@ -192,8 +192,13 @@ public static class FaceOps
         }
 
         GeometryUtil.CleanupFaces(g);
-        GeometryUtil.RecomputeAllPlanes(g);
-        return OpResult.Ok("Collapse");
+
+        // Remapping the face's corners to one centroid vertex pulls those corners in every
+        // neighbouring face too, which can bend them off-plane — triangulate any that bent so brush
+        // faces stay flat (RED parity; see FacePlanarizer). Planarize refreshes every face plane, so
+        // it subsumes the RecomputeAllPlanes this used to end with.
+        int tri = FacePlanarizer.Planarize(g);
+        return OpResult.Ok("Collapse") with { FacesTriangulated = tri };
     }
 
     /// <summary>[ALPINE] Deletes faces (leaving the vertices for neighbours).</summary>
@@ -297,8 +302,11 @@ public static class FaceOps
             NWaySplitQuadToGrid(g, idx);
         }
 
-        GeometryUtil.RecomputeAllPlanes(g);
-        return OpResult.Ok("Mesh smooth");
+        // Subdividing a planar quad yields planar cells by construction (bilinear points of a flat
+        // quad stay coplanar); a bent source quad, however, produces bent cells — so run the shared
+        // planarity guard to triangulate any cell left off-plane (RED parity; see FacePlanarizer).
+        int tri = FacePlanarizer.Planarize(g);
+        return OpResult.Ok("Mesh smooth") with { FacesTriangulated = tri };
     }
 
     /// <summary>

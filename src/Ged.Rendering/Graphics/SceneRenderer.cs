@@ -74,7 +74,9 @@ public sealed class SceneRenderer : IDisposable
         SetBlend(mode == RenderMode.SeeThrough);
         foreach (GpuBatch b in scene.Batches)
         {
-            if (b.Pass == RenderPass.Opaque)
+            // Pick-only batches (invisible-but-selectable brush/portal faces) carry the Opaque
+            // pass for the id-buffer, but must never draw in the colour pass.
+            if (b.Pass == RenderPass.Opaque && !b.PickOnly)
             {
                 DrawBatch(b);
             }
@@ -128,10 +130,30 @@ public sealed class SceneRenderer : IDisposable
         SetBlend(false);
 
         SetProgram(_gd.Programs.World, pick: true);
+
+        // Draw the pick-only brush faces FIRST. In Group / whole-brush-select modes the editor emits a
+        // brush's faces PICK-ONLY (no colour fill) so the whole brush stays selectable, while the compiled
+        // static world is ALSO drawn (IncludeStaticGeometry is on outside brush-edit modes) at the exact
+        // same depth — the pick-only faces ARE the surviving compiled fragments, so the two are coincident.
+        // The pick pass depth-tests with strict Less; whichever draws first wins a coincident-depth pixel.
+        // The compiled world carries PickKind.Face (unselectable in every mode), so if IT wins, the brush
+        // is unpickable (the Group-mode "can't click a brush" bug: the id-buffer returns Face, no route
+        // selects it). Drawing the pick-only faces first makes the whole-brush id win coincident pixels,
+        // while a genuinely-nearer compiled wall drawn afterward still overwrites it (correct occlusion —
+        // a brush behind a wall stays unpickable).
         foreach (GpuBatch b in scene.Batches)
         {
-            // Opaque world plus any drawn portal faces (pickable only when drawn).
-            if (b.Pass == RenderPass.Opaque || b.IsPortal)
+            if (b.PickOnly)
+            {
+                DrawBatch(b, bindTextures: false);
+            }
+        }
+
+        foreach (GpuBatch b in scene.Batches)
+        {
+            // Opaque world + drawn portal faces (pick-only batches were drawn above). Portal batches
+            // carry their own pass but stay pickable, so include them regardless of pass.
+            if (!b.PickOnly && (b.Pass == RenderPass.Opaque || b.IsPortal))
             {
                 DrawBatch(b, bindTextures: false);
             }

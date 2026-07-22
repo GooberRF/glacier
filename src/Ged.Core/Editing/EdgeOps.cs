@@ -137,8 +137,14 @@ public static class EdgeOps
         GeometryUtil.WeldVertices(g);       // merges the now-coincident endpoints
         GeometryUtil.CleanupFaces(g);       // drops the faces that degenerated to < 3 corners
         GeometryUtil.CompactUnusedVertices(g);
-        GeometryUtil.RecomputeAllPlanes(g);
-        return GeometryUtil.Validate(g) ? OpResult.Ok("Collapse edge") : OpResult.Fail("Collapse produced degenerate geometry.");
+
+        // Merging the endpoints to their midpoint pulls one corner of every side face that touched
+        // just one endpoint off its plane — triangulate any face left bent so brush faces stay flat
+        // (RED parity; see FacePlanarizer). Planarize refreshes every plane, subsuming RecomputeAllPlanes.
+        int tri = FacePlanarizer.Planarize(g);
+        return GeometryUtil.Validate(g)
+            ? OpResult.Ok("Collapse edge") with { FacesTriangulated = tri }
+            : OpResult.Fail("Collapse produced degenerate geometry.");
     }
 
     /// <summary>
@@ -190,9 +196,16 @@ public static class EdgeOps
         g.Faces.Add(chamfer);
 
         GeometryUtil.CompactUnusedVertices(g);
-        GeometryUtil.RecomputeAllPlanes(g);
+
+        // Between two orthogonal faces the chamfer is a flat quad, but skewed (non-orthogonal) faces
+        // pull its four corners out of a single plane — triangulate any bent chamfer so brush faces
+        // stay flat (RED parity; see FacePlanarizer). Planarize refreshes every plane, so it runs
+        // before the planar-UV assignment (which reads them).
+        int tri = FacePlanarizer.Planarize(g);
         GeometryUtil.AssignAllPlanarUv(g);
-        return GeometryUtil.Validate(g) ? OpResult.Ok("Bevel edge") : OpResult.Fail("Bevel produced degenerate geometry.");
+        return GeometryUtil.Validate(g)
+            ? OpResult.Ok("Bevel edge") with { FacesTriangulated = tri }
+            : OpResult.Fail("Bevel produced degenerate geometry.");
     }
 
     /// <summary>

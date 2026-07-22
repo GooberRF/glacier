@@ -85,6 +85,7 @@ internal sealed class SettingsDialog : Window
         panel.Children.Add(NumberRow("Autosave interval (min)", _settings.AutosaveIntervalMinutes,
             v => _settings.AutosaveIntervalMinutes = Math.Max(1, (int)v)));
         panel.Children.Add(CheckRow("Prompt to save on close", _settings.PromptForSave, v => _settings.PromptForSave = v));
+        panel.Children.Add(UndoApplicationRow());
         panel.Children.Add(ToastLevelRow());
         panel.Children.Add(CheckRow("Suppress legacy-level (pre-Alpine) open warning", _settings.SuppressLegacyWarning, v => _settings.SuppressLegacyWarning = v));
         panel.Children.Add(NumberRow("Default nav point height", _settings.NavPointHeight, v => _settings.NavPointHeight = (float)v));
@@ -117,6 +118,29 @@ internal sealed class SettingsDialog : Window
             }
         };
         return LabeledRow("Toast notifications", combo);
+    }
+
+    /// <summary>
+    /// "Undo application" for a multi-step History-panel jump: Instant (snap to the chosen state with one
+    /// rebuild) vs Replay (walk through each intermediate entry, refreshing the view per step). Both reach
+    /// the same final state. Persists to <see cref="AppSettings.UndoReplay"/>.
+    /// </summary>
+    private Control UndoApplicationRow()
+    {
+        var combo = new ComboBox
+        {
+            ItemsSource = new[] { "Instant (snap to state)", "Replay (step through history)" },
+            SelectedIndex = _settings.UndoReplay ? 1 : 0,
+            MinWidth = 200,
+        };
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (combo.SelectedIndex >= 0)
+            {
+                _settings.UndoReplay = combo.SelectedIndex == 1;
+            }
+        };
+        return LabeledRow("Undo application", combo);
     }
 
     private Control ViewportTab()

@@ -852,11 +852,15 @@ public sealed class ViewportSurface : NativeControlHost, IViewportInput, IViewpo
 
     void IViewportInput.OnFocusLost() => _router.OnFocusLost();
 
+    void IViewportInput.OnFocusGained() => _router.OnFocusGained();
+
     // ---- IViewportInputHost (the router's surface-specific callbacks) ----
 
     ViewType IViewportInputHost.ViewType => _viewType;
 
     bool IViewportInputHost.IsNavigating() => _scheme.IsNavigating(_input);
+
+    bool IViewportInputHost.LeftClickSelectsDragNavigates => _scheme.LeftClickSelectsDragNavigates;
 
     bool IViewportInputHost.SchemeConsumesKey(string token) =>
         _viewport is not null && _scheme.ConsumesKey(_viewport.Camera, token);
@@ -898,6 +902,13 @@ public sealed class ViewportSurface : NativeControlHost, IViewportInput, IViewpo
     void IViewportInputHost.OrthoTeleport(int x, int y) => OrthoTeleport(x, y);
 
     bool IViewportInputHost.IsKeyPhysicallyDown(int virtualKey) => _host.IsKeyPhysicallyDown(virtualKey);
+
+    // The router reconciles its modifier bitfield from real physical key state ONLY while this
+    // pane owns a live native child window (`_hwnd != 0`) — i.e. when key events actually arrive
+    // from the Win32 WndProc and GetAsyncKeyState reflects the same keyboard. Without a native
+    // window (headless tests drive OnKey synthetically), physical state does not match the
+    // injected events, so the incremental UpdateModifier path is used instead.
+    bool IViewportInputHost.UsesPhysicalKeyState => _hwnd != nint.Zero;
 
     /// <summary>Reports the world point under an ortho click (two-point clip picking).</summary>
     private bool TryOrthoWorldPoint(int x, int y, out Vector3 world)

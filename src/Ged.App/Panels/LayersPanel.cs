@@ -59,7 +59,7 @@ internal sealed class LayersPanel : UserControl
         if (_bound is { } old)
         {
             old.BrushesChanged -= Refresh;
-            old.SelectionChanged -= Refresh;
+            old.SelectionChanged -= SyncSelectionHighlight;
             old.VisibilityChanged -= Refresh;
         }
 
@@ -67,7 +67,13 @@ internal sealed class LayersPanel : UserControl
         if (_bound is { } be)
         {
             be.BrushesChanged += Refresh;
-            be.SelectionChanged += Refresh;
+            // A pure selection change updates only the existing rows' highlight — it must NOT run
+            // the full Refresh (which clears + rebuilds every row Border). Rebuilding on the first
+            // press of a double-click detached the gesture-tracking Border, so the second press
+            // landed on a fresh element and DoubleTapped never fired — which is why the camera jump
+            // only worked for LOCKED brushes (their lock-refused select never fired SelectionChanged,
+            // so their row survived). Structural (BrushesChanged) and visibility changes still Refresh.
+            be.SelectionChanged += SyncSelectionHighlight;
             be.VisibilityChanged += Refresh;
         }
     }
@@ -151,6 +157,23 @@ internal sealed class LayersPanel : UserControl
         }
     }
 
+    /// <summary>
+    /// Ensures a row shows the panel highlight even when its document selection was lock-refused
+    /// (B6): the Layers-panel row highlight must always reflect the row the user clicked,
+    /// independent of the lock-gated document selection. For an unlocked brush this is redundant
+    /// with the selection-driven <see cref="SyncSelectionHighlight"/> (which re-runs on the
+    /// resulting SelectionChanged); for a LOCKED brush — whose select is refused and so fires no
+    /// SelectionChanged — it is the only path, and it stays until the next real selection change
+    /// (which re-derives every row's highlight from the document selection).
+    /// </summary>
+    private void HighlightRow(int uid)
+    {
+        if (_rowByUid.TryGetValue(uid, out Border? row))
+        {
+            row.Background = new SolidColorBrush(Color.FromArgb(80, 90, 140, 255));
+        }
+    }
+
     // ---- Toolbar + filters ----------------------------------------------------
 
     private Control BuildToolbar()
@@ -159,7 +182,11 @@ internal sealed class LayersPanel : UserControl
         panel.Children.Add(TbBtn("⏮ Start", "Move selected to start of time", () => Apply(be => be.MoveToStartOfTime(Sel(be)), rebuild: true)));
         panel.Children.Add(TbBtn("⏭ End", "Move selected to end of time", () => Apply(be => be.MoveToEndOfTime(Sel(be)), rebuild: true)));
         panel.Children.Add(TbBtn("🔒 Lock", "Lock selected brushes", () => Apply(be => be.SetBrushLocked(Sel(be), true), rebuild: true)));
-        panel.Children.Add(TbBtn("🔓 Unlock", "Unlock selected brushes", () => Apply(be => be.SetBrushLocked(Sel(be), false), rebuild: true)));
+        // Unlock is "unlock ALL" by design: a locked brush is unselectable, so it can never be in
+        // Sel(be) — an "unlock selected" would be a permanent no-op for the very brushes that need
+        // unlocking (incl. file-locked ones like ctf06 UID 414). UnlockAll clears every brush's
+        // persisted lock state (undoable, dirties the file).
+        panel.Children.Add(TbBtn("🔓 Unlock All", "Unlock all locked brushes", () => Apply(be => be.UnlockAll(), rebuild: true)));
         panel.Children.Add(TbBtn("🙈 Hide", "Hide selected brushes", () => Apply(be => be.SetBrushHidden(Sel(be), true), rebuild: true)));
         panel.Children.Add(TbBtn("👁 Show", "Show all brushes", () => Apply(be => be.SetBrushHidden(be.Brushes.Select(b => b.Uid).ToList(), false), rebuild: true)));
         return panel;
@@ -264,12 +291,7 @@ internal sealed class LayersPanel : UserControl
 
         // Selection sync (rows → view) + block drag.
         border.PointerPressed += (_, e) =>
-        {
-            var mods = e.KeyModifiers;
-            _host?.Selection.SelectBrush(row.Uid, additive: (mods & (KeyModifiers.Control | KeyModifiers.Shift)) != 0);
-            _host?.RefreshSelectionOverlay();
-            _dragFromUid = row.Uid;
-        };
+            HandleRowPressed(row.Uid, (e.KeyModifiers & (KeyModifiers.Control | KeyModifiers.Shift)) != 0);
         border.PointerReleased += (_, _) =>
         {
             if (_dragFromUid is int fromUid && fromUid != row.Uid)
@@ -282,15 +304,47 @@ internal sealed class LayersPanel : UserControl
 
         // Double-click jumps the perspective camera to (frames) the brush — same mechanism as
         // the Outliner double-click / Jump To.
-        border.DoubleTapped += (_, _) =>
-        {
-            _dragFromUid = null; // the second press must not be read as a drag-start
-            _host?.Selection.SelectBrush(row.Uid);
-            _host?.RefreshSelectionOverlay();
-            _host?.FrameBrush(row.Uid);
-        };
+        border.DoubleTapped += (_, _) => HandleRowDoubleTapped(row.Uid);
         return border;
     }
+
+    /// <summary>
+    /// A single row press: document-select the brush (lock-gated, may be refused with a hint) and
+    /// ALWAYS highlight the panel row (B6 — the row highlight is independent of the lock-gated
+    /// document selection, so a locked row still shows which one you clicked).
+    /// </summary>
+    private void HandleRowPressed(int uid, bool additive)
+    {
+        _host?.Selection.SelectBrush(uid, additive);
+        _host?.RefreshSelectionOverlay();
+        HighlightRow(uid);
+        _dragFromUid = uid;
+    }
+
+    /// <summary>
+    /// A row double-click: jump (frame) the camera to the brush. This ALWAYS works, locked or not
+    /// (B6) — jumping to a locked brush is legitimate, and the second press no longer lands on a
+    /// rebuilt row (the selection change now only re-highlights, never tears the rows down).
+    /// </summary>
+    private void HandleRowDoubleTapped(int uid)
+    {
+        _dragFromUid = null; // the second press must not be read as a drag-start
+        _host?.Selection.SelectBrush(uid);
+        _host?.RefreshSelectionOverlay();
+        HighlightRow(uid);
+        _host?.FrameBrush(uid);
+    }
+
+    // ---- Test hooks (headless panel-handler coverage; mirrors OutlinerPanel's *ForTest) --------
+
+    internal Border? RowBorderForTest(int uid) => _rowByUid.TryGetValue(uid, out Border? b) ? b : null;
+
+    internal bool RowHighlightedForTest(int uid) =>
+        _rowByUid.TryGetValue(uid, out Border? b) && b.Background is SolidColorBrush { Color.A: not 0 };
+
+    internal void PressRowForTest(int uid, bool additive = false) => HandleRowPressed(uid, additive);
+
+    internal void DoubleTapRowForTest(int uid) => HandleRowDoubleTapped(uid);
 
     private static Control Badges(LayerRow row)
     {

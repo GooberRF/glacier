@@ -8,6 +8,12 @@ namespace Ged.Core.Editing;
 /// </summary>
 public readonly record struct OpResult(bool Success, string Message)
 {
+    /// <summary>
+    /// How many faces the op auto-triangulated to keep them planar (RED-parity edit-time planarity
+    /// guard; see <see cref="FacePlanarizer"/>). Zero for ops that changed no face's flatness.
+    /// </summary>
+    public int FacesTriangulated { get; init; }
+
     public static OpResult Ok(string message = "") => new(true, message);
 
     public static OpResult Fail(string message) => new(false, message);

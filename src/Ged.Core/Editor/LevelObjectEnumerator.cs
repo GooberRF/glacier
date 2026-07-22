@@ -209,6 +209,19 @@ internal static class LevelObjectEnumerator
 
                     break;
 
+                case EaxEffectsSection s:
+                    // B3: project EAX effect zones as first-class level objects so they are
+                    // clickable, selectable, resolvable by UID, and listed in the outliner — the
+                    // rendering layer already emits the EAX billboard + pick id, but without this
+                    // projection FindByUid returned null and the pick resolved to nothing. Each
+                    // carries a full ObjectHeader (uid/class/pos/rot/script/hidden).
+                    foreach (EaxEffect eax in s.Effects)
+                    {
+                        result.Add(Header(LevelObjectKind.Eax, section, eax, eax.Header, s.Effects));
+                    }
+
+                    break;
+
                 case MoversSection s:
                     foreach (Brush m in s.Movers)
                     {

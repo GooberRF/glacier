@@ -68,6 +68,17 @@ public sealed class AppSettings
 
     public bool PromptForSave { get; set; } = true;
 
+    /// <summary>
+    /// Undo/redo application mode for a MULTI-STEP history jump (clicking a node in the History panel
+    /// several entries away). False (default) = <b>Instant</b>: the intermediate entries are applied in
+    /// one shot with a single scene rebuild, so the view snaps straight to the chosen state. True =
+    /// <b>Replay</b>: the jump walks through each intermediate history entry visibly, rebuilding the
+    /// scene at every step so you watch the level step through its states. Both reach the identical final
+    /// document state; Replay only differs in what you SEE along the way. (A single Ctrl+Z / Ctrl+Y is one
+    /// entry, so the two modes are indistinguishable for it.)
+    /// </summary>
+    public bool UndoReplay { get; set; }
+
     public float NavPointHeight { get; set; } = 3f;
 
     /// <summary>"Don't show again" for the legacy-level (pre-Alpine) open warning.</summary>

@@ -31,6 +31,9 @@ public enum LevelObjectKind
     /// <summary>A room-effect marker (sky/liquid room or ambient-light override; RFL room_effects).</summary>
     RoomEffect,
 
+    /// <summary>An EAX environmental-audio effect zone (RFL eax_effects).</summary>
+    Eax,
+
     /// <summary>A mover keyframe (a moving group's path waypoint; carries its own UID).</summary>
     Keyframe,
     MeshObject,

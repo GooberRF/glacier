@@ -19,14 +19,18 @@ public static class SelectionScope
     /// </summary>
     public static void ClearInvalid(SelectKinds active, BrushEditor? brushes, EditorDocument? objects)
     {
+        // Whole brushes AND objects are BOTH selectable in Group mode (as group members), so their
+        // retain flags widen to include Groups — matching SelectionRouter.Gate, the single shared
+        // kind-selectability table (no per-mode lists). Faces / vertices / edges stay strict to
+        // their own chip. Entering Group mode therefore preserves BOTH a whole-brush and an object
+        // selection (P3); entering Object mode keeps objects but drops brush sub-geometry; entering
+        // Brush/Face/Vertex/Edge drops the object selection.
         brushes?.RetainSelectionKinds(
-            (active & SelectKinds.Brushes) != 0,
+            (active & (SelectKinds.Brushes | SelectKinds.Groups)) != 0,
             (active & SelectKinds.Faces) != 0,
             (active & SelectKinds.Vertices) != 0,
             (active & SelectKinds.Edges) != 0);
 
-        // The object selection backs both Object and Group picking; it survives while
-        // either kind is enabled and clears otherwise (Brush/Face/Vertex modes).
         if ((active & (SelectKinds.Objects | SelectKinds.Groups)) == 0)
         {
             objects?.ClearSelection();

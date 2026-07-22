@@ -128,6 +128,123 @@ public sealed class SelectionModeIntegrityTests
         Assert.All(overlayB, l => Assert.True(l.A.X > 0 && l.B.X > 0, "only B is highlighted after A→B"));
     }
 
+    // ---- Cross-kind replace in Group mode: a plain click drops the OTHER kind too -----------
+
+    /// <summary>A Group-mode session with one brush and one object, both co-selectable.</summary>
+    private static (EditorSession Session, BrushEditor Brushes, EditorDocument Doc, int BrushUid, LevelObject Obj) GroupLevel()
+    {
+        var session = new EditorSession();
+        session.NewLevel();
+        BrushEditor be = session.BrushEditor!;
+        EditorDocument doc = session.Document!;
+        int uid = be.CreateBrush(Cube(), new CoreVec3(-10, 0, 0), Mat3.Identity);
+        LevelObject obj = doc.PlaceObject(LevelObjectKind.Light, new CoreVec3(10, 0, 0))!;
+
+        // Enter Group mode through the ACTUAL chokepoint (both whole brushes AND objects selectable).
+        be.SetMode(EditMode.Group);
+        session.SyncSelectionToKinds(SelectionFilter.PrimaryKindFor(EditMode.Group));
+        Assert.Equal(SelectKinds.Groups, session.ActiveSelectKinds);
+        return (session, be, doc, uid, obj);
+    }
+
+    [AvaloniaFact]
+    public void Group_Mode_Plain_Object_Click_Drops_A_Lingering_Brush_Selection()
+    {
+        (EditorSession session, BrushEditor be, EditorDocument doc, int uid, LevelObject obj) = GroupLevel();
+
+        // Brush selected first (e.g. carried in from Brush mode), then a PLAIN object click.
+        Assert.True(session.Selection.SelectBrush(uid));
+        Assert.Contains(uid, be.SelectedBrushes);
+
+        Assert.True(session.Selection.SelectObject(obj)); // non-additive: replaces the WHOLE selection
+
+        // STATE: the object is selected and the brush is deselected (not just the object added).
+        Assert.Contains(obj, doc.Selection);
+        Assert.Empty(be.SelectedBrushes);
+
+        // VISUALS: the overlay rebuilds from live state, so the brush highlight lines are gone.
+        Assert.Empty(session.BuildBrushSelectionLines());
+    }
+
+    [AvaloniaFact]
+    public void Group_Mode_Plain_Brush_Click_Drops_A_Lingering_Object_Selection()
+    {
+        (EditorSession session, BrushEditor be, EditorDocument doc, int uid, LevelObject obj) = GroupLevel();
+
+        // Object selected first (carried in from Object mode), then a PLAIN brush click (the mirror case).
+        Assert.True(session.Selection.SelectObject(obj));
+        Assert.Contains(obj, doc.Selection);
+
+        Assert.True(session.Selection.SelectBrush(uid)); // non-additive: replaces the WHOLE selection
+
+        Assert.Contains(uid, be.SelectedBrushes);
+        Assert.Empty(doc.Selection);
+
+        // The object's highlight box lines are gone (overlay driven by the live document selection).
+        Assert.Empty(session.BuildSelectionLines(doc.Selection));
+    }
+
+    [AvaloniaFact]
+    public void Group_Mode_Additive_Ctrl_Click_Keeps_Both_Kinds()
+    {
+        (EditorSession session, BrushEditor be, EditorDocument doc, int uid, LevelObject obj) = GroupLevel();
+
+        Assert.True(session.Selection.SelectBrush(uid));
+        Assert.True(session.Selection.SelectObject(obj, additive: true)); // Ctrl-click: keep the brush too
+
+        Assert.Contains(obj, doc.Selection);
+        Assert.Contains(uid, be.SelectedBrushes); // additive never cross-clears
+
+        // And the mirror direction: additive brush click keeps the object.
+        int uid2 = be.CreateBrush(Cube(), new CoreVec3(0, 12, 0), Mat3.Identity);
+        Assert.True(session.Selection.SelectBrush(uid2, additive: true));
+        Assert.Contains(obj, doc.Selection);
+        Assert.Contains(uid2, be.SelectedBrushes);
+    }
+
+    [AvaloniaFact]
+    public void Group_Mode_Plain_Batch_Select_Also_Replaces_The_Other_Kind()
+    {
+        // The marquee's batch guarantee: a non-additive batch object select (e.g. a group double-tap or a
+        // plain marquee's object catch) drops a lingering brush selection, and vice-versa — the same
+        // whole-selection replace the single-click path now enforces, so box-select never drifts from click.
+        (EditorSession session, BrushEditor be, EditorDocument doc, int uid, LevelObject obj) = GroupLevel();
+
+        Assert.True(session.Selection.SelectBrush(uid));
+        Assert.True(session.Selection.SelectObjects(new[] { obj }));
+        Assert.Empty(be.SelectedBrushes);
+        Assert.Contains(obj, doc.Selection);
+
+        Assert.True(session.Selection.SelectBrushes(new[] { uid }));
+        Assert.Empty(doc.Selection);
+        Assert.Contains(uid, be.SelectedBrushes);
+    }
+
+    [AvaloniaFact]
+    public void Object_Mode_Plain_Object_Click_Leaves_Brush_Sub_Selection_Untouched()
+    {
+        // Guard the gate: in single-kind Object mode the OTHER kind is not co-selectable (Permits(Brushes)
+        // is false), so a plain object click must NOT reach across and clear a brush selection. (In the
+        // real app the brush selection was already purged entering Object mode; this pins that the router
+        // never over-clears when the other kind is out of scope.)
+        var session = new EditorSession();
+        session.NewLevel();
+        BrushEditor be = session.BrushEditor!;
+        EditorDocument doc = session.Document!;
+        int uid = be.CreateBrush(Cube(), new CoreVec3(-10, 0, 0), Mat3.Identity);
+        LevelObject obj = doc.PlaceObject(LevelObjectKind.Light, new CoreVec3(10, 0, 0))!;
+
+        // Directly seed a brush selection, then switch to Object-mode chips WITHOUT the mode purge, so we
+        // isolate the router gate itself.
+        session.ActiveSelectKinds = SelectKinds.Brushes;
+        Assert.True(session.Selection.SelectBrush(uid));
+        session.ActiveSelectKinds = SelectKinds.Objects;
+
+        Assert.True(session.Selection.SelectObject(obj));
+        Assert.Contains(obj, doc.Selection);
+        Assert.Contains(uid, be.SelectedBrushes); // untouched: Brushes not co-selectable in Object mode
+    }
+
     // ---- (b) Offscreen pixel proof: select A then B (tiered), A's highlight is GONE ---------
 
     [AvaloniaFact]

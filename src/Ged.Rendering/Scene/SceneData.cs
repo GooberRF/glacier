@@ -38,6 +38,14 @@ public sealed class GeometryBatch
     /// <summary>True for a portal-face batch (drawn only when a portal draw mode is on; kept pickable).</summary>
     public bool IsPortal { get; set; }
 
+    /// <summary>
+    /// True for a pick-only batch: its triangles are rasterized into the id-buffer pick pass
+    /// (so the geometry is selectable) but SKIPPED in the colour pass (nothing visible is drawn).
+    /// Used to keep whole brushes selectable in Group mode and authored portal brushes selectable
+    /// under View ▸ Portal Faces = Don't Draw, without drawing any fill.
+    /// </summary>
+    public bool PickOnly { get; set; }
+
     /// <summary>True for a show-sky editor-aid batch: a flat semitransparent sky-blue quad
     /// (texture dropped) marking faces flagged <c>show_sky</c>, drawn with a "SHOW SKY" label.</summary>
     public bool IsSky { get; set; }

@@ -48,6 +48,25 @@ internal interface IViewportInputHost
 
     /// <summary>True when the physical key for <paramref name="virtualKey"/> is currently down.</summary>
     bool IsKeyPhysicallyDown(int virtualKey);
+
+    /// <summary>
+    /// True when <see cref="IsKeyPhysicallyDown"/> reflects the REAL OS keyboard (the Direct3D
+    /// native pane, backed by <c>GetAsyncKeyState</c>). The router then reconciles its modifier
+    /// bitfield from physical state on every key event / focus gain, so a swallowed modifier
+    /// KeyUp (alt-tab, a modal dialog) can never leave a phantom Ctrl/Shift/Alt latched. The GL
+    /// pane returns false — its <see cref="IsKeyPhysicallyDown"/> is unconditionally true, so it
+    /// stays on the Avalonia-modifier route (its surface syncs modifiers from <c>KeyModifiers</c>
+    /// on each key event instead).
+    /// </summary>
+    bool UsesPhysicalKeyState { get; }
+
+    /// <summary>
+    /// True when the active camera scheme treats a bare left button as click-to-select /
+    /// drag-to-navigate (UnrealEd): a press without a drag click-picks, a drag navigates the
+    /// camera, and there is no plain-left marquee. False for the marquee schemes, where a bare
+    /// left drag box-selects.
+    /// </summary>
+    bool LeftClickSelectsDragNavigates { get; }
 }
 
 /// <summary>
@@ -73,9 +92,10 @@ internal sealed class ViewportInputRouter
 
     // Manipulator drag, marquee box-select, and two-point clip point-picking.
     private bool _gizmoDragging;
-    private bool _selectMaybe;   // LMB pressed on empty space: pending click-pick or marquee
+    private bool _selectMaybe;   // LMB pressed (not on a gizmo handle): pending click-pick, marquee, or nav-drag
     private bool _selectDragged;
     private bool _marqueeActive;
+    private bool _leftDragNavigates; // UnrealEd: a select-armed left DRAG becomes camera navigation, not a marquee
     private int _selStartX, _selStartY;
 
     public ViewportInputRouter(IViewportInputHost host) => _host = host;
@@ -155,6 +175,7 @@ internal sealed class ViewportInputRouter
     public void OnKey(int virtualKey, bool down, bool extended)
     {
         UpdateModifier(virtualKey, down);
+        ReconcileModifiersFromPhysical();
 
         // ESC cancels an in-progress manipulator drag (revert) or marquee.
         if (down && virtualKey == 0x1B)
@@ -269,7 +290,14 @@ internal sealed class ViewportInputRouter
             if (!_marqueeActive && (Math.Abs(x - _selStartX) + Math.Abs(y - _selStartY)) > 3)
             {
                 _selectDragged = true;
-                if (MarqueeEnabled)
+                if (_leftDragNavigates)
+                {
+                    // UnrealEd click-vs-drag: a left DRAG is camera navigation (dolly + turn), not a
+                    // marquee. Drop the select-arm so this move — and the rest of the drag — falls
+                    // through to CameraDrag below; a release without a drag still click-selects.
+                    _selectMaybe = false;
+                }
+                else if (MarqueeEnabled)
                 {
                     _marqueeActive = true;
                     MarqueeStarted?.Invoke(_selStartX, _selStartY);
@@ -280,9 +308,15 @@ internal sealed class ViewportInputRouter
             {
                 MarqueeMovedTo?.Invoke(x, y);
                 _host.RequestRender();
+                return;
             }
 
-            return; // a select drag never camera-navigates
+            if (_selectMaybe)
+            {
+                return; // still an armed select (sub-threshold, or a no-marquee scheme): never navigate yet
+            }
+
+            // Otherwise the drag was just promoted to camera navigation — fall through to CameraDrag.
         }
 
         // Draw-brush tool: idle pointer moves feed the hover preview. Button-held moves
@@ -322,6 +356,13 @@ internal sealed class ViewportInputRouter
         _lastMouseY = y;
         Input.PointerX = x;
         Input.PointerY = y;
+
+        // Re-derive modifiers from the real keyboard before a click reads them (D3D pane only; a
+        // no-op on GL, which already syncs KeyModifiers on every pointer event). Without this, a
+        // Ctrl KeyUp swallowed by a focus change would leave a phantom Ctrl latched, turning the
+        // next plain click into an additive toggle — a "sometimes can't select" symptom.
+        ReconcileModifiersFromPhysical();
+
         switch (button)
         {
             case ViewportButton.Left:
@@ -382,10 +423,13 @@ internal sealed class ViewportInputRouter
                     }
                     else
                     {
-                        // Empty-space press: a click picks, a drag marquees (select contexts).
+                        // Any non-tool, non-handle press: a release-without-drag click-picks, a drag
+                        // box-selects — or, under a click-select/drag-navigate scheme (UnrealEd),
+                        // the drag navigates the camera instead of starting a marquee.
                         _selectMaybe = true;
                         _selStartX = x;
                         _selStartY = y;
+                        _leftDragNavigates = _host.LeftClickSelectsDragNavigates;
                     }
                 }
 
@@ -418,8 +462,15 @@ internal sealed class ViewportInputRouter
         _host.RequestRender();
     }
 
-    /// <summary>The native surface lost keyboard focus: drop the held-key set.</summary>
+    /// <summary>The native surface lost keyboard focus: drop the held-key set AND the modifier
+    /// bitfield (a modifier whose KeyUp is swallowed by the focus change must not stay latched).</summary>
     public void OnFocusLost() => Input.ClearHeld();
+
+    /// <summary>The native surface regained keyboard focus: re-derive the modifier bitfield from
+    /// the real OS keyboard so a modifier physically held across the focus change (whose KeyDown
+    /// the pane never saw) is picked up before the first key/mouse gesture. No-op on backends
+    /// without real physical key state (GL).</summary>
+    public void OnFocusGained() => ReconcileModifiersFromPhysical();
 
     // ---- Gesture helpers ----
 
@@ -510,6 +561,42 @@ internal sealed class ViewportInputRouter
         {
             Input.Modifiers &= ~flag;
         }
+    }
+
+    /// <summary>
+    /// On the native (Direct3D) pane, re-derives the modifier bitfield from the real OS keyboard
+    /// (<c>GetAsyncKeyState</c> via the host), so a modifier whose KeyUp was swallowed by a focus
+    /// change — alt-tab, or a modal Save-As / progress dialog stealing focus — cannot leave a
+    /// phantom Ctrl/Shift/Alt latched and silently break Ctrl+Z / Ctrl+Y (and every other chord).
+    /// Fixes BOTH a stuck-on modifier (lost KeyUp) and a stuck-off one (a KeyDown that arrived
+    /// while another pane held focus). The GL pane has no real per-key state
+    /// (<see cref="IViewportInputHost.UsesPhysicalKeyState"/> is false) and stays on the
+    /// Avalonia-modifier route, so this is a no-op there.
+    /// </summary>
+    private void ReconcileModifiersFromPhysical()
+    {
+        if (!_host.UsesPhysicalKeyState)
+        {
+            return;
+        }
+
+        GestureModifiers m = GestureModifiers.None;
+        if (_host.IsKeyPhysicallyDown(0x10))
+        {
+            m |= GestureModifiers.Shift;
+        }
+
+        if (_host.IsKeyPhysicallyDown(0x11))
+        {
+            m |= GestureModifiers.Ctrl;
+        }
+
+        if (_host.IsKeyPhysicallyDown(0x12))
+        {
+            m |= GestureModifiers.Alt;
+        }
+
+        Input.Modifiers = m;
     }
 
     private static bool IsPureModifier(int vk) => vk is 0x10 or 0x11 or 0x12;

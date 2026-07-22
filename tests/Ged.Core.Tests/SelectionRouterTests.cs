@@ -67,11 +67,15 @@ public sealed class SelectionRouterTests
         Fixture f = NewFixture();
         f.Active = mode;
 
-        bool obj = f.Router.SelectObject(f.Obj);
-        bool brush = f.Router.SelectBrush(f.BrushUid);
-        bool face = f.Router.SelectFace(f.BrushUid, 0);
-        bool vert = f.Router.SelectVertex(f.BrushUid, 0);
-        bool edge = f.Router.SelectEdge(f.BrushUid, 0, 1);
+        // Additive so each permitted kind's selection persists independently: a plain (non-additive)
+        // select of one kind now REPLACES the whole cross-kind selection (in Group mode a brush select
+        // would otherwise clear the object just selected), which is orthogonal to the permission gate
+        // under test here.
+        bool obj = f.Router.SelectObject(f.Obj, additive: true);
+        bool brush = f.Router.SelectBrush(f.BrushUid, additive: true);
+        bool face = f.Router.SelectFace(f.BrushUid, 0, additive: true);
+        bool vert = f.Router.SelectVertex(f.BrushUid, 0, additive: true);
+        bool edge = f.Router.SelectEdge(f.BrushUid, 0, 1, additive: true);
 
         // Objects & whole brushes are also group members (Group mode widens their gate).
         Assert.Equal(mode is SelectKinds.Objects or SelectKinds.Groups, obj);

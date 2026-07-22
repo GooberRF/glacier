@@ -237,9 +237,12 @@ public sealed class BrushEmitterTests
 
         // The portal face contributes NO solid triangle (5 textured quads → 10 tris), but all
         // 12 wireframe edges still draw so the brush stays visible + selectable (RED behaviour).
+        // A lone portal face on a NON-portal brush needs no pick-only face: its textured sibling
+        // faces already keep the brush pickable.
         Assert.Equal(10, scene.TotalTriangleCount);
         Assert.Equal(12, scene.Lines.Count);
         Assert.DoesNotContain(scene.Batches, b => b.IsPortal);
+        Assert.DoesNotContain(scene.Batches, b => b.PickOnly);
     }
 
     [Fact]
@@ -287,16 +290,159 @@ public sealed class BrushEmitterTests
     };
 
     [Fact]
-    public void Portal_Flagged_Brush_None_Draws_No_Solid_In_Preview()
+    public void Portal_Flagged_Brush_None_Draws_No_Fill_But_Stays_Pickable()
     {
+        // P5 (owner correction): an authored portal brush obeys View ▸ Portal Faces = None like a
+        // compiled portal face — NO fill is drawn — but it must stay SELECTABLE, so its faces are
+        // emitted PICK-ONLY (rasterized into the id-buffer pick pass, skipped in the colour pass).
         var scene = new RenderScene();
         BrushEmitter.Append(scene, new[] { PortalFlaggedBox() }, BrushPickGranularity.Brush,
             solidFill: true, portalFaces: PortalFaceDrawMode.None);
 
-        // Pre-fix: 12 triangles (a solid textured box). Now: no solid fill, wireframe only.
-        Assert.Equal(0, scene.TotalTriangleCount);
-        Assert.DoesNotContain(scene.Batches, b => !b.IsPortal); // no opaque wall batch
-        Assert.Equal(12, scene.Lines.Count);                    // brush stays visible + selectable
+        // No visible portal fill (no drawn portal batch), but the pick geometry is present.
+        Assert.DoesNotContain(scene.Batches, b => b.IsPortal);
+        GeometryBatch pick = Assert.Single(scene.Batches, b => b.PickOnly);
+        Assert.Equal(12, scene.TotalTriangleCount); // 6 pick-only quads (id-buffer only)
+        Assert.Equal(12, scene.Lines.Count);        // wireframe still drawn so it's visible
+
+        // Every pick-only vertex carries the whole-brush pick id → a click resolves to the brush.
+        PickId id = PickId.Decode(pick.Vertices[0].PickId);
+        Assert.Equal(PickKind.Brush, id.Kind);
+        Assert.Equal(11, id.Index);
+    }
+
+    [Theory]
+    [InlineData(PortalFaceDrawMode.None)]
+    [InlineData(PortalFaceDrawMode.SeeThru)]
+    [InlineData(PortalFaceDrawMode.Opaque)]
+    public void Air_Portal_Textured_Brush_Uid414_Renders_Real_Faces_Under_Every_Portal_Face_Mode(PortalFaceDrawMode mode)
+    {
+        // ctf06 UID 414's shape (Portal|AIR, real textures). The air-carve clone survives the CSG solve
+        // as real cavity walls, so Object mode shows the real textures under EVERY setting — and the
+        // authored overlay must match: the faces render as REAL TEXTURES in all three modes, never a
+        // portal tint (See-thru/Opaque) and never dropped to pick-only (None). View ▸ Portal Faces does
+        // not touch them; the brush stays pickable via the real fill's whole-brush id.
+        var scene = new RenderScene();
+        BrushEmitter.Append(scene, new[] { AirPortalTexturedBox() }, BrushPickGranularity.Brush,
+            solidFill: true, portalFaces: mode);
+
+        Assert.DoesNotContain(scene.Batches, b => b.IsPortal);  // never a portal-tint quad
+        Assert.DoesNotContain(scene.Batches, b => b.PickOnly);  // never dropped to invisible pick-only
+        GeometryBatch real = Assert.Single(scene.Batches, b => b.TextureName.Length > 0);
+        Assert.Equal(RenderPass.Opaque, real.Pass);
+        Assert.Equal(12, scene.TotalTriangleCount);             // 6 real-textured quads, every mode
+
+        PickId id = PickId.Decode(real.Vertices[0].PickId);
+        Assert.Equal(PickKind.Brush, id.Kind);
+        Assert.Equal(414, id.Index);
+    }
+
+    // ---- An air+portal brush with REAL textures (ctf06 UID 414's shape) is the case the owner reported
+    // "seem deleted" in Brush mode: Portal|Air flags, all faces textured (IsPortalFace == false), no CSG
+    // survival entry. Because it is an AIR portal (its air-carve clone survives as real cavity walls in
+    // the compiled world), its authored faces must render their REAL TEXTURES in every mode/setting —
+    // matching Object mode — not a portal tint. ----
+    private static Brush AirPortalTexturedBox() => new()
+    {
+        Uid = 414,
+        Rotation = Mat3.Identity,
+        Geometry = BrushFactory.Box(2, 2, 2, 0, 0, 0, "wall.tga"),
+        Flags = (uint)(BrushFlags.Portal | BrushFlags.Air),
+    };
+
+    [Fact]
+    public void Air_Portal_Textured_Brush_Renders_Real_Faces_In_Merged_Overlay()
+    {
+        // A merged overlay (a survival map that does NOT mention this brush — portal brushes never get an
+        // entry) with PortalFaces = None: the ctf06 UID 414 reproduction that appeared "deleted" in Brush
+        // mode. Now its REAL textures are drawn (not dropped to pick-only), matching Object mode, and the
+        // brush stays pickable as a whole brush.
+        var survival = new System.Collections.Generic.Dictionary<int, bool[]> { [999] = new bool[6] };
+
+        var scene = new RenderScene();
+        BrushPickRegistry reg = BrushEmitter.Append(
+            scene, new[] { AirPortalTexturedBox() }, BrushPickGranularity.Brush,
+            solidFill: true, survivingFaces: survival, portalFaces: PortalFaceDrawMode.None);
+
+        Assert.Equal(12, scene.TotalTriangleCount);            // 6 real-textured quads (drawn, not deleted)
+        Assert.Equal(12, scene.Lines.Count);                   // wireframe box
+        Assert.DoesNotContain(scene.Batches, b => b.IsPortal); // not a portal tint
+        Assert.DoesNotContain(scene.Batches, b => b.PickOnly); // not dropped to pick-only — real fill now
+        GeometryBatch real = Assert.Single(scene.Batches, b => b.TextureName.Length > 0);
+        PickId id = PickId.Decode(real.Vertices[0].PickId); // pickable as a whole brush
+        Assert.Equal(PickKind.Brush, id.Kind);
+        Assert.Equal(414, id.Index);
+    }
+
+    [Fact]
+    public void Portal_Brush_Is_Not_Hidden_By_A_Merged_Fragment_Stash_That_Covers_It()
+    {
+        // Q2 — brush-edit-mode case: a portal brush must render its faces in EVERY edit mode — fill
+        // governed by View ▸ Portal Faces, wireframe + pickability ALWAYS. The compiler never records a
+        // portal brush in the fragment stash, but were one ever "covered" with zero surviving fragments
+        // (e.g. an air+portal brush whose air-carve clone got tracked), the merged (Brush-mode) fragment
+        // path would skip every face — hiding the whole brush while Object mode still shows it via the
+        // compiled path. The emitter pins portal brushes to the authored-polygon path, so a covering
+        // stash can never hide them. This drives that exact hazard.
+        Brush portal = PortalFlaggedBox(); // Uid 11, Portal flag, real textures
+        var frags = BrushFragmentIndex.Build(
+            new Geometry(),                                       // ...no compiled fragments for it,
+            new Dictionary<int, int> { [(int)portal.Uid] = 0 },  // ...yet the stash "covers" the brush
+            new Dictionary<int, bool[]> { [(int)portal.Uid] = new bool[6] });
+        Assert.True(frags.Covers((int)portal.Uid)); // the exact hazard: covered, zero fragments
+
+        // Brush-edit mode (solidFill true) + merged stash + View ▸ Portal Faces = See-Thru: fill drawn.
+        var seeThru = new RenderScene();
+        BrushEmitter.Append(seeThru, new[] { portal }, BrushPickGranularity.Brush,
+            solidFill: true, survivingFragments: frags, portalFaces: PortalFaceDrawMode.SeeThru);
+        Assert.Equal(12, seeThru.Lines.Count); // wireframe ALWAYS (would be 0 if the stash hid the brush)
+        GeometryBatch fill = Assert.Single(seeThru.Batches, b => b.IsPortal);
+        Assert.Equal(RenderPass.Alpha, fill.Pass); // fill governed by the Portal Faces mode
+        Assert.Equal(PickKind.Brush, PickId.Decode(fill.Vertices[0].PickId).Kind);
+
+        // Same brush + covering stash under Portal Faces = None: no fill, but wireframe + pickability stay.
+        var none = new RenderScene();
+        BrushEmitter.Append(none, new[] { portal }, BrushPickGranularity.Brush,
+            solidFill: true, survivingFragments: frags, portalFaces: PortalFaceDrawMode.None);
+        Assert.Equal(12, none.Lines.Count); // wireframe always
+        Assert.DoesNotContain(none.Batches, b => b.IsPortal); // None => no fill
+        GeometryBatch pickOnly = Assert.Single(none.Batches, b => b.PickOnly);
+        Assert.Equal((int)portal.Uid, PickId.Decode(pickOnly.Vertices[0].PickId).Index); // still pickable
+    }
+
+    [Fact]
+    public void Group_Mode_Style_Whole_Brush_Is_Pick_Only_When_Not_Solid_Filled()
+    {
+        // P4 at the emitter level: a plain (non-portal) brush with solidFill OFF but pickWholeBrush
+        // ON (Group mode) emits its faces PICK-ONLY so the whole brush is selectable as a group
+        // member — without a colour fill that would z-fight the compiled geometry.
+        var scene = new RenderScene();
+        var box = new Brush { Uid = 21, Rotation = Mat3.Identity, Geometry = BrushFactory.Box(2, 2, 2, 0, 0, 0, "wall.tga") };
+        BrushEmitter.Append(scene, new[] { box }, BrushPickGranularity.Brush,
+            solidFill: false, pickWholeBrush: true);
+
+        GeometryBatch pick = Assert.Single(scene.Batches, b => b.PickOnly);
+        Assert.Equal(12, scene.TotalTriangleCount);
+        PickId id = PickId.Decode(pick.Vertices[0].PickId);
+        Assert.Equal(PickKind.Brush, id.Kind);
+        Assert.Equal(21, id.Index);
+
+        // Without pickWholeBrush (plain Object mode), nothing is emitted (unpickable, no fill).
+        var scene2 = new RenderScene();
+        BrushEmitter.Append(scene2, new[] { box }, BrushPickGranularity.Brush, solidFill: false);
+        Assert.Empty(scene2.Batches);
+    }
+
+    [Fact]
+    public void Air_Portal_Brush_Registers_Vertices_For_Sub_Geometry_Picking()
+    {
+        var scene = new RenderScene();
+        BrushPickRegistry reg = BrushEmitter.Append(
+            scene, new[] { AirPortalTexturedBox() }, BrushPickGranularity.Vertex,
+            solidFill: true, portalFaces: PortalFaceDrawMode.None);
+
+        Assert.Equal(8, reg.Vertices.Count); // its vertices register for the nearest-vertex search
+        Assert.Equal(8, scene.Billboards.Count(b => b.Kind == BillboardKind.Vertex));
     }
 
     [Fact]

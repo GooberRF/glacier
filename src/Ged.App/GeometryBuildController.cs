@@ -267,11 +267,7 @@ public sealed class GeometryBuildController
         _session.BrushFragments = null;
         _session.StaleFragmentBrushUids.Clear();
         StateChanged?.Invoke();
-        if (LivePreviewEnabled && BrushCount() > 0 && BrushCount() <= LivePreviewBrushLimit)
-        {
-            _previewTimer.Stop();
-            _previewTimer.Start();
-        }
+        ArmPreviewTimer(ignoreBrushLimit: false);
     }
 
     private void OnBrushesChanged()
@@ -310,22 +306,102 @@ public sealed class GeometryBuildController
         }
 
         StateChanged?.Invoke();
-        if (LivePreviewEnabled && BrushCount() > 0 && BrushCount() <= LivePreviewBrushLimit)
-        {
-            _previewTimer.Stop();
-            _previewTimer.Start();
-        }
+        ArmPreviewTimer(ignoreBrushLimit: false);
     }
 
     /// <summary>
     /// Fires the deferred status refresh and arms the debounced live-CSG preview ONCE — the drag-commit
     /// counterpart to the per-frame work <see cref="OnBrushesChanged"/> skips while
     /// <see cref="SuspendLivePreview"/> is set. Idempotent and safe to call when nothing is dirty.
+    /// Respects the small-level <see cref="LivePreviewBrushLimit"/> cap; use
+    /// <see cref="ArmPostTransformBuild"/> for the commit of a brush TRANSFORM, which refreshes the
+    /// merged stash on levels of any size.
     /// </summary>
     public void ArmLivePreviewIfPending()
     {
         StateChanged?.Invoke();
-        if (GeometryDirty && LivePreviewEnabled && BrushCount() > 0 && BrushCount() <= LivePreviewBrushLimit)
+        if (GeometryDirty)
+        {
+            ArmPreviewTimer(ignoreBrushLimit: false);
+        }
+    }
+
+    /// <summary>
+    /// Transform-commit build arm (gizmo / keyboard / M-N): after a brush MOVE / ROTATE / SCALE is
+    /// committed, kick the debounced background live-CSG preview build REGARDLESS of the
+    /// <see cref="LivePreviewBrushLimit"/> cap, so the merged brushwork stash — the compiled world the
+    /// moved brush's OLD location still draws from — refreshes even on large levels (ctf06 exceeds the
+    /// 350-brush cap). The full compile is sub-second on the largest corpus level (FEATURES: &lt;1&#160;s)
+    /// and runs off the UI thread with cancellation, so the cap — which exists to keep the PER-KEYSTROKE
+    /// debounce cheap during rapid edits — is obsolete for a one-shot post-commit refresh. Without this
+    /// the moved brush draws its authored polys at the new spot (via the per-brush staleness set) while
+    /// the surrounding merged world stays stale until a manual Build.
+    /// </summary>
+    public void ArmPostTransformBuild()
+    {
+        StateChanged?.Invoke();
+        if (GeometryDirty)
+        {
+            ArmPreviewTimer(ignoreBrushLimit: true);
+        }
+    }
+
+    /// <summary>
+    /// Applies an Undo (<paramref name="redo"/> = false) or Redo, and — if it CHANGED BRUSH GEOMETRY —
+    /// arms the uncapped post-transform rebuild, exactly as a transform COMMIT does. The moved brush's
+    /// OLD location keeps drawing from the merged static world / stash, so undoing (or redoing) a brush
+    /// move on a large level (above <see cref="LivePreviewBrushLimit"/>) must refresh that compiled world
+    /// too — otherwise the live CSG preview stays stale after undo just as it did after a move before the
+    /// transform-commit arm existed. An object-only undo raises no <c>BrushesChanged</c>, so it never arms.
+    /// <paramref name="coalesce"/> is the "Undo application" setting (Instant coalesces the entry's
+    /// notifications into one refresh; Replay steps).
+    /// </summary>
+    public void ApplyUndoRedo(bool redo, bool coalesce)
+    {
+        if (_session.Document is not { } doc)
+        {
+            return;
+        }
+
+        bool brushChanged = false;
+        void Mark() => brushChanged = true;
+
+        var be = _session.BrushEditor;
+        if (be is not null)
+        {
+            be.BrushesChanged += Mark;
+        }
+
+        try
+        {
+            if (redo)
+            {
+                doc.Undo.Redo(coalesce);
+            }
+            else
+            {
+                doc.Undo.Undo(coalesce);
+            }
+        }
+        finally
+        {
+            if (be is not null)
+            {
+                be.BrushesChanged -= Mark;
+            }
+        }
+
+        if (brushChanged)
+        {
+            ArmPostTransformBuild();
+        }
+    }
+
+    /// <summary>Restarts the debounced live-CSG preview timer, gated on live-preview being on, brushes
+    /// existing, and (unless <paramref name="ignoreBrushLimit"/>) the small-level cap.</summary>
+    private void ArmPreviewTimer(bool ignoreBrushLimit)
+    {
+        if (LivePreviewEnabled && BrushCount() > 0 && (ignoreBrushLimit || BrushCount() <= LivePreviewBrushLimit))
         {
             _previewTimer.Stop();
             _previewTimer.Start();

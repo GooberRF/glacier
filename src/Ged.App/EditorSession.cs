@@ -194,6 +194,32 @@ public sealed class EditorSession : IDisposable
     /// </summary>
     public SelectKinds ActiveSelectKinds { get; set; } = SelectKinds.Objects;
 
+    /// <summary>
+    /// The last viewport pick that lit a selection-highlight box in the overlay (item (a)). It is
+    /// an OVERLAY concern only — the authoritative selection is the document/brush selection — so a
+    /// mode transition drops it (via <see cref="SyncSelectionToKinds"/>) alongside the out-of-mode
+    /// selection, or a former object's highlight box would linger into a mode where its kind is
+    /// unselectable (P3: an EAX region staying "selected" after switching to Brush mode).
+    /// </summary>
+    public Ged.Rendering.Picking.PickId PickHighlight { get; set; } = Ged.Rendering.Picking.PickId.None;
+
+    /// <summary>
+    /// The single mode-transition chokepoint: sets <see cref="ActiveSelectKinds"/> and prunes the
+    /// live selection down to the kinds those chips allow, then drops the transient
+    /// <see cref="PickHighlight"/>. Purely table-driven off <see cref="SelectKinds"/> (the same
+    /// gate the router/PickGate use — no per-mode lists): object/group selection survives while
+    /// Objects OR Groups is lit; brush / face / vertex / edge sub-selections survive per their own
+    /// chip; everything unselectable in the new mode is dropped. Entering a mode where objects are
+    /// unselectable (Brush/Face/Vertex/Edge) therefore deselects them; Group keeps both, Object
+    /// keeps objects and drops brush sub-geometry (P3 transition matrix).
+    /// </summary>
+    public void SyncSelectionToKinds(SelectKinds active)
+    {
+        ActiveSelectKinds = active;
+        SelectionScope.ClearInvalid(active, BrushEditor, Document);
+        PickHighlight = Ged.Rendering.Picking.PickId.None;
+    }
+
     private SelectionRouter? _selection;
 
     /// <summary>
@@ -516,6 +542,13 @@ public sealed class EditorSession : IDisposable
                 (ActiveSelectKinds & SelectKinds.Vertices) != 0 ? BrushPickGranularity.Vertex :
                 (ActiveSelectKinds & SelectKinds.Faces) != 0 ? BrushPickGranularity.Face :
                 BrushPickGranularity.Brush;
+            // Whole-brush selection is possible (Brushes or Groups chip) but the overlay draws no
+            // solid fill (Group mode, no ShowBrushSolids): without a filled face the brush emits no
+            // pickable geometry, so a brush click never reaches the router (B4 — brushes unselectable
+            // in Group mode). Emit the faces pick-only so the whole brush stays selectable without a
+            // z-fighting fill. In brush-edit modes solidFill is already on, so this is inert there.
+            bool pickWholeBrush = gran == BrushPickGranularity.Brush
+                && (ActiveSelectKinds & (SelectKinds.Brushes | SelectKinds.Groups)) != 0;
             // Wireframe overlay always; solid fill only when the compiled geometry
             // is hidden (brush-edit / live preview) or the user opts in — otherwise
             // brush solids z-fight the identical compiled faces (stock parity: wire only).
@@ -554,7 +587,7 @@ public sealed class EditorSession : IDisposable
                 scene, brushesToDraw, gran, selectedBrushes: null, solidFill,
                 survivingFaces: survival, survivingFragments: fragments, staleFragmentBrushes: stale,
                 portalFaces: PortalFaces, portalColor: PortalFaceColor,
-                skyFaceAid: editingBrushes || DrawSky);
+                skyFaceAid: editingBrushes || DrawSky, pickWholeBrush: pickWholeBrush);
             ExpandBoundsToBrushes(scene, brushesToDraw);
         }
 
@@ -1352,6 +1385,13 @@ public sealed class EditorSession : IDisposable
         return pick.Kind == PickKind.BrushVertex && _brushRegistry is not null &&
             _brushRegistry.TryResolveVertex(pick.Index, out brushUid, out vertexIndex);
     }
+
+    /// <summary>
+    /// The brush vertices registered in the current scene, with their world positions — populated
+    /// only while the scene is built at vertex granularity (Vertex mode). Drives the App's
+    /// nearest-vertex CPU pick search so a near-miss on a tiny vertex dot still selects it.
+    /// </summary>
+    public IReadOnlyList<BrushPickRegistry.VertexRef>? BrushPickVertices => _brushRegistry?.Vertices;
 
     /// <summary>Highlight lines for the current brush/face/vertex selection.</summary>
     public IReadOnlyList<LineSegment> BuildBrushSelectionLines()

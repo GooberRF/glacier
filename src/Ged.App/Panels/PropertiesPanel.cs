@@ -135,6 +135,9 @@ internal sealed class PropertiesPanel : UserControl
                 case RoomEffect fx:
                     _scroll.Content = WrapWithInstanceBanner(uid, BuildRoomEffectInspector(doc, sel[0], fx));
                     return;
+                case EaxEffect eax:
+                    _scroll.Content = WrapWithInstanceBanner(uid, BuildEaxInspector(doc, sel[0], eax));
+                    return;
             }
 
             if (ObjectInspectorCatalog.For(sel[0].Kind).Count > 0)
@@ -880,6 +883,28 @@ internal sealed class PropertiesPanel : UserControl
                 lp.TextureScrollRate.V, v => lp.TextureScrollRate = new Uv(lp.TextureScrollRate.U, v)));
         }
 
+        return panel;
+    }
+
+    /// <summary>
+    /// Dedicated inspector for an EAX environmental-audio effect zone (B3): the shared header rows
+    /// (UID, script name, position, hidden) plus its reverb-preset name (<see cref="EaxEffect.EffectType"/>,
+    /// a free-form vstring). Mirrors <see cref="BuildRoomEffectInspector"/>; every edit is one undo
+    /// step and dirties the eax_effects section, and a no-op leaves the section byte-identical.
+    /// </summary>
+    private Control BuildEaxInspector(EditorDocument doc, LevelObject lo, EaxEffect eax)
+    {
+        var panel = new StackPanel { Spacing = 2 };
+        panel.Children.Add(Header($"EAX Effect (uid {lo.Uid})"));
+        panel.Children.Add(ReadonlyRow("UID", lo.Uid.ToString(CultureInfo.InvariantCulture)));
+        panel.Children.Add(StringRow("Script Name", new List<LevelObject> { lo }, o => o.ScriptName,
+            (o, v) => doc.EditValue(o.Section, "Edit script name", o.ScriptName, v, nv => o.ScriptName = nv), doc));
+        panel.Children.Add(Vec3Row("Position", new List<LevelObject> { lo }, o => o.Position,
+            (o, v) => doc.EditValue(o.Section, "Move EAX effect", o.Position, v, nv => o.Position = nv, $"pos-{o.Uid}"), doc));
+        panel.Children.Add(BoolRow("Hidden", new List<LevelObject> { lo }, o => o.Hidden,
+            (o, v) => { doc.EditValue(o.Section, "Toggle hidden", o.Hidden, v, nv => o.Hidden = nv); _host?.RequestSceneRebuild(); }, doc));
+        panel.Children.Add(SectionStringRow(doc, lo.Section, "Effect Type",
+            () => eax.EffectType, v => eax.EffectType = v));
         return panel;
     }
 

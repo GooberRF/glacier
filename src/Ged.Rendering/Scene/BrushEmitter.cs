@@ -62,15 +62,17 @@ public static class BrushEmitter
         IReadOnlySet<int>? staleFragmentBrushes = null,
         PortalFaceDrawMode portalFaces = PortalFaceDrawMode.None,
         uint? portalColor = null,
-        bool skyFaceAid = false)
+        bool skyFaceAid = false,
+        bool pickWholeBrush = false)
     {
         var registry = new BrushPickRegistry();
-        var batches = new Dictionary<(string Tex, RenderPass Pass, bool Portal, bool Sky), GeometryBatch>();
+        var batches = new Dictionary<(string Tex, RenderPass Pass, bool Portal, bool Sky, bool PickOnly), GeometryBatch>();
 
         // Portal-brush faces in the edit-mode overlay honor the same View ▸ Portal Faces mode
-        // as the compiled path (item 0e): None → not solid-filled (wireframe edges still drawn
-        // so the brush stays visible + selectable, matching RED), See-thru → alpha pass with the
-        // portal tint, Non-see-thru → opaque with the portal tint (a flat quad, texture dropped).
+        // as the compiled path (item 0e): None → NO fill drawn (wireframe edges still drawn so the
+        // brush stays visible), See-thru → alpha pass with the portal tint, Non-see-thru → opaque
+        // with the portal tint (a flat quad, texture dropped). Under None the portal face is still
+        // emitted PICK-ONLY (see below) so authored portal brushes stay selectable in every mode.
         bool drawPortalSolid = portalFaces != PortalFaceDrawMode.None;
         RenderPass portalPass = portalFaces == PortalFaceDrawMode.SeeThru ? RenderPass.Alpha : RenderPass.Opaque;
         Vector4 portalTint = PortalTint(portalFaces, portalColor);
@@ -83,13 +85,37 @@ public static class BrushEmitter
             Geometry g = b.Geometry;
             var edges = new HashSet<(int, int)>();
 
-            // A BrushFlags.Portal brush is a portal even though its authored faces keep a
-            // REAL texture (so Face.IsPortalFace is false for them). The compiled path never
-            // sees this because the compiler rewrites portal brushes into texture -1 membranes,
-            // but the live-preview overlay draws the authored/fragment polygons directly — so
-            // fold the brush-level portal flag into the per-face portal predicate here, or a
-            // portal-flagged brush leaks through as a solid box ignoring View ▸ Portal Faces.
+            // Whether the brush carries the Portal / Air flags. The KEY distinction (owner-reported:
+            // an air+portal brush's real-textured faces were "deleted" in Brush mode while Object mode
+            // showed them): an AIR portal brush and a SOLID portal brush render their authored faces
+            // completely differently, because the COMPILER treats them differently.
+            //  • Air|Portal: the compiler adds an air-CARVE clone of the brush to the solid operands
+            //    (GeometryCompiler.Run, the `(flags & Air) != 0` branch under portalBrushes), so its
+            //    real-textured faces SURVIVE the CSG solve as ordinary cavity-wall faces in the compiled
+            //    static world — Object mode draws them as real textures under EVERY View ▸ Portal Faces
+            //    setting. So in the authored overlay (Brush-edit / live-CSG preview, where the compiled
+            //    world is suppressed) these faces MUST also draw their real textures, or they vanish in
+            //    Brush mode while Object mode shows them (the reported asymmetry).
+            //  • Solid Portal (no Air): a flat/solid portal brush is a boolean no-op — the compiler emits
+            //    only a texture -1 membrane and NO surviving real-textured faces, so Object mode shows
+            //    nothing solid. Its authored faces therefore stay portal-classified and obey View ▸ Portal
+            //    Faces (None → no fill, See-thru → translucent tint, Opaque → solid tint), matching that.
+            // So the per-face portal predicate below folds in the brush-level portal flag ONLY for a
+            // SOLID portal brush; an air portal brush's faces are classified by their own Face.IsPortalFace
+            // (false for real-textured faces), so they take the normal real-texture path.
             bool brushPortal = ((BrushFlags)b.Flags & BrushFlags.Portal) != 0;
+            bool brushAir = ((BrushFlags)b.Flags & BrushFlags.Air) != 0;
+            bool solidPortalBrush = brushPortal && !brushAir;
+
+            // A portal brush stays SELECTABLE in every draw mode. A solid portal brush under None emits
+            // its faces PICK-ONLY (no colour); an air portal brush's faces are drawn as real solids, which
+            // are already pickable. This matches RED, whose picking is flag-AGNOSTIC: box-select (RED.exe
+            // BrushList_box_select @ 0x0042adb0), face-pick (0x0042c020) and selection iteration
+            // (brush_mode_handle_selection @ 0x0043f430) filter only on the state field (skip hidden=1 /
+            // locked=2), never on the portal flag. (The 3-way Portal-Faces draw mode is a Glacier/Alpine
+            // view addition; stock RED always draws portal brushes as wireframe.) A portal face on a
+            // NON-portal brush keeps the literal view mode — its textured sibling faces already keep the
+            // brush pickable, so it needs no pick-only.
 
             // A brush edited since the stash was built has stale world-space fragments and
             // survival bits — draw its full authored polygons until the next build refreshes
@@ -103,7 +129,17 @@ public static class BrushEmitter
 
             // Item 5: when the fragment index covers this brush, draw each face as its
             // surviving compiled fragments (world-space) rather than the authored polygon.
-            bool useFragments = !stale && survivingFragments is not null && survivingFragments.Covers(b.Uid);
+            //
+            // A PORTAL brush is FORCED down the authored-polygon path, never the merged fragment
+            // overlay (Q2). The compiler routes portal brushes to portalBrushes and records NO
+            // BrushFaceIdStart / SurvivingBrushFaces for them, so today they are never "covered" —
+            // but if a stash ever DID cover a portal brush (e.g. an air+portal brush whose air-carve
+            // clone got tracked), the fragment path would skip every face with no surviving fragment,
+            // hiding the whole brush in brush-edit modes while it still shows via the compiled path in
+            // Object mode. Pinning portal brushes to the authored path guarantees the invariant the
+            // View ▸ Portal Faces contract promises in EVERY edit mode: fill governed by the mode,
+            // wireframe + pickability always. (Non-portal covered brushes keep the fragment overlay.)
+            bool useFragments = !stale && !brushPortal && survivingFragments is not null && survivingFragments.Covers(b.Uid);
 
             for (int fi = 0; fi < g.Faces.Count; fi++)
             {
@@ -141,12 +177,20 @@ public static class BrushEmitter
                         // still yields portal fragments. Reading f.IsPortalFace here let portal
                         // fragments leak through as opaque textured quads under Portal Faces =
                         // None (item: portal faces render opaque in the fragment overlay).
-                        bool fragPortal = brushPortal || frag.IsPortalFace;
+                        // (Portal brushes never reach the fragment path — useFragments excludes
+                        // brushPortal — so a SOLID portal brush's whole-brush fold is applied on the
+                        // authored path below, not here.)
+                        bool fragPortal = frag.IsPortalFace;
                         if (fragPortal)
                         {
                             if (drawPortalSolid)
                             {
                                 EmitFace(scene, batches, fg, frag, Matrix4x4.Identity, color, fragPick, portalPass, isPortal: true, portalTint);
+                            }
+                            else if (brushPortal)
+                            {
+                                // Don't Draw: no fill, but keep the authored portal brush selectable.
+                                EmitFace(scene, batches, fg, frag, Matrix4x4.Identity, color, fragPick, RenderPass.Opaque, isPortal: false, Vector4.One, pickOnly: true);
                             }
                         }
                         else if (authoredSky)
@@ -157,6 +201,11 @@ public static class BrushEmitter
                         else if (solidFill)
                         {
                             EmitFace(scene, batches, fg, frag, Matrix4x4.Identity, color, fragPick, RenderPass.Opaque, isPortal: false, Vector4.One);
+                        }
+                        else if (pickWholeBrush)
+                        {
+                            // Group mode (no solid fill): keep the whole brush selectable (pick-only).
+                            EmitFace(scene, batches, fg, frag, Matrix4x4.Identity, color, fragPick, RenderPass.Opaque, isPortal: false, Vector4.One, pickOnly: true);
                         }
 
                         EmitEdges(scene, edges, fg, frag, Matrix4x4.Identity, color);
@@ -174,13 +223,23 @@ public static class BrushEmitter
                     ? new PickId(PickKind.BrushFace, registry.AddFace(b.Uid, fi)).Encode()
                     : new PickId(PickKind.Brush, b.Uid & 0x0FFFFFFF).Encode();
 
-                bool portal = brushPortal || f.IsPortalFace;
+                // A real-textured face is portal-classified only if it is genuinely a portal face, OR the
+                // brush is a SOLID portal (a boolean no-op that yields only a membrane). An AIR portal
+                // brush's real-textured faces are NOT folded in — they survive the CSG air-carve as real
+                // cavity walls (Object mode), so they take the normal real-texture path in every mode.
+                bool portal = f.IsPortalFace || solidPortalBrush;
                 bool sky = skyFaceAid && !portal && ((FaceFlags)f.Flags & FaceFlags.ShowSky) != 0;
                 if (portal)
                 {
                     if (drawPortalSolid)
                     {
                         EmitFace(scene, batches, g, f, world, color, pickId, portalPass, isPortal: true, portalTint);
+                    }
+                    else if (brushPortal)
+                    {
+                        // Don't Draw: no fill, but keep the authored portal brush selectable in
+                        // every mode by emitting the face into the id-buffer pick pass only.
+                        EmitFace(scene, batches, g, f, world, color, pickId, RenderPass.Opaque, isPortal: false, Vector4.One, pickOnly: true);
                     }
                 }
                 else if (sky)
@@ -191,6 +250,12 @@ public static class BrushEmitter
                 else if (solidFill)
                 {
                     EmitFace(scene, batches, g, f, world, color, pickId, RenderPass.Opaque, isPortal: false, Vector4.One);
+                }
+                else if (pickWholeBrush)
+                {
+                    // Group mode (no solid fill): the whole brush must stay selectable as a group
+                    // member — emit its faces into the pick pass only (no colour fill).
+                    EmitFace(scene, batches, g, f, world, color, pickId, RenderPass.Opaque, isPortal: false, Vector4.One, pickOnly: true);
                 }
 
                 EmitEdges(scene, edges, g, f, world, color);
@@ -231,19 +296,20 @@ public static class BrushEmitter
         }
     }
 
-    private static void EmitFace(RenderScene scene, Dictionary<(string, RenderPass, bool, bool), GeometryBatch> batches,
+    private static void EmitFace(RenderScene scene, Dictionary<(string, RenderPass, bool, bool, bool), GeometryBatch> batches,
         Geometry g, Face f, Matrix4x4 world, uint color, uint pickId,
-        RenderPass pass, bool isPortal, Vector4 tint, bool isSky = false)
+        RenderPass pass, bool isPortal, Vector4 tint, bool isSky = false, bool pickOnly = false)
     {
         // Portal faces render as a flat tinted quad (texture dropped); sky faces bind the
         // baked "SHOW SKY" diffuse (mapped by the face UVs); normal faces keep their texture.
-        string tex = isPortal ? string.Empty
+        // Pick-only faces are never colour-drawn, so their texture is irrelevant (dropped).
+        string tex = isPortal || pickOnly ? string.Empty
             : isSky ? SkyFaceAid.TextureKey
             : (f.Texture >= 0 && f.Texture < g.Textures.Count ? g.Textures[f.Texture] : string.Empty);
-        var key = (tex, pass, isPortal, isSky);
+        var key = (tex, pass, isPortal, isSky, pickOnly);
         if (!batches.TryGetValue(key, out GeometryBatch? batch))
         {
-            batch = new GeometryBatch(tex, -1, pass) { IsPortal = isPortal, IsSky = isSky, Tint = tint };
+            batch = new GeometryBatch(tex, -1, pass) { IsPortal = isPortal, IsSky = isSky, PickOnly = pickOnly, Tint = tint };
             batches[key] = batch;
         }
 

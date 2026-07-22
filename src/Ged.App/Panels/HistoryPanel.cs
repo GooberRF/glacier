@@ -107,10 +107,9 @@ internal sealed class HistoryPanel : UserControl
 
         border.PointerPressed += (_, _) =>
         {
-            undo.MoveToNode(node);
-            _host?.RequestSceneRebuild();
-            _host?.RefreshSelectionOverlay();
-            Refresh();
+            // The shell applies the "Undo application" setting (Instant jump vs visible Replay); it
+            // owns the per-step scene refresh, so the panel no longer walks the stack itself.
+            _host?.RequestHistoryJump(node);
         };
         return border;
     }

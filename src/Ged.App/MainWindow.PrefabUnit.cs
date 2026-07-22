@@ -115,7 +115,7 @@ public sealed partial class MainWindow
                     EnterPrefabMember(rec.InstanceId, memberUid);
                     return true;
                 case PrefabUnitController.ClickOutcome.UnitSelected:
-                    _lastPickHighlight = PickId.None;
+                    LastPickHighlight = PickId.None;
                     UpdateGizmoState();
                     RefreshSelectionOverlay();
                     _properties.Refresh();

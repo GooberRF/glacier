@@ -16,11 +16,11 @@
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
 
-    <!-- 1.0.0 — initial beta release (semver starts here). InformationalVersion gets the
+    <!-- 1.1.0 — semver started at 1.0.0 (the initial beta). InformationalVersion gets the
          git short-sha appended by the target below (best-effort; falls back to the bare
          version off a checkout). Disable the SDK's automatic full-sha SourceRevisionId
          append so the short sha from the target below is the one that ships. -->
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

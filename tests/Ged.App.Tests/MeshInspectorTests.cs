@@ -39,6 +39,8 @@ public sealed class MeshInspectorTests
         public SelectionRouter Selection => _s.Selection;
         public CommandDispatcher Dispatcher => throw new NotImplementedException();
         public void RequestSceneRebuild() { }
+
+        public void RequestHistoryJump(Ged.Core.Editor.UndoNode target) { }
         public void RefreshSelectionOverlay() { }
         public void FrameObject(LevelObject o) { }
         public void FrameBrush(int uid) { }

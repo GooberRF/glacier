@@ -30,6 +30,10 @@ internal interface IViewportInput
 
     /// <summary>Raised when the native surface loses keyboard focus (drops the held-key set).</summary>
     void OnFocusLost();
+
+    /// <summary>Raised when the native surface regains keyboard focus (re-syncs the modifier
+    /// bitfield from physical key state so a modifier held across the focus change is picked up).</summary>
+    void OnFocusGained();
 }
 
 /// <summary>

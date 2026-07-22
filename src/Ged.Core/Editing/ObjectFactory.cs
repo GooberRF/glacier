@@ -103,11 +103,20 @@ public static class ObjectFactory
                 new Clutter { Header = Head(uid, ClassScript(className, "officebookcase"), pos), Skin = string.Empty },
                 () => new CluttersSection(), c => ((CluttersSection)c).Clutters),
 
+            // RED's new-Light defaults, mapped from the light_flags bitfield (rfl.ksy light_flags;
+            // mirrored by ObjectInspectorSchema's Light rows): shape = Sphere → light_type Point /
+            // omnidirectional (bits 0x30 == 1 → 0x010), initial_state = On (bits 0xF00 == 2 → 0x200),
+            // is_enabled (0x008), and shadow_casting (0x004). Sum = 0x21C — RED's most common authored
+            // value (3718 of 7228 example-corpus lights). The old value 0x1 was the "dynamic" bit —
+            // which the whole example corpus never sets (0 of 7228 authored lights are dynamic) and
+            // which left the light DISABLED with an invalid type 0; every stock light is enabled, Point,
+            // initial-state On, and mostly shadow-casting (bits set on 7228/7228, 6524/7228, 7227/7228,
+            // 5497/7228 respectively). All fields stay editable afterward.
             LevelObjectKind.Light => Bp(kind, SectionType.Lights, uid,
                 new Light
                 {
                     Uid = uid, ClassName = "Light", Position = pos, Rotation = Ident,
-                    Flags = 0x1, Color = new RfColor(255, 240, 200, 255), Range = 10f, IntensityAtMaxRange = 1f,
+                    Flags = 0x21C, Color = new RfColor(255, 240, 200, 255), Range = 10f, IntensityAtMaxRange = 1f,
                     OnIntensity = 1f, OnTime = 1f, OffTime = 1f,
                 },
                 () => new LightsSection(SectionType.Lights), c => ((LightsSection)c).Lights),
