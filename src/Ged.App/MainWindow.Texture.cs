@@ -438,10 +438,12 @@ public sealed partial class MainWindow
     private void ApplyBoxMap()
     {
         float ppm = Ppm;
+        var xform = SelectedFaceBrushTransforms();
         Report(Be?.EditSelectedFaces("Box map", (g, fi) =>
         {
             (int w, int h) = FaceTexDims(g, fi);
-            UvOps.BoxMap(g, g.Faces[fi], ppm, w, h);
+            (Mat3 rot, Vec3 pos) = xform.TryGetValue(g, out (Mat3 Rot, Vec3 Pos) t) ? t : (Mat3.Identity, Vec3.Zero);
+            UvOps.BoxMap(g, g.Faces[fi], rot, pos, ppm, w, h);
         }) ?? OpResult.Fail("Select faces."));
         AfterBrushEdit();
     }
@@ -454,12 +456,14 @@ public sealed partial class MainWindow
             return;
         }
 
-        Vec3 refN = FirstSelectedFaceNormal();
+        Vec3 refN = FirstSelectedFaceWorldNormal();
         float ppm = Ppm;
+        var xform = SelectedFaceBrushTransforms();
         Report(Be.EditSelectedFaces("Planar map", (g, fi) =>
         {
             (int w, int h) = FaceTexDims(g, fi);
-            UvOps.PlanarMap(g, new[] { fi }, refN, ppm, w, h);
+            (Mat3 rot, Vec3 pos) = xform.TryGetValue(g, out (Mat3 Rot, Vec3 Pos) t) ? t : (Mat3.Identity, Vec3.Zero);
+            UvOps.PlanarMap(g, new[] { fi }, rot, pos, refN, ppm, w, h);
         }));
         AfterBrushEdit();
     }
@@ -468,10 +472,12 @@ public sealed partial class MainWindow
     {
         float ppm = Ppm;
         int axis = _texCylinderAxis;
+        var xform = SelectedFaceBrushTransforms();
         Report(Be?.EditSelectedFaces("Cylinder map", (g, fi) =>
         {
             (int w, int h) = FaceTexDims(g, fi);
-            UvOps.CylinderMap(g, g.Faces[fi], axis, ppm, w, h);
+            (Mat3 rot, Vec3 pos) = xform.TryGetValue(g, out (Mat3 Rot, Vec3 Pos) t) ? t : (Mat3.Identity, Vec3.Zero);
+            UvOps.CylinderMap(g, g.Faces[fi], rot, pos, axis, ppm, w, h);
         }) ?? OpResult.Fail("Select faces."));
         AfterBrushEdit();
     }
@@ -612,11 +618,43 @@ public sealed partial class MainWindow
         return new Bitmap(new MemoryStream(png));
     }
 
-    private Vec3 FirstSelectedFaceNormal()
+    /// <summary>
+    /// The WORLD normal of the first selected face — its brush-local plane normal rotated into world —
+    /// used as the shared planar-map projection reference so the plane matches the face's true world
+    /// orientation on a rotated brush (RED derives the projection axis from the world normal).
+    /// </summary>
+    private Vec3 FirstSelectedFaceWorldNormal()
     {
         (int uid, int fi) = Be!.SelectedFaces.First();
         Brush? b = Be.FindBrush(uid);
-        return b is not null && fi >= 0 && fi < b.Geometry.Faces.Count ? b.Geometry.Faces[fi].Plane.Normal : new Vec3(0, 0, 1);
+        return b is not null && fi >= 0 && fi < b.Geometry.Faces.Count
+            ? b.Rotation.Transform(b.Geometry.Faces[fi].Plane.Normal)
+            : new Vec3(0, 0, 1);
+    }
+
+    /// <summary>
+    /// Maps each selected face's owning brush <see cref="Geometry"/> to that brush's world transform
+    /// (rotation + position), so the per-face mapping ops — which only receive the geometry — can recover
+    /// the transform and project each corner into world space (mirrors the Fit path). A brush created
+    /// unrotated at the origin resolves to the identity transform, so its mapping is unchanged.
+    /// </summary>
+    private Dictionary<Geometry, (Mat3 Rot, Vec3 Pos)> SelectedFaceBrushTransforms()
+    {
+        var xform = new Dictionary<Geometry, (Mat3 Rot, Vec3 Pos)>();
+        if (Be is null)
+        {
+            return xform;
+        }
+
+        foreach ((int uid, int _) in Be.SelectedFaces)
+        {
+            if (Be.FindBrush(uid) is Brush b)
+            {
+                xform[b.Geometry] = (b.Rotation, b.Position);
+            }
+        }
+
+        return xform;
     }
 
     private bool TexCopyUv()

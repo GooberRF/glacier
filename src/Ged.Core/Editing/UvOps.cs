@@ -25,8 +25,13 @@ namespace Ged.Core.Editing;
 /// maps (Z,Y); +Y-facing maps (X,Z). This mirrors the geometry compiler's
 /// dominant-axis / pixels-per-meter surface derivation (docs/research/
 /// red-geometry-compiler.md §B.6), and the game consumes the per-vertex UVs
-/// verbatim. Mapping is computed in the brush's local vertex space (equal to world
-/// space for an un-rotated brush at the origin).</para>
+/// verbatim. Projection is computed in WORLD space: each corner is transformed by its brush's
+/// rotation/position before projecting, and the box dominant axis comes from the face's WORLD
+/// normal, so mapping flows continuously across differently-oriented brushes exactly as RED does
+/// (RED.exe FUN_00499820 / FUN_00499640 read the world vertex coordinates directly, with the
+/// projection origin at the world origin; FUN_004b44b0 derives the axis from the world normal).
+/// For an un-rotated brush at the origin world == local, so unrotated output is byte-identical to a
+/// brush-local projection.</para>
 /// </remarks>
 public static class UvOps
 {
@@ -45,59 +50,84 @@ public static class UvOps
     // ---- Projection mapping ---------------------------------------------------
 
     /// <summary>
-    /// Box-maps a single face: projects along the face normal's dominant axis, so
-    /// each face gets an axis-aligned tiling in its own plane.
+    /// Box-maps a single face in WORLD space: transforms the face's corners to world by the brush
+    /// <paramref name="rotation"/> / <paramref name="position"/>, chooses the projection plane from
+    /// the dominant axis of the face's WORLD normal, and projects along it. Because both the axis and
+    /// the corner coordinates are world-space (origin at the world origin, no per-brush/per-selection
+    /// offset — RED.exe FUN_00499820), two coplanar faces on differently-rotated/positioned brushes map
+    /// in the same direction and tile continuously across the seam. World == local for an un-rotated
+    /// brush at the origin.
     /// </summary>
-    public static void BoxMap(Geometry g, Face f, float pixelsPerMeter, int texWidthPx, int texHeightPx)
+    public static void BoxMap(Geometry g, Face f, Mat3 rotation, Vec3 position, float pixelsPerMeter, int texWidthPx, int texHeightPx)
     {
-        (int uAxis, int vAxis) = GeometryUtil.DominantProjection(f.Plane.Normal);
-        Project(g, f, uAxis, vAxis, pixelsPerMeter, texWidthPx, texHeightPx);
+        (int uAxis, int vAxis) = GeometryUtil.DominantProjection(rotation.Transform(f.Plane.Normal));
+        Project(g, f, rotation, position, uAxis, vAxis, pixelsPerMeter, texWidthPx, texHeightPx);
     }
 
-    /// <summary>Box-maps every listed face independently.</summary>
-    public static void BoxMap(Geometry g, IEnumerable<int> faceIndices, float pixelsPerMeter, int texWidthPx, int texHeightPx)
+    /// <summary>Box-maps a single face with no brush transform (identity rotation at the origin — world == local).</summary>
+    public static void BoxMap(Geometry g, Face f, float pixelsPerMeter, int texWidthPx, int texHeightPx) =>
+        BoxMap(g, f, Mat3.Identity, Vec3.Zero, pixelsPerMeter, texWidthPx, texHeightPx);
+
+    /// <summary>Box-maps every listed face independently under one brush transform.</summary>
+    public static void BoxMap(Geometry g, IEnumerable<int> faceIndices, Mat3 rotation, Vec3 position, float pixelsPerMeter, int texWidthPx, int texHeightPx)
     {
         foreach (int i in faceIndices)
         {
             if (i >= 0 && i < g.Faces.Count)
             {
-                BoxMap(g, g.Faces[i], pixelsPerMeter, texWidthPx, texHeightPx);
+                BoxMap(g, g.Faces[i], rotation, position, pixelsPerMeter, texWidthPx, texHeightPx);
             }
         }
     }
 
+    /// <summary>Box-maps every listed face independently with no brush transform (world == local).</summary>
+    public static void BoxMap(Geometry g, IEnumerable<int> faceIndices, float pixelsPerMeter, int texWidthPx, int texHeightPx) =>
+        BoxMap(g, faceIndices, Mat3.Identity, Vec3.Zero, pixelsPerMeter, texWidthPx, texHeightPx);
+
     /// <summary>
-    /// Planar-maps a set of faces onto one shared projection plane (chosen from
-    /// <paramref name="referenceNormal"/>), giving continuous UVs across the faces —
-    /// the decal / multi-face map.
+    /// Planar-maps a set of faces onto one shared WORLD projection plane (chosen from the WORLD
+    /// <paramref name="referenceNormal"/>), giving continuous UVs across the faces — the decal /
+    /// multi-face map. Each corner is transformed to world by the brush <paramref name="rotation"/> /
+    /// <paramref name="position"/> before projecting, so faces on differently-placed brushes share one
+    /// continuous tiling. World == local for an un-rotated brush at the origin.
     /// </summary>
-    public static void PlanarMap(Geometry g, IEnumerable<int> faceIndices, Vec3 referenceNormal, float pixelsPerMeter, int texWidthPx, int texHeightPx)
+    public static void PlanarMap(Geometry g, IEnumerable<int> faceIndices, Mat3 rotation, Vec3 position, Vec3 referenceNormal, float pixelsPerMeter, int texWidthPx, int texHeightPx)
     {
         (int uAxis, int vAxis) = GeometryUtil.DominantProjection(referenceNormal);
         foreach (int i in faceIndices)
         {
             if (i >= 0 && i < g.Faces.Count)
             {
-                Project(g, g.Faces[i], uAxis, vAxis, pixelsPerMeter, texWidthPx, texHeightPx);
+                Project(g, g.Faces[i], rotation, position, uAxis, vAxis, pixelsPerMeter, texWidthPx, texHeightPx);
             }
         }
     }
 
     /// <summary>
-    /// Cylinder-maps a face by wrapping around <paramref name="axis"/> (0=X,1=Y,2=Z):
-    /// U follows the arc (angle × the face's mean radius), V follows the axis height.
+    /// Planar-maps with no brush transform (identity rotation at the origin); <paramref name="referenceNormal"/>
+    /// is taken as already world-space (world == local for an un-rotated brush at the origin).
     /// </summary>
-    public static void CylinderMap(Geometry g, Face f, int axis, float pixelsPerMeter, int texWidthPx, int texHeightPx)
+    public static void PlanarMap(Geometry g, IEnumerable<int> faceIndices, Vec3 referenceNormal, float pixelsPerMeter, int texWidthPx, int texHeightPx) =>
+        PlanarMap(g, faceIndices, Mat3.Identity, Vec3.Zero, referenceNormal, pixelsPerMeter, texWidthPx, texHeightPx);
+
+    /// <summary>
+    /// Cylinder-maps a face by wrapping around the WORLD <paramref name="axis"/> (0=X,1=Y,2=Z):
+    /// corners are transformed to world by the brush <paramref name="rotation"/> /
+    /// <paramref name="position"/> first, then U follows the arc (angle × the face's mean world radius
+    /// about the axis) and V follows the world axis height. World == local for an un-rotated brush at
+    /// the origin.
+    /// </summary>
+    public static void CylinderMap(Geometry g, Face f, Mat3 rotation, Vec3 position, int axis, float pixelsPerMeter, int texWidthPx, int texHeightPx)
     {
         (int p, int q) = PerpendicularAxes(axis);
         float scaleU = pixelsPerMeter / Math.Max(1, texWidthPx);
         float scaleV = pixelsPerMeter / Math.Max(1, texHeightPx);
 
-        // Mean radius over the face's corners, so a true cylinder maps to a uniform arc.
+        // Mean radius over the face's WORLD corners, so a true cylinder maps to a uniform arc.
         float radius = 0f;
         foreach (FaceVertex fv in f.Vertices)
         {
-            Vec3 pos = g.Vertices[fv.Index];
+            Vec3 pos = position.Add(rotation.Transform(g.Vertices[fv.Index]));
             radius += MathF.Sqrt((pos.Component(p) * pos.Component(p)) + (pos.Component(q) * pos.Component(q)));
         }
 
@@ -105,7 +135,7 @@ public static class UvOps
 
         foreach (FaceVertex fv in f.Vertices)
         {
-            Vec3 pos = g.Vertices[fv.Index];
+            Vec3 pos = position.Add(rotation.Transform(g.Vertices[fv.Index]));
             float angle = MathF.Atan2(pos.Component(q), pos.Component(p));
             float u = angle * radius * scaleU;
             float v = -pos.Component(axis) * scaleV;
@@ -113,25 +143,39 @@ public static class UvOps
         }
     }
 
-    /// <summary>Cylinder-maps every listed face around the shared axis.</summary>
-    public static void CylinderMap(Geometry g, IEnumerable<int> faceIndices, int axis, float pixelsPerMeter, int texWidthPx, int texHeightPx)
+    /// <summary>Cylinder-maps a face with no brush transform (identity rotation at the origin — world == local).</summary>
+    public static void CylinderMap(Geometry g, Face f, int axis, float pixelsPerMeter, int texWidthPx, int texHeightPx) =>
+        CylinderMap(g, f, Mat3.Identity, Vec3.Zero, axis, pixelsPerMeter, texWidthPx, texHeightPx);
+
+    /// <summary>Cylinder-maps every listed face around the shared world axis under one brush transform.</summary>
+    public static void CylinderMap(Geometry g, IEnumerable<int> faceIndices, Mat3 rotation, Vec3 position, int axis, float pixelsPerMeter, int texWidthPx, int texHeightPx)
     {
         foreach (int i in faceIndices)
         {
             if (i >= 0 && i < g.Faces.Count)
             {
-                CylinderMap(g, g.Faces[i], axis, pixelsPerMeter, texWidthPx, texHeightPx);
+                CylinderMap(g, g.Faces[i], rotation, position, axis, pixelsPerMeter, texWidthPx, texHeightPx);
             }
         }
     }
 
-    private static void Project(Geometry g, Face f, int uAxis, int vAxis, float pixelsPerMeter, int texWidthPx, int texHeightPx)
+    /// <summary>Cylinder-maps every listed face with no brush transform (world == local).</summary>
+    public static void CylinderMap(Geometry g, IEnumerable<int> faceIndices, int axis, float pixelsPerMeter, int texWidthPx, int texHeightPx) =>
+        CylinderMap(g, faceIndices, Mat3.Identity, Vec3.Zero, axis, pixelsPerMeter, texWidthPx, texHeightPx);
+
+    /// <summary>
+    /// Projects each corner of <paramref name="f"/> onto the (<paramref name="uAxis"/>,
+    /// <paramref name="vAxis"/>) world axes at the pixels-per-meter scale, transforming each corner to
+    /// world by <paramref name="rotation"/> / <paramref name="position"/> first. V is negated so +V
+    /// points down, matching stock RED and the planar-UV default.
+    /// </summary>
+    private static void Project(Geometry g, Face f, Mat3 rotation, Vec3 position, int uAxis, int vAxis, float pixelsPerMeter, int texWidthPx, int texHeightPx)
     {
         float scaleU = pixelsPerMeter / Math.Max(1, texWidthPx);
         float scaleV = pixelsPerMeter / Math.Max(1, texHeightPx);
         foreach (FaceVertex fv in f.Vertices)
         {
-            Vec3 pos = g.Vertices[fv.Index];
+            Vec3 pos = position.Add(rotation.Transform(g.Vertices[fv.Index]));
             fv.TextureCoords = new Uv(pos.Component(uAxis) * scaleU, -pos.Component(vAxis) * scaleV);
         }
     }

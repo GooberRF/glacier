@@ -1,20 +1,30 @@
 ❄⛏ Glacier Changelog ⛏❄
 ===================================
 
+Version 1.2.0-HASH (Beta 3): Not yet released
+--------------------------------
+
+### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fixed Box, Planar, and Cylinder texture mapping (Texture/UV tools) orienting to each brush's local frame after a brush was rotated, so textures flowed in a different direction on every brush. Mapping now projects in world space like RED: the selected faces map in the same direction with continuous tiling across adjacent brushes, whatever their rotation.
+
 Version 1.1.0-b9e8ed6 (Beta 2): Released 22-07-2026
 --------------------------------
 
 ### Major features
+[@GooberRF](https://github.com/GooberRF)
 - Editing brush vertices, edges, or faces now keeps every face flat: any face an edit bends off its plane is automatically triangulated, exactly as RED does.
 - Added an Undo application setting (Settings ▸ General): Instant (the default) snaps straight to the chosen state in a single step, while Replay walks visibly through each intermediate history entry. This now governs plain Undo and Redo (Ctrl+Z / Ctrl+Y) as well as History-panel jumps. Both reach the same result.
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
 - Under the UnrealEd camera scheme, a left click selects and a left drag flies the camera, instead of drawing a selection box.
 - Clicking empty space, a locked object, or a wrong-kind object now always clears the current selection, including in Group mode.
 - Keyboard nudge and rotate now work on vertex and face selections, not just edges.
 - EAX environmental-audio effect zones are now selectable objects with a labelled inspector, and appear in the Outliner like other objects.
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
 - Fixed Undo, Redo, and other shortcuts going dead after alt-tabbing away or after a dialog took focus.
 - Play from Camera now spawns you at the editor camera's exact position and heading, in both single-player and multiplayer, matching how RED hands off the camera.
 - Fixed the faces of an air brush flagged as a portal disappearing in Brush mode while showing correctly in Object mode.
@@ -35,4 +45,5 @@ Version 1.1.0-b9e8ed6 (Beta 2): Released 22-07-2026
 
 Version 1.0.0-92c843e (Beta 1): Released 19-07-2026
 --------------------------------
+[@GooberRF](https://github.com/GooberRF)
 - Initial beta release

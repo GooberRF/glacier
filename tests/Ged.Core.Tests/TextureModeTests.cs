@@ -130,6 +130,171 @@ public sealed class TextureModeTests
         Assert.Equal(-3f, f.Vertices[2].TextureCoords.V, 3);      // -Y=-3
     }
 
+    // ---- World-space projection (rotated / positioned brushes) ----------------
+
+    // A simple non-axis-aligned quad; the world-space checks below rely only on its corner positions
+    // (box/planar/cylinder do not read this quad's plane winding).
+    private static Geometry BuildQuad()
+    {
+        var g = new Geometry();
+        g.Vertices.Add(new Vec3(1, 0, 0));
+        g.Vertices.Add(new Vec3(0, 0, 1));
+        g.Vertices.Add(new Vec3(0, 2, 1));
+        g.Vertices.Add(new Vec3(1, 2, 0));
+        var f = new Face();
+        for (int i = 0; i < 4; i++)
+        {
+            f.Vertices.Add(new FaceVertex { Index = i });
+        }
+
+        g.Faces.Add(f);
+        return g;
+    }
+
+    private static Geometry Baked(Mat3 rot, Vec3 pos)
+    {
+        Geometry g = BuildQuad();
+        for (int i = 0; i < g.Vertices.Count; i++)
+        {
+            g.Vertices[i] = pos.Add(rot.Transform(g.Vertices[i]));
+        }
+
+        return g;
+    }
+
+    [Fact]
+    public void BoxMap_IdentityTransform_Is_ByteIdentical_To_The_NoTransform_Overload()
+    {
+        // The production path now always threads a brush transform; for an un-rotated brush that is the
+        // identity, and the result must be bit-for-bit what the plain (world == local) overload produced.
+        Geometry g1 = Box2();
+        Geometry g2 = Box2();
+        foreach (Vec3 n in new[] { new Vec3(0, 0, 1), new Vec3(1, 0, 0), new Vec3(0, 1, 0) })
+        {
+            Face a = FaceWithNormal(g1, n);
+            Face b = FaceWithNormal(g2, n);
+            UvOps.BoxMap(g1, a, 200f, 256, 128);                          // legacy overload
+            UvOps.BoxMap(g2, b, Mat3.Identity, Vec3.Zero, 200f, 256, 128); // new overload, identity
+            for (int i = 0; i < a.Vertices.Count; i++)
+            {
+                Assert.Equal(
+                    BitConverter.SingleToInt32Bits(a.Vertices[i].TextureCoords.U),
+                    BitConverter.SingleToInt32Bits(b.Vertices[i].TextureCoords.U));
+                Assert.Equal(
+                    BitConverter.SingleToInt32Bits(a.Vertices[i].TextureCoords.V),
+                    BitConverter.SingleToInt32Bits(b.Vertices[i].TextureCoords.V));
+            }
+        }
+    }
+
+    [Fact]
+    public void BoxMap_RotatedAndTranslatedBrush_Projects_World_Positions_On_The_World_Axis()
+    {
+        // Rotate a box 90° about Y and shift it: the local +Z face becomes a world +X face, so the
+        // dominant projection axis and the projected coordinates are WORLD, not brush-local.
+        Geometry g = Box2();
+        Mat3 rot = Mat3Math.RotationY(MathF.PI / 2f);
+        Vec3 pos = new(10, 2, -3);
+        Face local = FaceWithNormal(g, new Vec3(0, 0, 1));
+
+        UvOps.BoxMap(g, local, rot, pos, 256f, 256, 256); // scale 1 tile/m
+
+        Vec3 worldNormal = rot.Transform(new Vec3(0, 0, 1));
+        (int uAxis, int vAxis) = GeometryUtil.DominantProjection(worldNormal);
+        foreach (FaceVertex fv in local.Vertices)
+        {
+            Vec3 world = pos.Add(rot.Transform(g.Vertices[fv.Index]));
+            Assert.Equal(world.Component(uAxis), fv.TextureCoords.U, 3);
+            Assert.Equal(-world.Component(vAxis), fv.TextureCoords.V, 3);
+        }
+    }
+
+    [Fact]
+    public void BoxMap_CoplanarFaces_On_Rotated_And_Unrotated_Brushes_Tile_Continuously()
+    {
+        // Owner scenario: brush B rotated 90° sits adjacent to brush A. Their top faces are coplanar
+        // (world y = 1, +Y) and share the seam edge at world x = 2. Box-mapping each in world space maps
+        // them in the same direction with a continuous, corner-exact seam.
+        Geometry a = Box2();
+        Mat3 aRot = Mat3.Identity;
+        Vec3 aPos = new(1, 0, 0);                       // world x in [0, 2]
+        Geometry b = Box2();
+        Mat3 bRot = Mat3Math.RotationY(MathF.PI / 2f);  // rotation about Y keeps the +Y top face +Y
+        Vec3 bPos = new(3, 0, 0);                       // world x in [2, 4]
+
+        Face aTop = FaceWithNormal(a, new Vec3(0, 1, 0));
+        Face bTop = FaceWithNormal(b, new Vec3(0, 1, 0));
+
+        UvOps.BoxMap(a, aTop, aRot, aPos, 256f, 256, 256);
+        UvOps.BoxMap(b, bTop, bRot, bPos, 256f, 256, 256);
+
+        // World +Y face maps (X, Z): U = worldX, V = -worldZ at unit scale — for BOTH brushes.
+        AssertBoxWorldProjection(a, aTop, aRot, aPos);
+        AssertBoxWorldProjection(b, bTop, bRot, bPos);
+
+        // Corner-exact seam: the shared world corners (2, 1, ±1) get identical UVs on both faces.
+        foreach (Vec3 seam in new[] { new Vec3(2, 1, -1), new Vec3(2, 1, 1) })
+        {
+            Uv ua = WorldCornerUv(a, aTop, aRot, aPos, seam);
+            Uv ub = WorldCornerUv(b, bTop, bRot, bPos, seam);
+            Assert.Equal(ua.U, ub.U, 3);
+            Assert.Equal(ua.V, ub.V, 3);
+            Assert.Equal(2f, ua.U, 3); // U tracks world X across the seam
+        }
+    }
+
+    private static void AssertBoxWorldProjection(Geometry g, Face f, Mat3 rot, Vec3 pos)
+    {
+        foreach (FaceVertex fv in f.Vertices)
+        {
+            Vec3 w = pos.Add(rot.Transform(g.Vertices[fv.Index]));
+            Assert.Equal(w.X, fv.TextureCoords.U, 3);
+            Assert.Equal(-w.Z, fv.TextureCoords.V, 3);
+        }
+    }
+
+    private static Uv WorldCornerUv(Geometry g, Face f, Mat3 rot, Vec3 pos, Vec3 world) =>
+        f.Vertices.First(fv => pos.Add(rot.Transform(g.Vertices[fv.Index])).ApproxEquals(world, 1e-3f)).TextureCoords;
+
+    [Fact]
+    public void PlanarMap_With_Transform_Projects_World_Positions()
+    {
+        // Mapping a brush-local face under a transform equals mapping the same face pre-baked into world
+        // space with no transform (both share the world reference normal) — proof the projection is world.
+        Mat3 rot = Mat3Math.RotationZ(0.6f);
+        Vec3 pos = new(2, -1, 4);
+        Vec3 refN = new(0, 0, 1);
+
+        Geometry local = BuildQuad();
+        Geometry world = Baked(rot, pos);
+        UvOps.PlanarMap(local, new[] { 0 }, rot, pos, refN, 256f, 256, 256);
+        UvOps.PlanarMap(world, new[] { 0 }, refN, 256f, 256, 256);
+
+        for (int i = 0; i < local.Faces[0].Vertices.Count; i++)
+        {
+            Assert.Equal(world.Faces[0].Vertices[i].TextureCoords.U, local.Faces[0].Vertices[i].TextureCoords.U, 4);
+            Assert.Equal(world.Faces[0].Vertices[i].TextureCoords.V, local.Faces[0].Vertices[i].TextureCoords.V, 4);
+        }
+    }
+
+    [Fact]
+    public void CylinderMap_With_Transform_Projects_World_Positions()
+    {
+        Mat3 rot = Mat3Math.RotationY(0.8f);
+        Vec3 pos = new(3, 1, -2);
+
+        Geometry local = BuildQuad();
+        Geometry world = Baked(rot, pos);
+        UvOps.CylinderMap(local, local.Faces[0], rot, pos, axis: 1, 256f, 256, 256);
+        UvOps.CylinderMap(world, world.Faces[0], axis: 1, 256f, 256, 256);
+
+        for (int i = 0; i < local.Faces[0].Vertices.Count; i++)
+        {
+            Assert.Equal(world.Faces[0].Vertices[i].TextureCoords.U, local.Faces[0].Vertices[i].TextureCoords.U, 4);
+            Assert.Equal(world.Faces[0].Vertices[i].TextureCoords.V, local.Faces[0].Vertices[i].TextureCoords.V, 4);
+        }
+    }
+
     // ---- Whole-face UV edits --------------------------------------------------
 
     [Fact]
