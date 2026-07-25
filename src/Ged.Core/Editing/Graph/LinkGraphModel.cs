@@ -50,8 +50,13 @@ public sealed class LinkGraphNode
         : Missing ? $"missing {Uid}" : $"{Kind} {Uid}";
 }
 
-/// <summary>A directed link edge from one node's UID to another (origin → target).</summary>
-public readonly record struct LinkGraphEdge(int From, int To);
+/// <summary>
+/// A directed link edge from one node's UID to another (origin → target). <see cref="Structural"/>
+/// marks a moving-group structural edge (member mover → start keyframe, keyframe sequence) rather
+/// than a persisted originator link — the panel renders those dashed and in the keyframe-link colour
+/// so a mover member (e.g. a trigger riding the mover) does not read as an auto-created trigger link.
+/// </summary>
+public readonly record struct LinkGraphEdge(int From, int To, bool Structural = false);
 
 /// <summary>The built graph: the filtered node and edge lists.</summary>
 public sealed class LinkGraph
@@ -111,12 +116,13 @@ public static class LinkGraphModel
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentNullException.ThrowIfNull(filter);
 
-        // All directed edges: originator object links plus the moving-group structural edges
-        // (member mover → start keyframe, keyframe sequence). Enumerated through DocumentLinks
-        // so the panel shows exactly the same links as the viewport overlay. Keyframes are
-        // level objects (resolvable by UID) so they and their movers become graph nodes just
-        // like event/trigger link targets.
-        var allEdges = DocumentLinks.AllEdges(doc).Select(e => new LinkGraphEdge(e.From, e.To)).ToList();
+        // All directed edges: persisted originator object links, plus the moving-group STRUCTURAL
+        // edges (member mover → start keyframe, keyframe sequence) which are tagged Structural so the
+        // canvas draws them dashed / in the keyframe-link colour. Keyframes are level objects
+        // (resolvable by UID) so they and their movers become graph nodes like any link target.
+        var allEdges = DocumentLinks.OriginatorEdges(doc).Select(e => new LinkGraphEdge(e.From, e.To))
+            .Concat(DocumentLinks.StructuralMoverEdges(doc).Select(e => new LinkGraphEdge(e.From, e.To, Structural: true)))
+            .ToList();
 
         if (allEdges.Count == 0)
         {

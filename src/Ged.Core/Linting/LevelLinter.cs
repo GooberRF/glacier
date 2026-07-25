@@ -56,6 +56,7 @@ public static class LevelLinter
         List<LevelObject> objects = LevelObjectEnumerator.Enumerate(rfl, new HashSet<int>());
 
         CheckDuplicateUids(rfl, objects, findings);
+        CheckPlayerStart(objects, findings);
         CheckLinks(objects, findings);
         CheckTriggersAndOrphans(objects, options, findings);
         CheckNavPoints(rfl, options, findings);
@@ -101,6 +102,29 @@ public static class LevelLinter
         {
             findings.Add(new LintFinding(LintSeverity.Error, LintCategory.DuplicateUid,
                 $"UID {uid} is used by {count} objects — the last one wins at load.", uid));
+        }
+    }
+
+    // ---- Player Start / spawn point -------------------------------------------
+
+    /// <summary>
+    /// Flags a level with no spawn point. A single-player start (player_start) and MP respawn
+    /// points are the two ways RF places the player; a level with neither spawns the player in
+    /// the void, and RF's portal renderer draws nothing from there — a fully black screen
+    /// in-game. Reported as an Error (as serious as a broken link — the level is unplayable) but
+    /// non-blocking: the file is valid and RED itself permits saving without a start, matching
+    /// GED's "always saves" policy, so this surfaces loudly in the pre-save summary's Error band
+    /// without hard-blocking the save (only over-budget items block). An MP level that provides
+    /// respawn points legitimately has no single-player start, so it passes.
+    /// </summary>
+    private static void CheckPlayerStart(List<LevelObject> objects, List<LintFinding> findings)
+    {
+        bool hasPlayerStart = objects.Any(o => o.Kind == LevelObjectKind.PlayerStart);
+        bool hasRespawns = objects.Any(o => o.Kind == LevelObjectKind.MpRespawnPoint);
+        if (!hasPlayerStart && !hasRespawns)
+        {
+            findings.Add(new LintFinding(LintSeverity.Error, LintCategory.MissingPlayerStart,
+                "Level has no Player Start — the player will spawn in the void and the screen will render black in-game."));
         }
     }
 

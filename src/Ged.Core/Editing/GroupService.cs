@@ -20,12 +20,14 @@ namespace Ged.Core.Editing;
 public sealed class GroupService
 {
     private readonly EditorDocument _doc;
+    private readonly BrushEditor? _brushes;
     private readonly HashSet<Group> _locked = new();
     private readonly List<Group> _temporary = new();
 
-    public GroupService(EditorDocument doc)
+    public GroupService(EditorDocument doc, BrushEditor? brushes = null)
     {
         _doc = doc ?? throw new ArgumentNullException(nameof(doc));
+        _brushes = brushes;
     }
 
     /// <summary>Every user-defined group, in file order.</summary>
@@ -163,6 +165,14 @@ public sealed class GroupService
             () => { group.Name = old; host.Dirty = true; }));
     }
 
+    /// <summary>
+    /// Locks/unlocks a group and PROPAGATES the state to its members so the lock is actually enforced —
+    /// one observable behaviour across the three lock systems: brush members take
+    /// <see cref="BrushState.Locked"/> (the <see cref="SelectionRouter"/> refuses locked brushes with a
+    /// hint), object members take the document's session object lock (<see cref="EditorDocument.SetObjectLocked"/>,
+    /// refused the same way), and the group carries the tree/panel 🔒 flag. So a "locked group" can no
+    /// longer have its members selected, moved, or deleted (tester report 8).
+    /// </summary>
     public void SetLocked(Group group, bool locked)
     {
         ArgumentNullException.ThrowIfNull(group);
@@ -173,6 +183,16 @@ public sealed class GroupService
         else
         {
             _locked.Remove(group);
+        }
+
+        if (group.Brushes.Count > 0)
+        {
+            _brushes?.SetBrushLocked(group.Brushes, locked);
+        }
+
+        if (group.Objects.Count > 0)
+        {
+            _doc.SetObjectLocked(group.Objects, locked);
         }
     }
 
@@ -540,15 +560,7 @@ public sealed class GroupService
     {
         if (!_doc.Rfl.Sections.Contains(host))
         {
-            int endIndex = _doc.Rfl.Sections.FindIndex(s => s.IsEnd);
-            if (endIndex >= 0)
-            {
-                _doc.Rfl.Sections.Insert(endIndex, host);
-            }
-            else
-            {
-                _doc.Rfl.Sections.Add(host);
-            }
+            _doc.Rfl.InsertSection(host);
         }
     }
 }

@@ -543,15 +543,7 @@ public static class RfgInterop
     {
         if (!doc.Rfl.Sections.Contains(host))
         {
-            int endIndex = doc.Rfl.Sections.FindIndex(s => s.IsEnd);
-            if (endIndex >= 0)
-            {
-                doc.Rfl.Sections.Insert(endIndex, host);
-            }
-            else
-            {
-                doc.Rfl.Sections.Add(host);
-            }
+            doc.Rfl.InsertSection(host);
         }
     }
 

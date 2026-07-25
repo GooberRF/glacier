@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using Avalonia;
@@ -8,6 +9,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Data;
 using Avalonia.Diagnostics;
 using Avalonia.Headless.XUnit;
+using Avalonia.VisualTree;
 using Ged.App;
 using Ged.App.Panels;
 using Ged.App.Services;
@@ -129,5 +131,48 @@ public sealed class PropertiesScrollTests
         double maxOffset = sv.Extent.Height - sv.Viewport.Height;
         Assert.True(Math.Abs(sv.Offset.Y - maxOffset) < 1.0,
             $"could not scroll to bottom: offset={sv.Offset.Y} expected≈{maxOffset}");
+    }
+
+    [AvaloniaFact]
+    public void Tall_Inspector_Leaves_Bottom_Clearance_Below_The_Last_Field()
+    {
+        var session = new EditorSession();
+        session.NewLevel();
+        EditorDocument doc = session.Document!;
+
+        var panel = new PropertiesPanel();
+        panel.Bind(new FakeHost(session));
+
+        var host = new Window { Content = panel };
+        host.Show();
+        host.UpdateLayout();
+
+        LevelObject trig = doc.PlaceObject(LevelObjectKind.Trigger, new CoreVec3(0, 0, 0))!;
+        session.ActiveSelectKinds = SelectKinds.Objects;
+        session.Selection.SelectObject(trig);
+        panel.Refresh();
+        host.UpdateLayout();
+
+        ScrollViewer sv = ScrollOf(panel);
+        var content = (Control)sv.Content!;
+
+        // Precondition: the trigger inspector overflows the viewport.
+        Assert.True(sv.Extent.Height > sv.Viewport.Height,
+            $"inspector did not overflow: extent={sv.Extent.Height} viewport={sv.Viewport.Height}");
+
+        // The bottom-most interactive editor sits clear of the content extent's bottom edge, so
+        // the last field scrolls fully into view instead of being clipped/flush (the report).
+        double lastFieldBottom = content.GetVisualDescendants()
+            .Where(v => v is TextBox or CheckBox or ComboBox)
+            .Select(v => v.TranslatePoint(new Point(0, v.Bounds.Height), content)?.Y ?? 0)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        Assert.True(lastFieldBottom > 0, "no editor controls were found in the inspector.");
+
+        // The content extent runs comfortably past the last field (~29px here + the scroll
+        // padding), so when scrolled to the bottom the final editor is not flush with the edge.
+        Assert.True(sv.Extent.Height - lastFieldBottom >= 20,
+            $"insufficient bottom clearance: extent={sv.Extent.Height} lastFieldBottom={lastFieldBottom}");
     }
 }

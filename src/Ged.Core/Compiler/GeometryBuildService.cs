@@ -69,6 +69,25 @@ public static class GeometryBuildService
         if (Find<MoversSection>(rfl) is { Movers.Count: > 0 } movers)
         {
             result.BakedMoverUids = MoverLighting.Bake(movers.Movers, result, options);
+
+            // Give every mover face a globally-UNIQUE FaceId, disjoint from the static world's ids —
+            // RED's DATA-VERIFIED invariant: in RED-authored dmabrupt not one mover face shares a FaceId
+            // with any static face (its ids interleave a single global counter across the whole level).
+            // GED compiles ONLY the static world (movers are excluded from the fold), so a mover otherwise
+            // keeps its authored local ids 0..n, which then DUPLICATE the static world's own 0..n — a
+            // GED-authored one-brush lift ships mover faceIds 0..5 identical to the room's 0..5. This
+            // duplicate-id state is the one field-level divergence between a working RED mover record and a
+            // GED one (RF's mover object is created at RF.exe FUN_00469250 — mover+0x20 = keyframe[0].uid,
+            // a per-mover collision solid at +0xe4 built from the member geometry), and the leading
+            // suspect for the "collision does not follow the mover" report. Restore RED's uniqueness by
+            // renumbering above the static max. Any renumbered mover is re-serialised (below).
+            if (MoverBrushes.AssignGlobalFaceIds(movers.Movers, result.Geometry))
+            {
+                foreach (Brush m in movers.Movers)
+                {
+                    result.BakedMoverUids.Add(m.Uid);
+                }
+            }
         }
 
         return result;
@@ -213,7 +232,20 @@ public static class GeometryBuildService
         }
 
         SetSection(rfl, SectionType.StaticGeometry, new GeometrySection { Geometry = compiled });
-        SetSection(rfl, SectionType.Lightmaps, new LightmapsSection { Lightmaps = result.Lightmaps });
+
+        // RED-parity lightmap preservation: a geometry-only / live-CSG PREVIEW build (surface stage
+        // skipped, <see cref="CompileOptions.BuildSurfaces"/> == false) produces ZERO lightmap pages.
+        // RED never empties the lightmaps section on a geometry edit — it leaves the PREVIOUS bake in
+        // the file (stale but present) until the next explicit lighting calc. Replacing the section with
+        // an empty one here was the "lightmaps not saving" data loss: bake → move a brush → the armed
+        // background preview applies an empty atlas → the baked pages are gone. Only overwrite the atlas
+        // when THIS build actually produced pages (a surface build); otherwise preserve whatever bake is
+        // already in the file. The preview geometry it applied carries no surfaces (SurfaceIndex −1), so
+        // the preserved pages are simply orphaned until the next full build regenerates both together.
+        if (result.Lightmaps.Count > 0)
+        {
+            SetSection(rfl, SectionType.Lightmaps, new LightmapsSection { Lightmaps = result.Lightmaps });
+        }
 
         // Movers were re-baked into the atlas above (their geometry was mutated in place); re-serialise them.
         if (result.BakedMoverUids.Count > 0 && FindSection(rfl, SectionType.Movers) is { } moverSection)
@@ -342,17 +374,14 @@ public static class GeometryBuildService
         RflSection? section = FindSection(rfl, type);
         if (section is null)
         {
-            // Insert before the trailing End terminator, else append.
+            // Insert at RED's canonical position. Critically, a from-scratch level
+            // has neither static_geometry nor lightmaps yet: the canonical order
+            // places lightmaps (0x1200) BEFORE static_geometry (0x100) so RF's
+            // two-phase loader binds surfaces to the real baked pages instead of a
+            // blank default (a lightmaps-after-geometry file renders black). See
+            // RflSectionOrder / RflFile.RepairLightmapOrder.
             section = new RflSection((uint)type, System.Array.Empty<byte>());
-            int insertAt = rfl.Sections.FindIndex(s => s.IsEnd);
-            if (insertAt < 0)
-            {
-                rfl.Sections.Add(section);
-            }
-            else
-            {
-                rfl.Sections.Insert(insertAt, section);
-            }
+            rfl.InsertSection(section);
         }
 
         section.Content = content;

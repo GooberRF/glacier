@@ -280,14 +280,14 @@ public sealed class SceneRenderer : IDisposable
             scene.BillboardIndexCount, scene.BillboardVertexBuffer, scene.BillboardIndexBuffer,
             scene.ParticleGroups, pick, _gd.DepthNoWrite);
 
-        // On-top billboards (transform-drag indicator labels) draw with the depth test disabled so
-        // they are never occluded — matching the gizmo overlay lines. Excluded from the pick pass.
-        if (!pick)
-        {
-            DrawBillboardSet(
-                scene.BillboardOnTopIndexCount, scene.BillboardOnTopVertexBuffer, scene.BillboardOnTopIndexBuffer,
-                scene.OnTopGroups, pick: false, _gd.DepthNoTest);
-        }
+        // On-top atlas glyphs (mover keyframes) draw with the depth test disabled in BOTH the colour
+        // and pick passes: drawn last with no depth test they are never occluded AND win the id-buffer
+        // at their own pixels, so a keyframe seeded at the mover's rest centre — sitting inside/behind
+        // its mover geometry — is still visible and pickable (RED draws editor icons as non-occluded
+        // overlays). The on-top TEXTURED groups (transform-drag labels) stay colour-pass only.
+        DrawBillboardSet(
+            scene.BillboardOnTopIndexCount, scene.BillboardOnTopVertexBuffer, scene.BillboardOnTopIndexBuffer,
+            pick ? System.Array.Empty<TexturedBillboardGroup>() : scene.OnTopGroups, pick, _gd.DepthNoTest);
     }
 
     private void DrawBillboardSet(

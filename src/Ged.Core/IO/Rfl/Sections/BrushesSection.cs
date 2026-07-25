@@ -15,6 +15,12 @@ public sealed class BrushesSection : IRflSectionContent
         int count = r.ReadI32();
         for (int i = 0; i < count; i++)
         {
+            // NB: no plane-sign repair here. A static brush's stored face planes are inert in-game —
+            // the CSG compiler recomputes every static plane from vertices — so an old build's inverted
+            // brush plane never reaches the game, and rewriting it here would break byte-identity for
+            // levels this editor previously saved. The mover path (which RF DOES read verbatim for
+            // collision) is repaired in MoversSection.Parse, and a brush converted to a mover has its
+            // planes recomputed at creation (MoverService.CreateMover).
             section.Brushes.Add(Brush.Read(r, ctx));
         }
 

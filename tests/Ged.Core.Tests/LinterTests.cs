@@ -53,6 +53,10 @@ public sealed class LinterTests
         // Budget over cap: 26 ambient sounds > 25.
         Assert.Contains(report.Findings, f =>
             f.Category == LintCategory.LimitBudget && f.Message.Contains("Ambient Sounds") && f.Severity == LintSeverity.Error);
+
+        // No player_start / MP respawns in the fixture -> void-spawn error.
+        Assert.Contains(report.Findings, f =>
+            f.Category == LintCategory.MissingPlayerStart && f.Severity == LintSeverity.Error);
     }
 
     [Fact]
@@ -84,6 +88,7 @@ public sealed class LinterTests
     public void Lint_Clean_Level_Is_Clean()
     {
         var rfl = NewLevel();
+        AddSection(rfl, SectionType.PlayerStart, new PlayerStartSection { Position = new Vec3(0, 1, 0), Rotation = Mat3.Identity });
         AddSection(rfl, SectionType.Triggers, new TriggersSection
         {
             Triggers = { new Trigger { Uid = 10, Links = { 11 } } },
@@ -97,6 +102,50 @@ public sealed class LinterTests
 
         Assert.DoesNotContain(report.Findings, f => f.Severity == LintSeverity.Error);
         Assert.DoesNotContain(report.Findings, f => f.Category == LintCategory.BrokenLink);
+    }
+
+    // ─── Missing player start (void spawn / black screen) ─────────────────────
+
+    [Fact]
+    public void Lint_Flags_Level_With_No_Spawn_Point()
+    {
+        // A level with neither a player_start nor MP respawn points spawns the player in the void
+        // — a fully black screen in-game. Reported as a (non-blocking) Error.
+        var rfl = NewLevel();
+        AddSection(rfl, SectionType.Triggers, new TriggersSection { Triggers = { new Trigger { Uid = 10 } } });
+
+        LintReport report = LevelLinter.Lint(rfl, new LintOptions { Target = SaveTarget.Alpine, CheckGeometryLeaks = false });
+
+        LintFinding finding = Assert.Single(report.Findings, f => f.Category == LintCategory.MissingPlayerStart);
+        Assert.Equal(LintSeverity.Error, finding.Severity);
+        Assert.False(finding.BlocksSave); // serious but non-blocking (RED permits saving a startless level)
+        Assert.Contains("Player Start", finding.Message);
+    }
+
+    [Fact]
+    public void Lint_Passes_Level_With_A_Player_Start()
+    {
+        var rfl = NewLevel();
+        AddSection(rfl, SectionType.PlayerStart, new PlayerStartSection { Position = new Vec3(0, 1, 0), Rotation = Mat3.Identity });
+
+        LintReport report = LevelLinter.Lint(rfl, new LintOptions { Target = SaveTarget.Alpine, CheckGeometryLeaks = false });
+
+        Assert.DoesNotContain(report.Findings, f => f.Category == LintCategory.MissingPlayerStart);
+    }
+
+    [Fact]
+    public void Lint_Passes_Multiplayer_Level_With_Respawn_Points()
+    {
+        // An MP level legitimately spawns from mp_respawn_points instead of a single-player start.
+        var rfl = NewLevel();
+        AddSection(rfl, SectionType.MpRespawnPoints, new MpRespawnPointsSection
+        {
+            Points = { new MpRespawnPoint { Uid = 20, Position = new Vec3(0, 1, 0), Rotation = Mat3.Identity } },
+        });
+
+        LintReport report = LevelLinter.Lint(rfl, new LintOptions { Target = SaveTarget.Alpine, CheckGeometryLeaks = false });
+
+        Assert.DoesNotContain(report.Findings, f => f.Category == LintCategory.MissingPlayerStart);
     }
 
     // ─── Missing assets (needs a VFS) ────────────────────────────────────────

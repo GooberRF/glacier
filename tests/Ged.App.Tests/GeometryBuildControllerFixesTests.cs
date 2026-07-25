@@ -283,4 +283,65 @@ public sealed class GeometryBuildControllerFixesTests
         Assert.False(controller.LightingDirty);
         Assert.Equal(GeometryBuildController.RelightTickAction.None, controller.DecideRelightTick());
     }
+
+    // ---- Save must not spuriously re-dirty lighting (owner: every save after a bake logged
+    //       "Saved with unbaked lighting changes — bake when ready.") ----
+
+    [AvaloniaFact]
+    public async Task SaveAfterBake_DoesNotSpuriouslyMarkLightingDirty_OnSubsequentSaves()
+    {
+        var session = new EditorSession();
+        session.NewLevel();
+        GeometryBuildController controller = NewController(session);
+        controller.LivePreviewEnabled = false; // drive builds explicitly, no background preview
+        controller.Attach();
+        EditorDocument doc = session.Document!;
+        AddAirRoom(session);
+        doc.PlaceObject(LevelObjectKind.Light, new Vec3(0f, 2f, 0f));
+
+        // Calculate Maps and Light: a real geometry build + lighting bake, which clears LightingDirty.
+        Assert.True(await controller.CalculateMapsAndLightAsync(shadows: false));
+        Assert.False(controller.LightingDirty, "a completed bake leaves lighting clean");
+
+        // First save: EditorDocument.MarkSaved raises DirtyChanged to refresh the clean indicator. It
+        // must NOT re-dirty lighting — otherwise the NEXT save reports the spurious "unbaked lighting"
+        // nudge even though nothing lighting-relevant changed.
+        doc.MarkSaved();
+        Assert.False(controller.LightingDirty, "a save must not spuriously mark lighting dirty");
+        Assert.Equal(
+            SaveGuard.SaveNotice.None,
+            SaveGuard.NoticeForDirtySave(controller.GeometryDirty, controller.LightingDirty));
+
+        // Second save — the owner's exact repro: still clean, still no unbaked-lighting nudge.
+        doc.MarkSaved();
+        Assert.False(controller.LightingDirty);
+        Assert.Equal(
+            SaveGuard.SaveNotice.None,
+            SaveGuard.NoticeForDirtySave(controller.GeometryDirty, controller.LightingDirty));
+    }
+
+    [AvaloniaFact]
+    public async Task RealLightEditAfterSave_StillMarksLightingDirty_AndNudges()
+    {
+        var session = new EditorSession();
+        session.NewLevel();
+        GeometryBuildController controller = NewController(session);
+        controller.LivePreviewEnabled = false;
+        controller.Attach();
+        EditorDocument doc = session.Document!;
+        AddAirRoom(session);
+        LevelObject light = doc.PlaceObject(LevelObjectKind.Light, new Vec3(0f, 2f, 0f))!;
+
+        Assert.True(await controller.CalculateMapsAndLightAsync(shadows: false));
+        doc.MarkSaved();
+        Assert.False(controller.LightingDirty);
+
+        // A genuine light move through the undo stack is a real content change — the nudge is CORRECT here
+        // and must survive the save-suppression fix (only clean/just-saved transitions are suppressed).
+        doc.EditValue(light.Section, "Move light", light.Position, new Vec3(3f, 2f, 0f), v => light.Position = v);
+        Assert.True(controller.LightingDirty, "a genuine light edit after a save must still mark lighting stale");
+        Assert.Equal(
+            SaveGuard.SaveNotice.UnbakedLighting,
+            SaveGuard.NoticeForDirtySave(controller.GeometryDirty, controller.LightingDirty));
+    }
 }

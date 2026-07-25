@@ -146,7 +146,7 @@ internal static class MoverLighting
         // RED reuses one surface per coplanar co-planar group — group like the static build does.
         var scratch = new CompiledLevel();
         SurfaceBuildResult msr = new SurfaceBuilder(options.HighResLightmaps)
-            .Build(eligible, emptyRooms, scratch, options.GroupSurfaces);
+            .Build(eligible, emptyRooms, scratch, options.GroupSurfaces, options.LevelAmbient);
         if (msr.Surfaces.Count == 0)
         {
             return false;

@@ -29,8 +29,9 @@ public sealed class SurfaceBuildResult
 /// per-vertex lightmap UVs. High-Resolution Lightmaps (item 6 amendment) widens the
 /// pages to 256×256, the fragment cap to 255, and the ppm ×4 (format-safe — see the
 /// ctor) so projection cookies resolve; stock keeps the exact byte-parity numbers.
-/// Fragment texels are seeded (128 grey or room ambient) so a no-bake build is still
-/// visible before the lighting pass replaces them.
+/// Fragment texels are seeded (128 grey for full-bright, else the room ambient, falling
+/// back to the level ambient) so a no-bake build is still visible before the lighting pass
+/// replaces them.
 /// </summary>
 public sealed class SurfaceBuilder
 {
@@ -52,6 +53,7 @@ public sealed class SurfaceBuilder
     private readonly float _ppmScale;
 
     private readonly List<Lightmap> _pages = new();
+    private RfColor? _levelAmbient;
     private int _shelfX;
     private int _shelfY;
     private int _shelfHeight;
@@ -64,8 +66,10 @@ public sealed class SurfaceBuilder
         _ppmScale = highRes ? HighResPpmScale : 1f;
     }
 
-    public SurfaceBuildResult Build(List<CsgFace> faces, RoomBuildResult rooms, CompiledLevel result, bool group)
+    public SurfaceBuildResult Build(
+        List<CsgFace> faces, RoomBuildResult rooms, CompiledLevel result, bool group, RfColor? levelAmbient = null)
     {
+        _levelAmbient = levelAmbient;
         var eligible = new List<CsgFace>();
         foreach (CsgFace f in faces)
         {
@@ -399,7 +403,7 @@ public sealed class SurfaceBuilder
         }
     }
 
-    private static RfColor RoomAmbient(CsgFace f, RoomBuildResult rooms)
+    private RfColor RoomAmbient(CsgFace f, RoomBuildResult rooms)
     {
         if ((FaceFlags)f.Flags is var flags && (flags & FaceFlags.FullBright) != 0)
         {
@@ -415,7 +419,18 @@ public sealed class SurfaceBuilder
             }
         }
 
-        return new RfColor(64, 64, 64, 255); // neutral pre-lighting grey
+        // No per-room ambient: seed the LEVEL ambient (halved to the bake's ambient floor —
+        // matching AmbientField.ForRoom + the Lightmapper's amb×0.5), exactly as RED seeds the
+        // room/level ambient into unbaked fragments (red-geometry-compiler.md §B.6). This keeps
+        // an unbaked save consistent with a zero-light bake instead of the old flat 64 grey (a
+        // magic value that ignored the level ambient). Baked builds overwrite the seed, so this
+        // touches only unbaked/preview output — the stock-bake byte-identity gates are unaffected.
+        if (_levelAmbient is RfColor la)
+        {
+            return new RfColor((byte)(la.R >> 1), (byte)(la.G >> 1), (byte)(la.B >> 1), 255);
+        }
+
+        return new RfColor(64, 64, 64, 255); // neutral pre-lighting grey (no level ambient supplied)
     }
 
     private static (int UAxis, int VAxis) DominantUv(Vec3 n)

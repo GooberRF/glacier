@@ -37,6 +37,14 @@ public sealed class EditorDocument
         ArgumentNullException.ThrowIfNull(rfl);
         Rfl = rfl;
         Path = path;
+
+        // Repair the black-render section-order defect in early Glacier-authored files:
+        // a lightmaps section written after static_geometry (which RF's two-phase loader
+        // skips, leaving every world face bound to a blank lightmap and rendering black).
+        // No-op for RED files and correctly-ordered files, so a clean document stays
+        // byte-identical on resave. See RflFile.RepairLightmapOrder.
+        Rfl.RepairLightmapOrder();
+
         Undo.Changed += () => DirtyChanged?.Invoke();
         RefreshObjects();
 
@@ -333,6 +341,35 @@ public sealed class EditorDocument
         VisibilityChanged?.Invoke();
     }
 
+    /// <summary>
+    /// Locks/unlocks a set of objects by UID (session lock; the same mechanism as <see cref="ToggleLock"/>
+    /// and the Outliner padlock). Used by group lock to propagate to member OBJECTS so a locked group's
+    /// object members are unselectable/untransformable with the same observable behaviour as its brush
+    /// members (which use <see cref="BrushState.Locked"/>). Newly locked objects drop out of the
+    /// selection. Not undoable (session-only), consistent with the other object-lock paths.
+    /// </summary>
+    public void SetObjectLocked(IEnumerable<int> uids, bool locked)
+    {
+        ArgumentNullException.ThrowIfNull(uids);
+        bool changed = false;
+        foreach (int uid in uids)
+        {
+            changed |= locked ? _locked.Add(uid) : _locked.Remove(uid);
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        if (locked && _selection.RemoveWhere(o => _locked.Contains(o.Uid)) > 0)
+        {
+            SelectionChanged?.Invoke();
+        }
+
+        VisibilityChanged?.Invoke();
+    }
+
     // ---- Isolation (session view state; non-destructive, not undoable) ----------
 
     /// <summary>Stock B6: true while an Isolate Selection filter is active.</summary>
@@ -532,9 +569,15 @@ public sealed class EditorDocument
             .OrderByDescending(t => t.Index)
             .ToArray();
 
+        // The deleted UIDs drive the moving-group maintenance pass below: a deleted brush/object member
+        // is scrubbed from its group and its movers-section copy removed; a deleted keyframe that empties
+        // a moving group dissolves it — so no operation leaves an orphan/0-keyframe group or dead UID.
+        var deletedUids = targets.Select(o => o.Uid).ToList();
+
         _selection.Clear();
         SelectionChanged?.Invoke();
 
+        Editing.MovingGroupMaintenance.Snapshot? maintenance = null;
         Undo.Execute(new RelayCommand($"{description} {captured.Length} object(s)",
             () =>
             {
@@ -544,10 +587,17 @@ public sealed class EditorDocument
                     section.Dirty = true;
                 }
 
+                maintenance = Editing.MovingGroupMaintenance.ApplyMemberDeletion(Rfl, deletedUids);
                 RefreshObjects();
             },
             () =>
             {
+                if (maintenance is { } snap)
+                {
+                    Editing.MovingGroupMaintenance.Revert(Rfl, snap);
+                    maintenance = null;
+                }
+
                 foreach (var (list, model, index, section) in Enumerable.Reverse(captured))
                 {
                     list.Insert(Math.Clamp(index, 0, list.Count), model);
@@ -593,6 +643,42 @@ public sealed class EditorDocument
             }));
 
         return FindByUid(bp.Uid);
+    }
+
+    /// <summary>
+    /// Creates the level's single Player Start at <paramref name="pos"/> (identity orientation
+    /// unless <paramref name="rotation"/> is given) as one undo entry; undo removes the section.
+    /// If a Player Start already exists this returns it unchanged — a level only ever has one.
+    /// The RFL writer recomputes the header's player_start_offset from the section on save, so a
+    /// level authored this way spawns the player here instead of in the void.
+    /// </summary>
+    public LevelObject CreatePlayerStart(Vec3 pos, Mat3? rotation = null)
+    {
+        LevelObject? existing = _objects.FirstOrDefault(o => o.Kind == LevelObjectKind.PlayerStart);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var section = new RflSection((uint)SectionType.PlayerStart, Array.Empty<byte>())
+        {
+            Content = new PlayerStartSection { Position = pos, Rotation = rotation ?? Mat3.Identity },
+        };
+
+        Undo.Execute(new RelayCommand("Create Player Start",
+            () =>
+            {
+                Rfl.InsertSection(section);
+                section.Dirty = true;
+                RefreshObjects();
+            },
+            () =>
+            {
+                Rfl.Sections.Remove(section);
+                RefreshObjects();
+            }));
+
+        return _objects.First(o => o.Kind == LevelObjectKind.PlayerStart);
     }
 
     /// <summary>Places a new event of the given schema at <paramref name="pos"/> (undo-able).</summary>
@@ -859,6 +945,7 @@ public sealed class EditorDocument
     public void Save(string path, bool updateTimestamp = true)
     {
         Editing.AlpineGeoableState.ReconcileTableFromBrushFlags(Rfl);
+        Editing.LevelInfoReconciler.ReconcileHasMovers(Rfl);
         bool upgraded = Rfl.Header.Version != RflFile.AlpineSaveVersion;
         Rfl.UpgradeToAlpine();
         Rfl.Save(path, updateTimestamp);
@@ -877,6 +964,7 @@ public sealed class EditorDocument
     public byte[] SaveToBytes(bool updateTimestamp = false)
     {
         Editing.AlpineGeoableState.ReconcileTableFromBrushFlags(Rfl);
+        Editing.LevelInfoReconciler.ReconcileHasMovers(Rfl);
         return Rfl.Save(updateTimestamp);
     }
 
@@ -899,6 +987,7 @@ public sealed class EditorDocument
     public void SaveAs(string path, bool updateTimestamp = true)
     {
         Editing.AlpineGeoableState.ReconcileTableFromBrushFlags(Rfl);
+        Editing.LevelInfoReconciler.ReconcileHasMovers(Rfl);
         Rfl.UpgradeToAlpine();
         Rfl.Save(path, updateTimestamp);
         Path = path;

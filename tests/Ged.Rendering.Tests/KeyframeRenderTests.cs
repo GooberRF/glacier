@@ -44,12 +44,21 @@ public sealed class KeyframeRenderTests
 
         var keyframeBillboards = scene.Billboards.Where(b => b.Kind == BillboardKind.Keyframe).ToList();
         Assert.Equal(2, keyframeBillboards.Count);
-        Assert.All(keyframeBillboards, b => Assert.Equal((int)EditorIcon.Keyframe, b.Icon));
         Assert.All(keyframeBillboards, b => Assert.Equal(PickKind.Object, b.PickId.Kind));
 
-        // Each keyframe is pickable by its own UID.
-        Assert.Contains(keyframeBillboards, b => b.PickId.Index == start.Uid);
-        Assert.Contains(keyframeBillboards, b => b.PickId.Index == top.Uid);
+        // Keyframes draw ON TOP (depth test disabled in both the colour and pick passes), so a keyframe
+        // seeded at the mover's rest centre stays visible and WINS the id-buffer over the coincident
+        // mover geometry — the pick-priority guarantee that lets the start keyframe sit at the mover
+        // origin without a vertical lift (RED draws editor icons as non-occluded overlays).
+        Assert.All(keyframeBillboards, b => Assert.True(b.OnTop));
+
+        // RED marks the START keyframe gold (Icon_Keyframe_Gold) and every other keyframe silver.
+        var gold = keyframeBillboards.Where(b => b.Icon == (int)EditorIcon.Keyframe).ToList();
+        var silver = keyframeBillboards.Where(b => b.Icon == (int)EditorIcon.KeyframeSilver).ToList();
+        Assert.Single(gold);
+        Assert.Single(silver);
+        Assert.Equal(start.Uid, gold[0].PickId.Index);
+        Assert.Equal(top.Uid, silver[0].PickId.Index);
     }
 
     [Fact]

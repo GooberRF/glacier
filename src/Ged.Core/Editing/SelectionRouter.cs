@@ -436,7 +436,7 @@ public sealed class SelectionRouter
 
         _doc()?.ClearSelection();
         _brushes()?.ClearSelection();
-        AddPrefabMembers(memberUids);
+        AddUnitMembers(memberUids);
         return true;
     }
 
@@ -452,7 +452,37 @@ public sealed class SelectionRouter
             return Reject(SelectKinds.Objects);
         }
 
-        AddPrefabMembers(memberUids);
+        AddUnitMembers(memberUids);
+        return true;
+    }
+
+    // ---- Group UNIT selection (RED member-click escalation; §A.4) --------------
+
+    /// <summary>
+    /// Selects a whole user-defined or moving group as a UNIT: every member brush AND object, in one
+    /// shot. This is the RED member-click escalation — clicking a group member in Object/Group mode
+    /// selects the whole group (Alt+click, handled by the caller, selects the individual member). Kept
+    /// as its own entry point so groups and prefab instances stay distinct systems, while reusing the
+    /// router's shared lock-aware member-selection machinery. Permitted whenever whole-object OR
+    /// whole-brush selection is currently allowed (both gates widen to Groups); a group with ANY locked
+    /// member is refused as a unit with a lock hint (report 8).
+    /// </summary>
+    public bool SelectGroupUnit(IReadOnlyCollection<int> memberUids)
+    {
+        if (!Permits(SelectKinds.Objects) && !Permits(SelectKinds.Brushes))
+        {
+            return Reject(SelectKinds.Objects);
+        }
+
+        if (AnyMemberLocked(memberUids))
+        {
+            RaiseLockBlocked();
+            return false;
+        }
+
+        _doc()?.ClearSelection();
+        _brushes()?.ClearSelection();
+        AddUnitMembers(memberUids);
         return true;
     }
 
@@ -478,12 +508,12 @@ public sealed class SelectionRouter
         return false;
     }
 
-    private void AddPrefabMembers(IReadOnlyCollection<int> memberUids)
+    private void AddUnitMembers(IReadOnlyCollection<int> memberUids)
     {
         EditorDocument? doc = _doc();
         BrushEditor? be = _brushes();
 
-        // Batch by kind so the whole instance folds in with ONE brush event + ONE object event,
+        // Batch by kind so the whole unit folds in with ONE brush event + ONE object event,
         // not one per member (item P1 — the per-member SelectBrush/Select loop fanned out a full
         // panel rebuild per member on a marquee that caught many instances).
         var brushUids = new List<int>();

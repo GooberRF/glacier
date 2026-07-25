@@ -415,6 +415,19 @@ public sealed class GeometryBuildController
             return; // our own build/bake marked the document dirty
         }
 
+        // A SAVE also raises DirtyChanged — EditorDocument.MarkSaved fires it to refresh the "clean"
+        // indicator — but a save is not a content edit and must NOT mark lighting stale. Otherwise the
+        // first save after a bake re-dirties lighting, so every subsequent save spuriously reports
+        // "Saved with unbaked lighting changes — bake when ready." (a persistent, wrong nudge the author
+        // reported). Only an edit that leaves the document DIRTY is a real change; a clean (just-saved or
+        // freshly-opened) document has nothing to re-bake. Real light/geometry edits still dirty lighting
+        // because they leave IsDirty true — that legitimate nudge is preserved.
+        if (_session.Document is not { IsDirty: true })
+        {
+            StateChanged?.Invoke();
+            return;
+        }
+
         LightingDirty = true;
 
         // Incremental hint: if the edited (selected) objects are lights, record their

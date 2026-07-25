@@ -42,6 +42,9 @@ public enum LintCategory
 
     /// <summary>A texture is non-power-of-two or oversize.</summary>
     TextureSize,
+
+    /// <summary>The level has no spawn point (no Player Start and no MP respawn points).</summary>
+    MissingPlayerStart,
 }
 
 /// <summary>

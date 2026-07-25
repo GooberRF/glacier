@@ -63,7 +63,7 @@ public static class FacePlanarizer
             List<Vec3> corners = GeometryUtil.Corners(g, f);
             Vec3 normal = GeometryUtil.Normal(corners);
             Vec3 centroid = GeometryUtil.Centroid(corners);
-            f.Plane = new RfPlane(normal, normal.Dot(centroid)); // refresh best-fit plane (matches RecomputeAllPlanes)
+            f.Plane = new RfPlane(normal, -normal.Dot(centroid)); // refresh best-fit plane (RF convention n·X+offset=0, matches RecomputeAllPlanes)
 
             bool eligible = n >= 4
                 && normal.LengthSquared() >= 1e-12f
@@ -94,7 +94,7 @@ public static class FacePlanarizer
                 {
                     g.Vertices[tri.Vertices[0].Index], g.Vertices[tri.Vertices[1].Index], g.Vertices[tri.Vertices[2].Index],
                 });
-                tri.Plane = new RfPlane(tn, tn.Dot(tc));
+                tri.Plane = new RfPlane(tn, -tn.Dot(tc));
                 outFaces.Add(tri);
             }
 

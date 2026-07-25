@@ -37,9 +37,10 @@ public class MoverServiceTests
 
         Group group = movers.CreateMover(new[] { b1, b2 }, System.Array.Empty<int>(), "Elevator");
 
-        // The two brushes moved from the static brushes section into movers.
+        // RED's stored-twice invariant: the member brushes STAY in the static brushes section (editable
+        // world brushes) AND a second copy of each lands in the movers section.
         Assert.Equal(2, movers.MoverBrushes.Count);
-        Assert.Empty(FindBrushes(doc)?.Brushes ?? new System.Collections.Generic.List<Brush>());
+        Assert.Equal(2, (FindBrushes(doc)?.Brushes ?? new System.Collections.Generic.List<Brush>()).Count);
         Assert.Equal(new[] { b1, b2 }, group.Brushes);
 
         // Second keyframe at a raised position with a full property set.

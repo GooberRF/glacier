@@ -89,6 +89,48 @@ public static class MoverBrushes
         return ExcludeMovers(brushes, CollectMoverUids(rfl));
     }
 
+    /// <summary>
+    /// Renumbers every mover brush's geometry faces to a <c>FaceId</c> range disjoint from (above) the
+    /// static geometry's maximum face id, restoring RED's invariant that every compiled face — static
+    /// world AND mover — carries a globally-UNIQUE id. RED-authored dmabrupt proves it: not one of its
+    /// mover faces shares an id with a static face (they interleave a single global counter across the
+    /// whole level). GED compiles only the static world (movers are excluded from the fold, see
+    /// <see cref="StaticWorldBrushes"/>), so a mover otherwise keeps its authored local ids 0..n, which
+    /// collide head-on with the static world's own 0..n — a GED-authored one-brush lift ships mover
+    /// faceIds 0..5 identical to the room's 0..5. Returns true when any id changed (so the caller
+    /// re-serialises the movers section). Idempotent: a level whose movers are already numbered above the
+    /// static max renumbers to the same ids and reports no change.
+    /// </summary>
+    public static bool AssignGlobalFaceIds(IReadOnlyList<Brush> movers, Geometry staticGeometry)
+    {
+        int cursor = -1;
+        foreach (Face f in staticGeometry.Faces)
+        {
+            if (f.FaceId > cursor)
+            {
+                cursor = f.FaceId;
+            }
+        }
+
+        cursor++; // first free id above the static world's max
+        bool changed = false;
+        foreach (Brush m in movers)
+        {
+            foreach (Face f in m.Geometry.Faces)
+            {
+                if (f.FaceId != cursor)
+                {
+                    f.FaceId = cursor;
+                    changed = true;
+                }
+
+                cursor++;
+            }
+        }
+
+        return changed;
+    }
+
     private static List<Brush> FindBrushes(RflFile rfl)
     {
         foreach (RflSection s in rfl.Sections)

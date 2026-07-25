@@ -50,4 +50,34 @@ public sealed class NewLevelSectionsTests
         Assert.Single(reloaded.Sections.Select(s => s.Content).OfType<LevelPropertiesSection>());
         Assert.Single(reloaded.Sections.Select(s => s.Content).OfType<LevelInfoSection>());
     }
+
+    [AvaloniaFact]
+    public void New_Level_Authors_A_Player_Start_Inside_The_Working_Volume()
+    {
+        var session = new EditorSession();
+        session.NewLevel();
+
+        var start = session.Document!.Rfl.Sections.Select(s => s.Content).OfType<PlayerStartSection>().SingleOrDefault();
+        Assert.NotNull(start);
+        Assert.Equal(new Vec3(0f, 1f, 0f), start!.Position); // one unit above the grid origin
+        Assert.Equal(Mat3.Identity, start.Rotation);
+    }
+
+    [AvaloniaFact]
+    public void New_Level_Player_Start_Round_Trips_And_Sets_The_Header_Offset()
+    {
+        var session = new EditorSession();
+        session.NewLevel();
+
+        byte[] bytes = session.Document!.SaveToBytes();
+        var reloaded = Ged.Core.IO.Rfl.RflFile.Load(bytes);
+        reloaded.ParseAllKnownSections();
+
+        // player_start_offset must be non-zero (RF reads the spawn transform from it) and the
+        // section must parse back to the authored position.
+        Assert.True(reloaded.Header.PlayerStartOffset > 0);
+        var start = reloaded.Sections.Select(s => s.Content).OfType<PlayerStartSection>().SingleOrDefault();
+        Assert.NotNull(start);
+        Assert.Equal(new Vec3(0f, 1f, 0f), start!.Position);
+    }
 }

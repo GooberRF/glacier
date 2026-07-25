@@ -91,13 +91,21 @@ public static class GeometryUtil
         return area;
     }
 
-    /// <summary>Recomputes and stores the plane (outward normal + offset) of a face from its corners.</summary>
+    /// <summary>
+    /// Recomputes and stores the plane (outward normal + offset) of a face from its corners.
+    /// The offset follows Red Faction's stored-plane convention <c>Normal·X + Offset == 0</c>,
+    /// i.e. <c>Offset = -(Normal·pointOnPlane)</c> — the same sign the CSG compiler
+    /// (<see cref="Ged.Core.Compiler.CsgPlane"/>) and RED.exe use. This matters because RF builds
+    /// mover collision hulls directly from these authored brush face planes (it renders from the
+    /// vertices but classifies collision space with the stored plane), so an inverted offset yields
+    /// a corrupt collision hull even though the mover animates correctly.
+    /// </summary>
     public static void RecomputePlane(Geometry g, Face f)
     {
         List<Vec3> poly = Corners(g, f);
         Vec3 n = Normal(poly);
         Vec3 c = Centroid(poly);
-        f.Plane = new RfPlane(n, n.Dot(c));
+        f.Plane = new RfPlane(n, -n.Dot(c));
     }
 
     public static void RecomputeAllPlanes(Geometry g)

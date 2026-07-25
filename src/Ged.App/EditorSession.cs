@@ -403,9 +403,28 @@ public sealed class EditorSession : IDisposable
         // Level Properties dialog and the metadata / editor view configs). Emit both with
         // researched defaults so New → Save produces a level RED reads as authored, not one
         // missing its property/info sections.
+        // Emit the sections in RED's canonical on-disk order (see RflSectionOrder):
+        // level_properties, then player_start, then level_info near the tail. The
+        // geometry/lightmaps sections a build later creates slot in canonically
+        // (lightmaps before static_geometry) via GeometryBuildService, so a
+        // from-scratch level saves in the same order RED writes and never hits the
+        // lightmaps-after-geometry black-render defect.
         rfl.Sections.Add(new RflSection((uint)SectionType.LevelProperties, Array.Empty<byte>())
         {
             Content = LevelPropertiesSection.CreateDefault(),
+            Dirty = true,
+        });
+
+        // Author a single-player start so a from-scratch level has somewhere for RF to spawn
+        // the player. Without one the header's player_start_offset stays 0 and RF drops the
+        // player into the void outside every room — the camera resolves to no room and the
+        // portal renderer draws nothing (a fully black screen in-game). The start sits one
+        // unit above the grid origin (identity orientation → facing +Z), i.e. the centre of
+        // the default working volume: a floor built on the grid plane (y=0) leaves the spawn
+        // just above it. The writer recomputes player_start_offset from this section on save.
+        rfl.Sections.Add(new RflSection((uint)SectionType.PlayerStart, Array.Empty<byte>())
+        {
+            Content = new PlayerStartSection { Position = new Vec3(0f, 1f, 0f), Rotation = Mat3.Identity },
             Dirty = true,
         });
         rfl.Sections.Add(new RflSection((uint)SectionType.LevelInfo, Array.Empty<byte>())
@@ -1002,22 +1021,30 @@ public sealed class EditorSession : IDisposable
             return lines;
         }
 
-        uint yellow = Palette.Rgba(255, 240, 60, 255);
-        foreach ((int from, int to) in Ged.Core.Editing.DocumentLinks.AllEdges(Document))
+        // Originator (trigger/event) links highlight yellow; structural mover edges (member → start
+        // keyframe, keyframe chain) highlight in RED's keyframe-link red so they stay visually distinct
+        // from real links wherever they appear.
+        void Emit(IEnumerable<(int From, int To)> edges, uint color)
         {
-            if (!selected.Contains(from) && !selected.Contains(to))
+            foreach ((int from, int to) in edges)
             {
-                continue;
-            }
+                if (!selected.Contains(from) && !selected.Contains(to))
+                {
+                    continue;
+                }
 
-            if (Document.FindByUid(from) is { } a && Document.FindByUid(to) is { } b)
-            {
-                var pa = new Vector3(a.Position.X, a.Position.Y, a.Position.Z);
-                var pb = new Vector3(b.Position.X, b.Position.Y, b.Position.Z);
-                lines.Add(new LineSegment(pa, pb, yellow));
-                OverlayBuilder.AddArrowHead(lines, pa, pb, yellow);
+                if (Document.FindByUid(from) is { } a && Document.FindByUid(to) is { } b)
+                {
+                    var pa = new Vector3(a.Position.X, a.Position.Y, a.Position.Z);
+                    var pb = new Vector3(b.Position.X, b.Position.Y, b.Position.Z);
+                    lines.Add(new LineSegment(pa, pb, color));
+                    OverlayBuilder.AddArrowHead(lines, pa, pb, color);
+                }
             }
         }
+
+        Emit(Ged.Core.Editing.DocumentLinks.OriginatorEdges(Document), Palette.Rgba(255, 240, 60, 255));
+        Emit(Ged.Core.Editing.DocumentLinks.StructuralMoverEdges(Document), Palette.Rgba(255, 40, 40, 255));
 
         return lines;
     }

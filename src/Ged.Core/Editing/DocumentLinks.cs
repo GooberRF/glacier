@@ -19,8 +19,21 @@ public static class DocumentLinks
     /// <summary>All directed (from-UID → to-UID) link edges in the document.</summary>
     public static IEnumerable<(int From, int To)> AllEdges(EditorDocument doc)
     {
-        ArgumentNullException.ThrowIfNull(doc);
+        foreach ((int from, int to) in OriginatorEdges(doc))
+        {
+            yield return (from, to);
+        }
 
+        foreach ((int from, int to) in StructuralMoverEdges(doc))
+        {
+            yield return (from, to);
+        }
+    }
+
+    /// <summary>The persisted originator links only (triggers / events / clutter / nav points → targets).</summary>
+    public static IEnumerable<(int From, int To)> OriginatorEdges(EditorDocument doc)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
         foreach (LevelObject o in doc.Objects)
         {
             if (LinkModel.LinksOf(o) is { } links)
@@ -31,12 +44,16 @@ public static class DocumentLinks
                 }
             }
         }
-
-        foreach ((int from, int to) in MovingGroupLinks.Edges(MovingGroups(doc)))
-        {
-            yield return (from, to);
-        }
     }
+
+    /// <summary>
+    /// The structural moving-group edges (member mover → start keyframe, keyframe sequence). These are
+    /// NOT persisted object links — they are derived from the group's keyframe/member data — so the Link
+    /// Graph styles them distinctly and the viewport draws only the sequence chain (see
+    /// <see cref="MovingGroupLinks"/>).
+    /// </summary>
+    public static IEnumerable<(int From, int To)> StructuralMoverEdges(EditorDocument doc) =>
+        MovingGroupLinks.Edges(MovingGroups(doc));
 
     /// <summary>Every group across the groups + moving-groups sections of the document.</summary>
     public static IEnumerable<Group> MovingGroups(EditorDocument doc)

@@ -248,7 +248,12 @@ public sealed partial class MainWindow
     public Ged.Core.Editing.PaletteCategoryNode EntityCategoryTree() =>
         _session.Entities?.BuildPaletteTree() ?? Ged.Core.Editing.PaletteCategoryNode.Empty;
 
-    /// <summary>Moves the (unique) Player Start to the placement point, undoably (item 16).</summary>
+    /// <summary>
+    /// Moves the (unique) Player Start to the placement point, undoably (item 16). When the level
+    /// has no Player Start yet (every from-scratch level used to lack one), this CREATES one at the
+    /// placement point instead of no-opping — so a level can always be given a valid spawn in one
+    /// click rather than being stuck spawning the player in the void.
+    /// </summary>
     public void MovePlayerStartHere()
     {
         if (Document is null)
@@ -257,15 +262,18 @@ public sealed partial class MainWindow
             return;
         }
 
+        Vec3 p = PlacementPoint;
         LevelObject? start = Document.Objects.FirstOrDefault(o => o.Kind == LevelObjectKind.PlayerStart);
         if (start is null)
         {
-            _dispatcher.ShowMessage("This level has no Player Start.");
+            LevelObject created = Document.CreatePlayerStart(p);
+            _session.Selection.SelectObject(created);
+            AfterMutation();
+            _dispatcher.ShowMessage("Created Player Start here.");
             return;
         }
 
         Vec3 old = start.Position;
-        Vec3 p = PlacementPoint;
         Document.EditValue(start.Section, "Move Player Start", old, p, v => start.Position = v);
         _session.Selection.SelectObject(start);
         AfterMutation();

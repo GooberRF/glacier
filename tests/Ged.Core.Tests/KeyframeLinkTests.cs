@@ -48,7 +48,13 @@ public sealed class KeyframeLinkTests
         LevelObject? s = doc.FindByUid(start.Uid);
         Assert.NotNull(s);
         Assert.Equal(LevelObjectKind.Keyframe, s!.Kind);
-        Assert.Equal(new Vec3(2, 0, 0), s.Position);
+
+        // RED seeds the gold start keyframe at the members' bounding-box CENTRE — the mover's rest-pose
+        // pivot (FUN_00416000 copies the member-bounds centre this+0x234 into the keyframe). Two brushes
+        // at x=0 and x=4 → centre (2, 0, 0): NOT lifted, so it lines up with the mover.
+        Assert.True(System.MathF.Abs(s.Position.X - 2f) < 1e-3f);
+        Assert.True(System.MathF.Abs(s.Position.Y) < 1e-3f, "gold start keyframe should sit at the member centre, not lifted");
+        Assert.True(System.MathF.Abs(s.Position.Z) < 1e-3f);
 
         Assert.NotNull(doc.FindByUid(top.Uid));
     }

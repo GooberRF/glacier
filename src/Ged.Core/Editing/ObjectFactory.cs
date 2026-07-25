@@ -126,6 +126,10 @@ public static class ObjectFactory
                 {
                     Uid = uid, Position = pos, Shape = Trigger.ShapeSphere, SphereRadius = 3f,
                     ResetsAfter = 0f, ResetsTimes = -1, ActivatedBy = 0, Team = -1,
+                    // RED writes -1 ("none") for the attach/clutter/airlock UID slots; the int default
+                    // of 0 would read as "attached to / requires the object with UID 0" (verified: RED
+                    // dmabrupt use-key trigger 54 stores -1/-1/-1, the GED-authored movtest4 trigger 0/0/0).
+                    AirlockRoomUid = -1, AttachedToUid = -1, UseClutterUid = -1,
                 },
                 () => new TriggersSection(), c => ((TriggersSection)c).Triggers),
 

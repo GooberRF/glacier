@@ -87,6 +87,58 @@ public class InspectorMetadataTests
         }
     }
 
+    /// <summary>The RED Keyframe-Properties / mover dialog fields (red-stock-inventory §8), split
+    /// keyframe (per-waypoint) vs mover (per-group). Every one must be exposed by the mover inspector.</summary>
+    private static readonly string[] Section8KeyframeFields =
+    {
+        "Travel Time to Next", "Return Travel", "Pause Time", "Accel Time", "Decel Time",
+        "Degrees About Axis", "Triggered Event UID", "Item UID 1", "Item UID 2", "Script Name",
+    };
+
+    private static readonly string[] Section8MoverFields =
+    {
+        "Movement Type", "Is Door", "Rotate In Place", "Starts Backwards", "Use Travel Time as Speed",
+        "Force Orient", "No Player Collide", "Starting Keyframe",
+        "Start Sound", "Start Volume", "Looping Sound", "Looping Volume",
+        "Stop Sound", "Stop Volume", "Close Sound", "Close Volume", "Hold Open [Alpine]",
+    };
+
+    [Fact]
+    public void Mover_Inspector_Schema_Covers_Every_Section8_Field()
+    {
+        var kf = MoverInspectorSchema.KeyframeFields.Select(f => f.Label).ToHashSet();
+        foreach (string field in Section8KeyframeFields)
+        {
+            Assert.True(kf.Contains(field), $"Keyframe inspector is missing the §8 field '{field}'.");
+        }
+
+        var mv = MoverInspectorSchema.MoverFields.Select(f => f.Label).ToHashSet();
+        foreach (string field in Section8MoverFields)
+        {
+            Assert.True(mv.Contains(field), $"Mover inspector is missing the §8 field '{field}'.");
+        }
+    }
+
+    [Fact]
+    public void Mover_Schema_Accessors_Round_Trip_On_MovingGroupData_And_Keyframe()
+    {
+        var data = new MovingGroupData();
+
+        InspectorField collide = MoverInspectorSchema.MoverFields.First(f => f.Label == "No Player Collide");
+        collide.Set(data, true);
+        Assert.Equal((byte)1, data.NoPlayerCollide);       // Bool editor writes through the byte
+        Assert.Equal(true, collide.Get(data));
+
+        InspectorField vol = MoverInspectorSchema.MoverFields.First(f => f.Label == "Looping Volume");
+        vol.Set(data, 0.5f);
+        Assert.Equal(0.5f, data.LoopingVol);
+
+        var k = new Keyframe();
+        InspectorField ev = MoverInspectorSchema.KeyframeFields.First(f => f.Label == "Triggered Event UID");
+        ev.Set(k, 42);
+        Assert.Equal(42, k.EventUid);
+    }
+
     [Fact]
     public void Reflection_Accessors_Round_Trip_On_A_Placed_Entity()
     {
@@ -118,6 +170,56 @@ public class InspectorMetadataTests
         Assert.Equal(2u << 4, model.Flags & 0x30u);
         Assert.Equal(0x4u, model.Flags & 0x4u);
         Assert.Equal(2u << 8, model.Flags & 0xF00u);
+    }
+
+    [Fact]
+    public void Trigger_Nullable_Numeric_Fields_Round_Trip_Without_Throwing()
+    {
+        // Regression: a trigger's dimension/team fields are Nullable<T> (float?, int?, byte?).
+        // InspectorField.Set used Convert.ChangeType(value, prop.PropertyType), which throws
+        // InvalidCastException for a Nullable<T> target — so amending any of these numeric
+        // parameters crashed the editor. Set must convert to the underlying type instead.
+        var doc = NewDoc();
+        LevelObject t = doc.PlaceObject(LevelObjectKind.Trigger, Vec3.Zero)!;
+        var trig = (Trigger)t.Model;
+
+        InspectorField radius = Field(LevelObjectKind.Trigger, "Sphere Radius"); // float?
+        radius.Set(trig, 12.5f);
+        Assert.Equal(12.5f, trig.SphereRadius);
+        Assert.Equal(12.5f, (float)radius.Get(trig)!);
+
+        InspectorField width = Field(LevelObjectKind.Trigger, "Box Width"); // float?
+        width.Set(trig, 3f);
+        Assert.Equal(3f, trig.BoxWidth);
+
+        InspectorField team = Field(LevelObjectKind.Trigger, "Team"); // int?
+        team.Set(trig, 2);
+        Assert.Equal(2, trig.Team);
+
+        InspectorField oneWay = Field(LevelObjectKind.Trigger, "One Way"); // Bool editor over byte?
+        oneWay.Set(trig, true);
+        Assert.Equal((byte)1, trig.OneWay);
+        Assert.Equal(true, oneWay.Get(trig));
+
+        // A null (the value undo replays when the field started empty) clears the nullable
+        // property rather than throwing or sticking at the edited value.
+        radius.Set(trig, null);
+        Assert.Null(trig.SphereRadius);
+    }
+
+    [Fact]
+    public void Set_Reverts_Rather_Than_Throws_On_An_Out_Of_Range_Value()
+    {
+        // A pasted / mid-typing value the target type can't hold must revert to the prior value,
+        // never surface an OverflowException to the commit handler (which would reach the dispatcher).
+        var doc = NewDoc();
+        LevelObject e = doc.PlaceObject(LevelObjectKind.Entity, Vec3.Zero)!;
+        InspectorField fov = Field(LevelObjectKind.Entity, "FOV");
+        fov.Set(e.Model, 90);
+        int before = (int)fov.Get(e.Model)!;
+
+        fov.Set(e.Model, long.MaxValue); // does not fit an int → no-op, no throw
+        Assert.Equal(before, (int)fov.Get(e.Model)!);
     }
 
     [Fact]

@@ -42,6 +42,7 @@ public enum EditorIcon
     Clutter = 27,        // box
     Item = 28,           // pickup star
     Generic = 29,        // dot
+    KeyframeSilver = 30, // hollow diamond — a non-start (silver) mover keyframe
 }
 
 /// <summary>
@@ -74,9 +75,9 @@ public static class IconAtlas
     public static byte[] Build()
     {
         var pixels = new byte[Width * Height * 4];
-        for (int i = 0; i < 30; i++)
+        foreach (EditorIcon icon in Enum.GetValues<EditorIcon>())
         {
-            PaintCell(pixels, (EditorIcon)i);
+            PaintCell(pixels, icon);
         }
 
         return pixels;
@@ -113,6 +114,7 @@ public static class IconAtlas
             [EditorIcon.Eax] = "Icon_EAX.tga",
             [EditorIcon.Target] = "Icon_Target.tga",
             [EditorIcon.Keyframe] = "Icon_Keyframe_Gold.tga",
+            [EditorIcon.KeyframeSilver] = "Icon_Keyframe_Silver.tga",
             [EditorIcon.Note] = "Icon_AFNote.tga",
             [EditorIcon.Corona] = "Icon_AFCorona.tga",
         };
@@ -368,6 +370,15 @@ public static class IconAtlas
                 p.Line(20, 16, 28, 16, 1.8f);
                 break;
             case EditorIcon.Keyframe:
+                p.Poly(new[] { V(16, 7), V(24, 16), V(16, 25), V(8, 16) }, fill: true);
+                break;
+            case EditorIcon.KeyframeSilver:
+                // A non-start keyframe: a SOLID filled diamond, exactly like the gold start diamond —
+                // matching RED's Icon_Keyframe_Silver.tga, which (verified by extracting it from ui.vpp)
+                // is a FILLED diamond identical in shape to the gold one and separated from it purely by
+                // COLOUR, not by fill. Restyled from the old HOLLOW outline that read as an empty /
+                // invalid marker. The gold/silver distinction is carried by the billboard tint (warm vs
+                // neutral grey), and RED's own gold/silver TGAs replace both when original icons are on.
                 p.Poly(new[] { V(16, 7), V(24, 16), V(16, 25), V(8, 16) }, fill: true);
                 break;
             case EditorIcon.Note:

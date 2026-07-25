@@ -247,14 +247,6 @@ public sealed class GedObjectMetadataService
             return;
         }
 
-        int endIndex = _doc.Rfl.Sections.FindIndex(s => s.IsEnd);
-        if (endIndex >= 0)
-        {
-            _doc.Rfl.Sections.Insert(endIndex, host);
-        }
-        else
-        {
-            _doc.Rfl.Sections.Add(host);
-        }
+        _doc.Rfl.InsertSection(host);
     }
 }

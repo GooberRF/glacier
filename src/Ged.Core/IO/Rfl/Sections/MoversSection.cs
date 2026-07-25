@@ -15,7 +15,11 @@ public sealed class MoversSection : IRflSectionContent
         int count = r.ReadI32();
         for (int i = 0; i < count; i++)
         {
-            section.Movers.Add(Brush.Read(r, ctx));
+            Brush b = Brush.Read(r, ctx);
+            // RF builds a mover's collision hull from these stored face planes (verbatim), so heal any
+            // sign-inverted planes an earlier build wrote — otherwise the mover animates but collides wrong.
+            PlaneSignRepair.RepairBrushGeometry(b.Geometry);
+            section.Movers.Add(b);
         }
 
         return section;

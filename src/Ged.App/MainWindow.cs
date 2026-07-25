@@ -1509,7 +1509,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         }
         else
         {
-            _dispatcher.ShowMessage("No player start in this level.");
+            _dispatcher.ShowMessage("No Player Start in this level — use 'Move Player Start Here' to create one at the cursor.");
         }
     }
 
@@ -1669,7 +1669,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         InitPrefabUnit(); // Feature F: prefab-instance unit-selection controller for this document
         _metadata = new Ged.Core.Editing.GedObjectMetadataService(Document); // item 4: light cookies + future per-object metadata
         _navGraph = new NavGraphService(Document);
-        _groups = new GroupService(Document);
+        _groups = new GroupService(Document, _session.BrushEditor);
         _movers = new MoverService(Document);
         _cutscenes = new CutsceneService(Document);
         Document.ObjectsChanged += () => { _outliner.Refresh(); _history.Refresh(); _linkGraph.Refresh(); _depGraph.Refresh(); };
@@ -1753,6 +1753,18 @@ public sealed partial class MainWindow : Window, IEditorHost
 
         _layers.Refresh();
         _buildController?.Attach();
+
+        // Repair levels authored with Glacier's old, broken mover shape (member brushes only in the
+        // movers section): re-add their editable world copies to the brushes section so they are
+        // selectable/editable again and RED's stored-twice invariant holds. A no-op on every RED /
+        // corpus level and every mover authored after this fix (their brush is already stored twice),
+        // so a correct level stays byte-identical; only a genuinely broken level is touched + flagged.
+        if (_movers.RepairStoredTwiceInvariant() is int restored && restored > 0)
+        {
+            _notifications.Notify(
+                Services.NotificationSeverity.Warning,
+                $"{restored} mover brush(es) restored to the world — resave to persist.");
+        }
 
         // Every freshly created or opened document starts on the Select tool — this shared
         // post-load routine runs for New Level, Open (dialog / Open Recent / drag-drop / --open),
@@ -1952,6 +1964,14 @@ public sealed partial class MainWindow : Window, IEditorHost
         // Returns false (fall through) for non-members and for members while inside their instance.
         if (HandlePrefabPick(surface, id, additive))
         {
+            return;
+        }
+
+        // RED member-click escalation (§A.4): in Object/Group mode, clicking a group member selects
+        // the WHOLE group; Alt+click (handled inside) falls through to individual selection.
+        if (HandleGroupPick(surface, id, additive))
+        {
+            RefreshSelectionOverlay();
             return;
         }
 

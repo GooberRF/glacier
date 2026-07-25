@@ -385,11 +385,11 @@ public static class SceneBuilder
         // Original RED icons are full-colour: emit object glyphs untinted (white).
         uint White = Palette.Rgba(255, 255, 255, 255);
 
-        void AddIcon(BillboardKind kind, int uid, Vec3 p, EditorIcon icon)
+        void AddIcon(BillboardKind kind, int uid, Vec3 p, EditorIcon icon, bool onTop = false, uint? tintOverride = null)
         {
             var pos = new Vector3(p.X, p.Y, p.Z);
             uidPositions[uid] = pos;
-            uint tint = options.UseOriginalIcons ? White : Palette.BillboardTint(kind);
+            uint tint = options.UseOriginalIcons ? White : (tintOverride ?? Palette.BillboardTint(kind));
 
             // A non-square ORIGINAL icon (RED's 32×64 MP-respawn, 64×32 keyframe) renders at
             // its true aspect: standard width, height scaled by h/w. The atlas cell is square
@@ -402,7 +402,7 @@ public static class SceneBuilder
                 && aspects.TryGetValue(icon, out float a) && a > 0f ? a : 1f;
 
             scene.Billboards.Add(new Billboard(kind, pos, size * hOverW, tint,
-                new PickId(PickKind.Object, uid & 0x0FFFFFFF), (int)icon, Aspect: 1f / hOverW));
+                new PickId(PickKind.Object, uid & 0x0FFFFFFF), (int)icon, Aspect: 1f / hOverW, OnTop: onTop));
         }
 
         foreach (RflSection section in file.Sections)
@@ -668,14 +668,26 @@ public static class SceneBuilder
                     // keyframe/mover link lines can resolve their endpoints.
                     foreach (Group grp in groups.Groups)
                     {
-                        if (grp.IsMoving == 0 || grp.MovingData is not { } data)
+                        if (grp.IsMoving == 0 || grp.MovingData is not { } data || data.Keyframes.Count == 0)
                         {
                             continue;
                         }
 
-                        foreach (Keyframe k in data.Keyframes)
+                        // RED marks the START keyframe with the gold diamond (Icon_Keyframe_Gold) and every
+                        // other keyframe with the silver one (Icon_Keyframe_Silver) — both SOLID diamonds,
+                        // separated by COLOUR (gold warm, silver neutral grey), matching RED. Keyframes draw
+                        // ON TOP (depth test disabled) so a keyframe seeded at the mover's rest centre stays
+                        // visible AND wins the id-buffer pick over the coincident mover geometry — RED draws
+                        // editor icons as non-occluded overlays, which is what lets the start keyframe sit at
+                        // the mover origin without being buried (no vertical lift needed).
+                        int startIndex = System.Math.Clamp(data.StartingKeyframe, 0, data.Keyframes.Count - 1);
+                        for (int ki = 0; ki < data.Keyframes.Count; ki++)
                         {
-                            Add(BillboardKind.Keyframe, k.Uid, k.Position);
+                            Keyframe k = data.Keyframes[ki];
+                            bool isStart = ki == startIndex;
+                            uint kfTint = isStart ? Palette.BillboardTint(BillboardKind.Keyframe) : Palette.Rgba(205, 210, 220);
+                            AddIcon(BillboardKind.Keyframe, k.Uid, k.Position,
+                                isStart ? EditorIcon.Keyframe : EditorIcon.KeyframeSilver, onTop: true, tintOverride: kfTint);
                         }
                     }
 
@@ -794,14 +806,19 @@ public static class SceneBuilder
         bool ResolvePos(int uid, out Vector3 pos) =>
             uidPositions.TryGetValue(uid, out pos) || moverPositions.TryGetValue(uid, out pos);
 
+        // RED's "Keyframe Link Color" (default RGB 255,0,0 — RED.exe prefs FUN_00479160 @0x0047938c),
+        // a dedicated colour distinct from the general "Link Color", so the mover keyframe path never
+        // reads like a trigger/event link.
+        uint keyframeLinkColor = Palette.Rgba(255, 40, 40, 220);
+
         // A single directed link line from source to destination, with an arrowhead at the
         // destination end (feature: every link line points at its destination handle).
-        void Edge(int fromUid, int toUid)
+        void Edge(int fromUid, int toUid, uint color)
         {
             if (ResolvePos(fromUid, out Vector3 a) && ResolvePos(toUid, out Vector3 b))
             {
-                scene.Lines.Add(new LineSegment(a, b, linkColor));
-                OverlayBuilder.AddArrowHead(scene.Lines, a, b, linkColor);
+                scene.Lines.Add(new LineSegment(a, b, color));
+                OverlayBuilder.AddArrowHead(scene.Lines, a, b, color);
             }
         }
 
@@ -809,7 +826,7 @@ public static class SceneBuilder
         {
             foreach (int to in links)
             {
-                Edge(fromUid, to);
+                Edge(fromUid, to, linkColor);
             }
         }
 
@@ -850,11 +867,14 @@ public static class SceneBuilder
                     break;
 
                 case GroupsSection groups:
-                    // Mover keyframe links: each member mover -> the start keyframe, and the
-                    // keyframe sequence chain (shared with the Link Graph panel via MovingGroupLinks).
-                    foreach ((int from, int to) in Ged.Core.Editing.MovingGroupLinks.Edges(groups.Groups))
+                    // Mover keyframe links: RED draws ONLY the keyframe sequence chain in the viewport
+                    // (in its Keyframe-Link colour). The member -> start-keyframe association is a
+                    // near-zero-length line at rest (the start keyframe now sits AT the member centre)
+                    // and reads as an auto-created trigger link if a member is a trigger, so it is
+                    // surfaced only in the Link Graph, not here (see MovingGroupLinks.SequenceEdges).
+                    foreach ((int from, int to) in Ged.Core.Editing.MovingGroupLinks.SequenceEdges(groups.Groups))
                     {
-                        Edge(from, to);
+                        Edge(from, to, keyframeLinkColor);
                     }
 
                     break;

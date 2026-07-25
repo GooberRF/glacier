@@ -36,11 +36,18 @@ public sealed class LinkService
         foreach (LevelObject t in targets)
         {
             LinkResult r = LinkRules.Validate(origin, t);
-            if (r.Ok && !toAdd.Contains(t.Uid))
+            if (r.Ok)
             {
-                toAdd.Add(t.Uid);
+                // A link to a mover brush must store the mover's START KEYFRAME uid — that is the uid
+                // RF.exe resolves a trigger/event link to (see MoverLinkResolver). A link straight to
+                // a keyframe or any non-mover object is returned unchanged.
+                int stored = MoverLinkResolver.ResolveTarget(_doc, t.Uid);
+                if (stored != origin.Uid && !toAdd.Contains(stored) && !links.Contains(stored))
+                {
+                    toAdd.Add(stored);
+                }
             }
-            else if (!r.Ok)
+            else
             {
                 firstError ??= r.Message;
             }
@@ -73,7 +80,13 @@ public sealed class LinkService
             LinkResult r = LinkRules.Validate(origin, primary);
             if (r.Ok)
             {
-                edits.Add((links, origin.Section, links.Append(primary.Uid).ToList()));
+                // Same mover-brush → start-keyframe redirect as the forward link (Ctrl+K links the
+                // selected originators back TO the primary, which may be a mover).
+                int stored = MoverLinkResolver.ResolveTarget(_doc, primary.Uid);
+                if (stored != origin.Uid && !links.Contains(stored))
+                {
+                    edits.Add((links, origin.Section, links.Append(stored).ToList()));
+                }
             }
             else
             {

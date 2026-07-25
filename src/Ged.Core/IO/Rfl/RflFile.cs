@@ -364,16 +364,63 @@ public sealed class RflFile
         }
 
         var section = new RflSection((uint)type, Array.Empty<byte>()) { Content = create(), Dirty = true };
-        int endIndex = Sections.FindIndex(s => s.IsEnd);
-        if (endIndex < 0)
+        InsertSection(section);
+        return section;
+    }
+
+    /// <summary>
+    /// Inserts a NEW section at its canonical position (<see cref="RflSectionOrder"/>)
+    /// relative to the sections already present. Existing sections are never
+    /// reordered — only the new section's index is chosen — so a loaded file's raw
+    /// section order and byte-identity round-trip are preserved. The canonical
+    /// order guarantees, in particular, that a freshly created <c>lightmaps</c>
+    /// section lands before <c>static_geometry</c>, which RF's two-phase loader
+    /// requires (a lightmaps section written after the geometry is skipped and the
+    /// level renders black — see <see cref="RflSectionOrder"/>).
+    /// </summary>
+    public void InsertSection(RflSection section)
+    {
+        ArgumentNullException.ThrowIfNull(section);
+        Sections.Insert(RflSectionOrder.InsertionIndex(Sections, section.TypeId), section);
+    }
+
+    /// <summary>
+    /// Repairs the black-render section-order defect present in early
+    /// Glacier-authored files: a <c>lightmaps</c> section (0x1200) written AFTER
+    /// <c>static_geometry</c> (0x100). RF's two-phase loader binds every surface to
+    /// its lightmap at geometry-load time from a registry that is only populated by
+    /// an already-parsed lightmaps section (RF.exe FUN_00460820 / FUN_004ee210); a
+    /// lightmaps section that follows the geometry is reached only in the loader's
+    /// post-geometry phase, which has no case for it, so it is skipped, the
+    /// registry is empty at bind time, and every world face renders black. This
+    /// moves the lightmaps section to immediately before static_geometry (RED's
+    /// canonical order).
+    ///
+    /// <para>
+    /// Gated on the exact broken pattern — lightmaps present AND positioned after
+    /// static_geometry — which NO RED-authored level in the corpus exhibits
+    /// (verified across research/example_rfls), so RED files and already-correct
+    /// files are left untouched (their byte-identity round-trip is preserved). The
+    /// moved section keeps its original bytes; only its position changes. Returns
+    /// true when a repair was applied.
+    /// </para>
+    /// </summary>
+    public bool RepairLightmapOrder()
+    {
+        int geoIndex = Sections.FindIndex(s => s.TypeId == (uint)SectionType.StaticGeometry);
+        int lmIndex = Sections.FindIndex(s => s.TypeId == (uint)SectionType.Lightmaps);
+        if (geoIndex < 0 || lmIndex < 0 || lmIndex < geoIndex)
         {
-            Sections.Add(section);
-        }
-        else
-        {
-            Sections.Insert(endIndex, section);
+            // No geometry, no lightmaps, or lightmaps already precede geometry.
+            return false;
         }
 
-        return section;
+        RflSection lightmaps = Sections[lmIndex];
+        Sections.RemoveAt(lmIndex);
+
+        // lmIndex > geoIndex, so removing the lightmaps section does not shift
+        // geoIndex; inserting there places lightmaps immediately before geometry.
+        Sections.Insert(geoIndex, lightmaps);
+        return true;
     }
 }

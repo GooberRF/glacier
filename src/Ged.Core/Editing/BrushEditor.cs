@@ -616,6 +616,11 @@ public sealed class BrushEditor
             _selectedBrushes.Remove(b.Uid);
         }
 
+        // Deleting a brush that belongs to a group/mover must scrub it from the group and remove its
+        // movers-section copy, dissolving an emptied moving group — otherwise the group keeps a dead
+        // brush UID and an orphan mover animating a phantom (tester reports 3 & 5).
+        var deletedUids = captured.Select(t => t.Brush.Uid).ToList();
+        MovingGroupMaintenance.Snapshot? maintenance = null;
         _doc.Undo.Execute(new RelayCommand($"Delete {captured.Length} brush(es)",
             () =>
             {
@@ -625,10 +630,22 @@ public sealed class BrushEditor
                 }
 
                 host.Dirty = true;
+                maintenance = MovingGroupMaintenance.ApplyMemberDeletion(_doc.Rfl, deletedUids);
                 Changed();
+                if (maintenance is not null)
+                {
+                    _doc.RefreshObjects();
+                }
             },
             () =>
             {
+                bool hadMaintenance = maintenance is not null;
+                if (maintenance is { } snap)
+                {
+                    MovingGroupMaintenance.Revert(_doc.Rfl, snap);
+                    maintenance = null;
+                }
+
                 foreach (var (b, index) in Enumerable.Reverse(captured))
                 {
                     section.Brushes.Insert(Math.Clamp(index, 0, section.Brushes.Count), b);
@@ -636,6 +653,10 @@ public sealed class BrushEditor
 
                 host.Dirty = true;
                 Changed();
+                if (hadMaintenance)
+                {
+                    _doc.RefreshObjects();
+                }
             }));
     }
 
@@ -1186,15 +1207,7 @@ public sealed class BrushEditor
 
     private void InsertSection(RflSection host)
     {
-        int endIndex = _doc.Rfl.Sections.FindIndex(s => s.IsEnd);
-        if (endIndex >= 0)
-        {
-            _doc.Rfl.Sections.Insert(endIndex, host);
-        }
-        else
-        {
-            _doc.Rfl.Sections.Add(host);
-        }
+        _doc.Rfl.InsertSection(host);
     }
 
     private static void Replace(List<Brush> list, List<Brush> contents)

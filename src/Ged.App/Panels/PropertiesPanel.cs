@@ -51,6 +51,14 @@ internal sealed class PropertiesPanel : UserControl
     /// </summary>
     public Func<System.Threading.Tasks.Task<string?>>? PickMeshFile { get; set; }
 
+    // Breathing room below the final field. Without it the last editor of a tall inspector
+    // (trigger, ~50-field entity) sits flush against the viewport's bottom edge and the
+    // horizontal-scroll gutter, so it reads as clipped and is awkward to click. Applied as a
+    // bottom MARGIN on the scroll content (a control's margin always counts toward the scroll
+    // extent, unlike padding on some themed presenters), it guarantees the last row scrolls
+    // fully clear for every inspector routed through SetContent.
+    private const double BottomClearance = 40;
+
     public PropertiesPanel()
     {
         _scroll.Padding = new Avalonia.Thickness(6);
@@ -59,6 +67,15 @@ internal sealed class PropertiesPanel : UserControl
     }
 
     public void Bind(IEditorHost host) => _host = host;
+
+    /// <summary>Assigns the scroll content, stamping bottom clearance so the final field of a
+    /// tall inspector scrolls fully into view instead of being clipped against the bottom edge.</summary>
+    private void SetContent(Control content)
+    {
+        Avalonia.Thickness m = content.Margin;
+        content.Margin = new Avalonia.Thickness(m.Left, m.Top, m.Right, m.Bottom + BottomClearance);
+        _scroll.Content = content;
+    }
 
     /// <summary>Rebuilds the grid for the current selection.</summary>
     public void Refresh()
@@ -84,7 +101,7 @@ internal sealed class PropertiesPanel : UserControl
             if (brushes.Count > 0)
             {
                 int? uid = brushes.Count == 1 ? brushes[0].Uid : (int?)null;
-                _scroll.Content = WrapWithInstanceBanner(uid, BuildBrushInspector(doc, be, brushes));
+                SetContent(WrapWithInstanceBanner(uid, BuildBrushInspector(doc, be, brushes)));
                 return;
             }
         }
@@ -92,7 +109,7 @@ internal sealed class PropertiesPanel : UserControl
         // Face selection (Face / Texture mode): the shared per-face property editor (item 0f).
         if (_host?.BrushEditor is { } bef && bef.SelectedFaces.Count > 0)
         {
-            _scroll.Content = BuildFaceInspector(bef);
+            SetContent(BuildFaceInspector(bef));
             return;
         }
 
@@ -111,43 +128,43 @@ internal sealed class PropertiesPanel : UserControl
             int uid = sel[0].Uid;
             if (sel[0].Model is RflEvent ev && EventSchemaCatalog.Find(ev.ClassName) is { } schema)
             {
-                _scroll.Content = WrapWithInstanceBanner(uid, BuildEventInspector(doc, sel[0], ev, schema));
+                SetContent(WrapWithInstanceBanner(uid, BuildEventInspector(doc, sel[0], ev, schema)));
                 return;
             }
 
             switch (sel[0].Model)
             {
                 case AmbientSound snd:
-                    _scroll.Content = WrapWithInstanceBanner(uid, BuildAmbientSoundInspector(doc, sel[0], snd));
+                    SetContent(WrapWithInstanceBanner(uid, BuildAmbientSoundInspector(doc, sel[0], snd)));
                     return;
                 case AlpineNoteObject note:
-                    _scroll.Content = WrapWithInstanceBanner(uid, BuildNoteInspector(doc, sel[0], note));
+                    SetContent(WrapWithInstanceBanner(uid, BuildNoteInspector(doc, sel[0], note)));
                     return;
                 case AlpineCoronaObject corona:
-                    _scroll.Content = WrapWithInstanceBanner(uid, BuildCoronaInspector(doc, sel[0], corona));
+                    SetContent(WrapWithInstanceBanner(uid, BuildCoronaInspector(doc, sel[0], corona)));
                     return;
                 case AlpineMeshObject mesh:
-                    _scroll.Content = WrapWithInstanceBanner(uid, BuildMeshInspector(doc, sel[0], mesh));
+                    SetContent(WrapWithInstanceBanner(uid, BuildMeshInspector(doc, sel[0], mesh)));
                     return;
                 case Light light:
-                    _scroll.Content = WrapWithInstanceBanner(uid, BuildLightInspector(doc, sel[0], light));
+                    SetContent(WrapWithInstanceBanner(uid, BuildLightInspector(doc, sel[0], light)));
                     return;
                 case RoomEffect fx:
-                    _scroll.Content = WrapWithInstanceBanner(uid, BuildRoomEffectInspector(doc, sel[0], fx));
+                    SetContent(WrapWithInstanceBanner(uid, BuildRoomEffectInspector(doc, sel[0], fx)));
                     return;
                 case EaxEffect eax:
-                    _scroll.Content = WrapWithInstanceBanner(uid, BuildEaxInspector(doc, sel[0], eax));
+                    SetContent(WrapWithInstanceBanner(uid, BuildEaxInspector(doc, sel[0], eax)));
                     return;
             }
 
             if (ObjectInspectorCatalog.For(sel[0].Kind).Count > 0)
             {
-                _scroll.Content = WrapWithInstanceBanner(uid, BuildObjectInspector(doc, sel[0]));
+                SetContent(WrapWithInstanceBanner(uid, BuildObjectInspector(doc, sel[0])));
                 return;
             }
         }
 
-        _scroll.Content = WrapWithInstanceBanner(sel.Count == 1 ? sel[0].Uid : (int?)null, BuildGrid(doc, sel));
+        SetContent(WrapWithInstanceBanner(sel.Count == 1 ? sel[0].Uid : (int?)null, BuildGrid(doc, sel)));
     }
 
     // ---- Prefab-instance banner (item 1) --------------------------------------
@@ -1402,7 +1419,7 @@ internal sealed class PropertiesPanel : UserControl
         var panel = new StackPanel { Spacing = 2 };
         panel.Children.Add(Header(title));
         AppendReflectedRows(panel, doc, new[] { (model, section) }, exclude: null);
-        _scroll.Content = panel;
+        SetContent(panel);
     }
 
     private Control BuildGrid(EditorDocument doc, List<LevelObject> sel)
@@ -1726,12 +1743,12 @@ internal sealed class PropertiesPanel : UserControl
         TextWrapping = TextWrapping.Wrap,
     };
 
-    private void ShowEmpty(string message) => _scroll.Content = new TextBlock
+    private void ShowEmpty(string message) => SetContent(new TextBlock
     {
         Text = message,
         Opacity = 0.6,
         Margin = new Avalonia.Thickness(4),
-    };
+    });
 
     private static string F(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
 

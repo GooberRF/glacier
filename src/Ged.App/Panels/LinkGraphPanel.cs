@@ -39,6 +39,7 @@ internal sealed class LinkGraphPanel : UserControl
     private bool _suppress;
     private int _nodeCount;
     private int _edgeCount;
+    private bool _hasStructural;
 
     public LinkGraphPanel()
     {
@@ -127,12 +128,18 @@ internal sealed class LinkGraphPanel : UserControl
             FromKey = e.From,
             ToKey = e.To,
             Tag = e,
-            Tooltip = EdgeTooltip(graph, e),
+            // Structural mover edges (member → start keyframe, keyframe chain) are NOT real links:
+            // draw them dashed and in RED's Keyframe-Link colour (default 255,0,0) so they read as
+            // mover structure, distinct from the solid originator (trigger/event) links.
+            Color = e.Structural ? KeyframeLinkColor : DefaultEdgeColor,
+            Dashed = e.Structural,
+            Tooltip = e.Structural ? "mover structure — " + EdgeTooltip(graph, e) : EdgeTooltip(graph, e),
         }).ToList();
 
         _canvas.SetGraph(nodes, edges);
         _nodeCount = graph.Nodes.Count;
         _edgeCount = graph.Edges.Count;
+        _hasStructural = graph.Edges.Any(e => e.Structural);
         UpdateStatus();
     }
 
@@ -201,6 +208,14 @@ internal sealed class LinkGraphPanel : UserControl
     {
         if (_editor is null || _canvas.SelectedEdge?.Tag is not LinkGraphEdge e)
         {
+            return;
+        }
+
+        // Structural mover edges are not persisted links — there is nothing to break. Edit the mover
+        // (dissolve it / delete a keyframe) in Group mode instead.
+        if (e.Structural)
+        {
+            _host?.Dispatcher.ShowMessage("That is mover structure, not a link — edit the mover in Group mode.");
             return;
         }
 
@@ -314,10 +329,18 @@ internal sealed class LinkGraphPanel : UserControl
     private void UpdateStatus()
     {
         string sel = _canvas.SelectedEdge?.Tag is LinkGraphEdge e ? $"  |  edge {e.From} → {e.To} selected (Del to break)" : string.Empty;
+        string legend = _hasStructural ? "  |  dashed red = mover structure (not a link)" : string.Empty;
         _status.Text = $"{_nodeCount} nodes, {_edgeCount} links" +
             (_filter.ShowAll ? " (all)" : " (selection component)") +
-            "  |  drag a port to link, click an edge + Del to break" + sel;
+            "  |  drag a port to link, click an edge + Del to break" + legend + sel;
     }
+
+    /// <summary>The canvas default (solid, blue) originator-link colour.</summary>
+    private static readonly Color DefaultEdgeColor = Color.FromRgb(0x8A, 0xC0, 0xFF);
+
+    /// <summary>RED's "Keyframe Link Color" default (RGB 255,0,0 — RED.exe prefs FUN_00479160 @0x0047938c),
+    /// used for the dashed structural mover edges so they never read as originator links.</summary>
+    private static readonly Color KeyframeLinkColor = Color.FromRgb(0xFF, 0x40, 0x40);
 
     private static string EdgeTooltip(LinkGraph graph, LinkGraphEdge e)
     {

@@ -98,6 +98,15 @@ public sealed class InspectorField
         }
 
         (object owner, PropertyInfo prop) = r.Value;
+
+        // A property may be Nullable<T> — trigger box/sphere dimensions (float?), Team (int?),
+        // One Way (byte?). Convert.ChangeType CANNOT target Nullable<T> (it throws
+        // InvalidCastException: "Invalid cast from 'System.Single' to 'System.Nullable`1[...]'"),
+        // so always convert to the UNDERLYING type and let reflection box the result back into the
+        // (possibly nullable) property. This is what let editing a trigger's numeric fields crash
+        // the editor: the throw escaped the commit handler to the dispatcher.
+        Type target = Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType;
+
         if (Mask != 0)
         {
             uint bits = Convert.ToUInt32(prop.GetValue(owner), CultureInfo.InvariantCulture);
@@ -112,19 +121,56 @@ public sealed class InspectorField
                 bits = (bits & ~Mask) | ((slice << Shift) & Mask);
             }
 
-            prop.SetValue(owner, Convert.ChangeType(bits, prop.PropertyType, CultureInfo.InvariantCulture));
+            if (TryConvert(bits, target, out object? masked))
+            {
+                prop.SetValue(owner, masked);
+            }
+
             return;
         }
 
-        if (Editor == InspectorEditor.Bool && prop.PropertyType == typeof(byte))
+        if (Editor == InspectorEditor.Bool && target == typeof(byte))
         {
             prop.SetValue(owner, (byte)(ToBool(value) ? 1 : 0));
             return;
         }
 
-        if (value is not null)
+        // A null value clears a nullable/reference property (used by undo when the field started
+        // empty); a non-null value converts to the underlying type. A hostile/overflowing value
+        // that the target type can't hold reverts to the prior value rather than throwing.
+        if (value is null)
         {
-            prop.SetValue(owner, Convert.ChangeType(value, prop.PropertyType, CultureInfo.InvariantCulture));
+            if (Nullable.GetUnderlyingType(prop.PropertyType) is not null || !prop.PropertyType.IsValueType)
+            {
+                prop.SetValue(owner, null);
+            }
+
+            return;
+        }
+
+        if (TryConvert(value, target, out object? converted))
+        {
+            prop.SetValue(owner, converted);
+        }
+    }
+
+    /// <summary>
+    /// Converts <paramref name="value"/> to <paramref name="target"/> (the non-nullable underlying
+    /// type). Returns false — a silent revert to the prior value — instead of throwing when the
+    /// value can't be represented (a mid-typing / pasted number outside the type's range, or a
+    /// non-convertible token), so an inspector commit can never crash the editor.
+    /// </summary>
+    private static bool TryConvert(object value, Type target, out object? result)
+    {
+        try
+        {
+            result = Convert.ChangeType(value, target, CultureInfo.InvariantCulture);
+            return true;
+        }
+        catch (Exception ex) when (ex is InvalidCastException or FormatException or OverflowException)
+        {
+            result = null;
+            return false;
         }
     }
 

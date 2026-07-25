@@ -307,7 +307,8 @@ public sealed class GeometryCompiler
         if (_options.BuildSurfaces)
         {
             _options.Progress?.Invoke(new CompileProgress("Calculating lightmap UVs", 0, 1));
-            surfaceResult = new SurfaceBuilder(_options.HighResLightmaps).Build(allFaces, rooms, result, _options.GroupSurfaces);
+            surfaceResult = new SurfaceBuilder(_options.HighResLightmaps)
+                .Build(allFaces, rooms, result, _options.GroupSurfaces, _options.LevelAmbient);
             surfaces = surfaceResult.Surfaces;
         }
 

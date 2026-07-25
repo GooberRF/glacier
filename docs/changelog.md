@@ -4,13 +4,41 @@
 Version 1.2.0-HASH (Beta 3): Not yet released
 --------------------------------
 
+### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Rebuilt the mover, group, and keyframe workflow to match RED. Mover brushes stay normal, fully-editable world brushes, and movers are stored the way RED stores them so they work correctly in-game. Levels made with the earlier movers are repaired automatically when opened — resave to keep the fix.
+
+### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- The mover inspector now exposes every mover and keyframe setting RED does, including No Player Collide, Starts Backwards, Use Travel Time as Speed, Force Orient, all four movement sounds with volumes, and per-keyframe Script Name and Item UIDs.
+- New movers now match RED's defaults: one-way motion, full sound volume, and keyframes with no triggered event or items.
+- Added a Dissolve command to the Moving Groups list that turns a mover back into ordinary static brushes.
+- In Object and Group mode, clicking any member of a group now selects the whole group; hold Alt to select the individual member.
+- Mover keyframes now show RED's gold start diamond and solid silver diamonds, and the keyframe path draws in RED's dedicated red instead of the trigger-link yellow. In the Link Graph, mover structure shows as dashed red edges, distinct from real links.
+- New levels now include a Player Start (a from-scratch level previously had no spawn point and opened to a black screen in-game), and Move Player Start Here now creates one when the level has none.
+- The linter now flags a level that has no Player Start and no multiplayer respawn points.
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
-- Fixed Box, Planar, and Cylinder texture mapping (Texture/UV tools) orienting to each brush's local frame after a brush was rotated, so textures flowed in a different direction on every brush. Mapping now projects in world space like RED: the selected faces map in the same direction with continuous tiling across adjacent brushes, whatever their rotation.
+- Fixed levels built from scratch in Glacier rendering fully black in game even though they played normally: baked lighting is now written where the game reads it, matching RED. Older levels are corrected automatically when opened — resave and repack.
+- Fixed a mover's collision not following it as it moved, and mover collision shapes being generated inside-out; movers now collide exactly where they are drawn, throughout their motion. Rebuild geometry and resave to update an existing mover level.
+- Fixed movers built away from the world origin being displaced in-game, pinning or sticking the player; mover parts are now recorded relative to the start keyframe, the way RED does.
+- Fixed linking a trigger or event to a mover attaching to its brush, which the game cannot resolve (the trigger fired but nothing moved); links now attach to the mover's start keyframe, the connection the game actually follows.
+- Fixed a newly added keyframe dropping an inert, unselectable marker; it is now a real object the instant it is created, visible in the Outliner and draggable into position.
+- Fixed deleting a keyframe removing the mover's brush. Keyframes now seed exactly at the mover's origin like RED and draw on top of geometry so they can always be clicked ("Add @ Cam" still drops one at the camera).
+- Fixed deleting a mover's last keyframe leaving an invalid mover behind (it now dissolves back to static geometry), and deleting a mover's brushes or keyframes no longer leaves an empty moving group.
+- Fixed locking a group not actually locking its members from selection, movement, or deletion.
+- Fixed a freshly placed trigger recording its "attached to", "use clutter", and "airlock room" references as object 0 instead of RED's "none" value (-1).
+- Fixed baked lighting being thrown away when geometry was edited after baking; the preview rebuild now keeps the existing bake (stale until you recalculate, exactly as RED does).
+- Fixed every save after the first reporting "Saved with unbaked lighting changes" when nothing had changed; the reminder now appears only after a real lighting-relevant edit.
+- Fixed Box, Planar, and Cylinder texture mapping following each brush's rotation; mapping now projects in world space like RED, with continuous tiling across adjacent brushes.
+- Fixed the editor crashing when editing a trigger's numeric parameters; numeric fields in every inspector now tolerate partial or invalid text while typing and simply revert instead of crashing.
+- Fixed the Properties panel not scrolling far enough to clear the last field on tall inspectors.
 - Fixed building from source failing when a .NET 9 or newer SDK is installed.
+- Saving a level with movers now records that in its file info, matching how RED marks a mover level.
 
 [@natarii](https://github.com/natarii)
-- Fixed the editor crashing on startup on some Linux desktops: the built-in renderer's offscreen graphics path could conflict with the UI's graphics context; the two now use the same context system and coexist cleanly.
+- Fixed the editor crashing on startup on some Linux desktops: the built-in renderer's offscreen graphics path now shares the UI's graphics context system.
 
 Version 1.1.0-b9e8ed6 (Beta 2): Released 22-07-2026
 --------------------------------

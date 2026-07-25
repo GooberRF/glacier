@@ -223,11 +223,20 @@ internal static class LevelObjectEnumerator
                     break;
 
                 case MoversSection s:
+                    // A mover's member brush is its EDITABLE copy in the brushes section; this movers-
+                    // section copy is projected only so the whole mover stays selectable (for the mover
+                    // inspector) — but with a NULL owning list, so it is not delete/copy-backed. That
+                    // closes the tester's data-loss path where a mis-picked mover object was deleted out
+                    // of the movers section (leaving the group pointing at a dead UID). Removing a mover
+                    // goes through the world brush (Brush mode) or Dissolve, never a raw object delete.
                     foreach (Brush m in s.Movers)
                     {
-                        result.Add(Session(LevelObjectKind.Mover, section, m, s.Movers, sessionHidden,
+                        result.Add(new LevelObject(LevelObjectKind.Mover, section, m, null,
                             () => m.Uid, u => m.Uid = u, () => string.Empty, _ => { },
-                            () => m.Position, p => m.Position = p, () => "Mover"));
+                            () => m.Position, p => m.Position = p,
+                            () => sessionHidden.Contains(m.Uid),
+                            v => { if (v) { sessionHidden.Add(m.Uid); } else { sessionHidden.Remove(m.Uid); } },
+                            () => "Mover"));
                     }
 
                     break;

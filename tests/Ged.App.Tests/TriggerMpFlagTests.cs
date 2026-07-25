@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Controls.Presenters;
 using Avalonia.Headless.XUnit;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Ged.App.Panels;
 using Ged.App.Services;
 using Ged.Core.Editing;
@@ -158,6 +160,18 @@ public sealed class TriggerMpFlagTests
             .Select(g => g.Children[1])
             .First();
 
+    private static TextBox TextBoxFor(PropertiesPanel panel, string label) =>
+        (TextBox)Walk(Root(panel)).OfType<Grid>()
+            .Where(g => g.Children.Count >= 2 && g.Children[0] is TextBlock tb && tb.Text == label)
+            .Select(g => g.Children[1])
+            .First();
+
+    private static void Commit(TextBox box, string text)
+    {
+        box.Text = text;
+        box.RaiseEvent(new RoutedEventArgs(InputElement.LostFocusEvent)); // fires the real commit handler
+    }
+
     [AvaloniaFact]
     public void Toggling_A_Second_Flag_Preserves_The_Script_Name_And_Undo_Restores_It()
     {
@@ -213,5 +227,57 @@ public sealed class TriggerMpFlagTests
         session.Document!.Undo.Undo();
         Assert.Equal($"{Prefix}{(char)Clientside}gate", trig.ScriptName);
         Assert.True(trig.PfClientside);
+    }
+
+    [AvaloniaFact]
+    public void Amending_A_Numeric_Trigger_Parameter_Commits_And_Is_Undoable()
+    {
+        // The tester's report: "whenever I try to amend a trigger's parameters it's crashing."
+        // Sphere Radius / Team are Nullable<T> fields; committing an edit used to throw
+        // InvalidCastException from Convert.ChangeType and take the app down. It must now
+        // commit end-to-end through the real Properties-panel text box and be undoable.
+        var (session, panel, trig) = SetUp("radius_trigger");
+        trig.Shape = Trigger.ShapeSphere;
+        trig.SphereRadius = 10f;
+        trig.Team = 1;
+        panel.Refresh();
+
+        Commit(TextBoxFor(panel, "Sphere Radius"), "5");
+        Assert.Equal(5f, trig.SphereRadius);
+
+        Commit(TextBoxFor(panel, "Team"), "2");
+        Assert.Equal(2, trig.Team);
+
+        // Each amendment is one undo step; undo restores the prior value.
+        session.Document!.Undo.Undo();
+        Assert.Equal(1, trig.Team);
+        session.Document.Undo.Undo();
+        Assert.Equal(10f, trig.SphereRadius);
+    }
+
+    [AvaloniaFact]
+    public void Hostile_Numeric_Input_On_A_Trigger_Never_Throws()
+    {
+        // Mid-typing / pasted junk in a numeric editor must not crash the editor. The commit
+        // fires on focus-loss; a value that can't be parsed or can't fit the field simply
+        // reverts/clamps — it never escapes to the dispatcher.
+        var (_, panel, trig) = SetUp("hostile_trigger");
+        trig.Shape = Trigger.ShapeSphere;
+        trig.SphereRadius = 10f;
+        panel.Refresh();
+
+        TextBox radius = TextBoxFor(panel, "Sphere Radius");
+        foreach (string hostile in new[]
+                 {
+                     string.Empty, "-", ".", "1.", "abc", "   ", "1e30",
+                     "99999999999999999999999999999999", "3,14", "\t", "NaN", "-.",
+                 })
+        {
+            Commit(radius, hostile); // must not throw
+        }
+
+        // The editor still works after the hostile sweep: a real value commits.
+        Commit(radius, "7");
+        Assert.Equal(7f, trig.SphereRadius);
     }
 }
