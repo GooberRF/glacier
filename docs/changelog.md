@@ -1,7 +1,7 @@
 ❄⛏ Glacier Changelog ⛏❄
 ===================================
 
-Version 1.2.0-HASH (Beta 3): Not yet released
+Version 1.2.0-HASH (Beta 3): Released 26-07-2026
 --------------------------------
 
 ### Major features

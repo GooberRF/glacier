@@ -20,7 +20,7 @@
          git short-sha appended by the target below (best-effort; falls back to the bare
          version off a checkout). Disable the SDK's automatic full-sha SourceRevisionId
          append so the short sha from the target below is the one that ships. -->
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

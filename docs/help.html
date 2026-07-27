@@ -416,7 +416,11 @@
       whatever is selected with <em>File ▸ Save Selection As Prefab</em>.</p>
       <h3>Groups</h3>
       <p>Groups bind brushes and objects into a named unit you can select and move together, import
-      and export as <code>.rfg</code> files, and drag-drop into the viewport.</p>
+      and export as <code>.rfg</code> files, and drag-drop into the viewport. <strong>Clicking any
+      member selects the whole group</strong> as a unit; hold <kbd>Alt</kbd> to select the individual
+      member instead (<kbd>Ctrl</kbd> likewise falls through to the single member, adding it to the
+      selection). <strong>Locking a group</strong> protects every member from selection, movement and
+      deletion until you unlock it, exactly as locking an individual item does.</p>
       <h3>Layers</h3>
       <p>Layers organise the level for authoring — show, hide and lock whole layers, with correct
       handling of brush solidity so hiding a layer never changes the compiled result.</p>
@@ -453,6 +457,12 @@
       editable. Mesh objects can reference <code>.v3m</code>, <code>.v3c</code> and <code>.vfx</code>
       effect meshes, and <code>.vfx</code> files appear in the Asset Browser's Meshes tab alongside
       V3M / V3C models.</p>
+      <div class="note"><strong>Every level needs a spawn point.</strong> A level's single
+      <strong>Player Start</strong> marks where single-player begins; a new level is created with one
+      already in place. <em>Player Start (Move)</em> in the Object palette moves it to the placement
+      point — and creates one if the level has none. A level with no Player Start and no multiplayer
+      respawn points has nowhere to spawn and renders black in-game; the level linter
+      (<em>Tools ▸ Run Level Linter</em>) flags this.</div>
 
       <h3>Inspectors</h3>
       <p>The Properties panel shows a purpose-built inspector for each kind — events (with their
@@ -469,8 +479,30 @@
       node graph; node positions persist per level in a sidecar next to the <code>.rfl</code>.</p>
 
       <h3>Movers, keyframes &amp; cutscenes</h3>
-      <p>Movers animate along keyframe paths; cutscenes drive the camera along path nodes. Copy and
-      paste preserve every field, and fresh UIDs are assigned to clones so nothing collides.</p>
+      <p>A <strong>mover</strong> is one or more ordinary world brushes — a door, lift, elevator or
+      rotating platform — bound into a <strong>moving group</strong> that animates along a keyframe
+      path. The brushes stay normal, fully-editable world brushes; grouping them as a mover only adds
+      the motion. Moving groups are listed and managed in the <strong>Moving Groups</strong> list.</p>
+      <p>Each mover follows a chain of <strong>keyframes</strong>. A new keyframe is seeded at the
+      mover's own origin, lined up with the brush, and you drag it out to shape the path;
+      <strong>Add @ Cam</strong> instead drops the keyframe at the camera. Keyframes are real,
+      selectable objects — they show in the Outliner and draw on top of geometry so they can always be
+      clicked. Deleting a keyframe never removes the mover's brush; deleting a mover's <em>last</em>
+      keyframe dissolves the mover back to static geometry. <strong>Dissolve</strong> (on the Moving
+      Groups list) turns any mover back into ordinary static brushes at any time.</p>
+      <p>The mover inspector exposes the full field set: <strong>Movement Type</strong> (one-way,
+      ping-pong, loop, lift), <strong>Is Door</strong>, <strong>Rotate In Place</strong>,
+      <strong>Starts Backwards</strong>, <strong>Use Travel Time as Speed</strong>,
+      <strong>Force Orient</strong>, <strong>No Player Collide</strong>, the starting keyframe, and all
+      four movement sounds — start, looping, stop and close — each with its own volume. Every keyframe
+      carries its own travel, return-travel, pause, accel and decel times, a triggered-event UID, two
+      item UIDs and a script name. A <strong>path preview</strong> ghost can be scrubbed along the path
+      to check the motion.</p>
+      <p><strong>Driving a mover.</strong> Link a trigger or event to the mover to set it moving; the
+      link attaches to the mover's <strong>start keyframe</strong>, which is the connection the game
+      follows. In the Link Graph a mover's internal structure is drawn as dashed edges, distinct from
+      real links. Cutscenes drive the camera along path nodes. Copy and paste preserve every field,
+      and fresh UIDs are assigned to clones so nothing collides.</p>
     </section>
 
     <!-- 9 -->
@@ -490,7 +522,9 @@
       <h3>Mapping &amp; UV</h3>
       <p>From the Texture/UV tab (in Face mode) apply <strong>Box</strong> (<kbd>Ctrl+Q</kbd>),
       <strong>Planar</strong> and <strong>Cylinder</strong> (<kbd>Ctrl+W</kbd>) mapping, set
-      pixels-per-meter, copy/paste UVs, and flip. Two <strong>Fit</strong> buttons snap the mapping to
+      pixels-per-meter, copy/paste UVs, and flip. Box, Planar and Cylinder project in world space, not
+      brush-local, so a texture tiles continuously across adjacent brushes however each is rotated.
+      Two <strong>Fit</strong> buttons snap the mapping to
       the texture tile: <strong>Fit</strong> stretches the face corner-to-corner over the tile (world
       projection), while <strong>Fit (Keep Aspect)</strong> scales uniformly so the texture is not
       distorted. <strong>Verify Textures</strong> (Tools menu) reports faces whose textures are missing
@@ -571,6 +605,10 @@
       Lightmaps</em> (<kbd>L</kbd>) or the combined maps-and-light command. The <strong>Preview
       Lighting</strong> toggle re-bakes small levels with the exact CPU kernel for an accurate
       in-editor preview.</p>
+      <div class="note"><strong>Edits keep the existing bake.</strong> Editing geometry after a bake
+      does not throw the lightmaps away — the surrounding preview rebuild keeps them in place, now
+      stale, until you recalculate lighting, exactly as RED does. Recalculate when you are ready for
+      the shading to catch up.</div>
 
       <h3>Lightmap Method</h3>
       <p>The <em>Level ▸ Lightmap Method</em> flyout stays open while you toggle options. Pick one
