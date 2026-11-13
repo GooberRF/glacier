@@ -50,10 +50,23 @@ public sealed class GroupService
             Objects = objectUids.Distinct().ToList(),
         };
 
-        (GroupsSection content, RflSection host) = EnsureGroups();
+        // A missing groups section is prepared detached and inserted by the command (removed again on
+        // undo), so undoing the first group on a level leaves the file byte-identical.
+        RflSection host = _doc.Rfl.FindOrPrepareSection(SectionType.Groups, () => new GroupsSection(SectionType.Groups), out bool created);
+        var content = (GroupsSection)host.Content!;
         _doc.Undo.Execute(new RelayCommand($"Create group \"{group.Name}\"",
             () => { EnsurePresent(host); content.Groups.Add(group); host.Dirty = true; _doc.NotifyLinksChanged(); },
-            () => { content.Groups.Remove(group); host.Dirty = true; _doc.NotifyLinksChanged(); }));
+            () =>
+            {
+                content.Groups.Remove(group);
+                host.Dirty = true;
+                if (created)
+                {
+                    _doc.Rfl.Sections.Remove(host);
+                }
+
+                _doc.NotifyLinksChanged();
+            }));
         return group;
     }
 

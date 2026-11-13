@@ -16,8 +16,11 @@ public static class CarveOps
     /// <summary>Returns the target's geometry with the cutter's volume removed, or null if disjoint.</summary>
     public static Geometry? Carve(Brush target, Brush cutter)
     {
-        List<CsgFace> targetWorld = BrushWorld.ToWorldFaces(target, 0, out _);
-        List<CsgFace> cutterWorld = BrushWorld.ToWorldFaces(cutter, 0, out _);
+        // The BSP subtract needs both operands' outward shells; RED stores air brushes inward, so take the
+        // outward faces and give the carved result back the target's stored orientation at the end.
+        List<CsgFace> targetWorld = BrushWorld.ToOutwardWorldFaces(target);
+        List<CsgFace> cutterWorld = BrushWorld.ToOutwardWorldFaces(cutter);
+        bool targetInward = BrushOrientation.WorldWindsInward(target);
         if (targetWorld.Count == 0 || cutterWorld.Count == 0 || !Overlaps(targetWorld, cutterWorld))
         {
             return null;
@@ -69,6 +72,11 @@ public static class CarveOps
         }
 
         g.Vertices = pool;
+        if (targetInward)
+        {
+            BrushOrientation.Reverse(g);
+        }
+
         GeometryUtil.RecomputeAllPlanes(g);
         return g.Faces.Count >= 4 ? g : null;
     }

@@ -52,6 +52,13 @@ public static class LevelLighting
         for (int i = 0; i < g.Surfaces.Count; i++)
         {
             Surface s = g.Surfaces[i];
+            if ((uint)s.LightmapIndex >= (uint)pages.Count)
+            {
+                // No stock lightmap page: an Alpine D3D11-only level stores every surface's index as -1
+                // and omits the 0x1200 section (ALPINE-COMPAT-SPEC §1.5); nothing to bake into.
+                continue;
+            }
+
             if (onlyRegion is Aabb region && !Overlaps(s.BoundingBox, region))
             {
                 continue; // incremental: skip surfaces the changed light can't reach

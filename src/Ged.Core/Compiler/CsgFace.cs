@@ -41,6 +41,12 @@ public sealed class CsgFace
 
     public bool IsPortal { get; set; }
 
+    /// <summary>
+    /// A portal face the boolean left in place of a boundary face an air portal brush opened (RED's mode-4
+    /// "Chopping portal"); <see cref="SourceBrushUid"/> is then the portal brush. Always set with <see cref="IsPortal"/>.
+    /// </summary>
+    public bool ChopPortal { get; set; }
+
     /// <summary>Authored texture-scroll velocity (U/V per second), if the face scrolls.</summary>
     public Uv? Scroll { get; set; }
 
@@ -55,6 +61,12 @@ public sealed class CsgFace
     /// <summary>Per-vertex lightmap UVs (parallel to <see cref="Vertices"/>), or null when unbound.</summary>
     public Uv[]? LightmapUvs { get; set; }
 
+    /// <summary>
+    /// A wall-gap fill added by the Alpine build repair (<see cref="BuildRepair"/>): like Alpine RED's
+    /// (<c>build_repair.cpp:1286-1289</c>) it gets no lightmap surface (surface index −1).
+    /// </summary>
+    public bool RepairFill { get; set; }
+
     /// <summary>A shallow copy that shares nothing mutable except the attribute values.</summary>
     public CsgFace CloneAttributes() => new()
     {
@@ -67,9 +79,11 @@ public sealed class CsgFace
         BrushTime = BrushTime,
         FromAir = FromAir,
         IsPortal = IsPortal,
+        ChopPortal = ChopPortal,
         Scroll = Scroll,
         RoomIndex = RoomIndex,
         PortalIndexPlus2 = PortalIndexPlus2,
+        RepairFill = RepairFill,
     };
 
     public CsgFace With(List<CsgVertex> verts)

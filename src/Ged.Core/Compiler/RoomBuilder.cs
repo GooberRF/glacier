@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Ged.Core.IO.Rfl.Sections;
 using Ged.Core.Model;
 
@@ -46,11 +47,12 @@ public sealed class RoomBuilder
     /// list while a diagnosis is capturing.</summary>
     internal static bool CaptureJoins;
 
-    /// <summary>DIAGNOSTIC (test-only): force EVERY membrane through the face-vote branch (bypass the
-    /// geometric-consistent fast path), to measure the pure face-vote result against the hybrid + probe.</summary>
-    internal static bool ForceAlwaysVote;
-
     private static readonly object CaptureLock = new();
+
+    /// <summary>Per-build copy of <see cref="CompileOptions.ForceAlwaysPortalVote"/> (set by <see cref="Build"/>).
+    /// Instance state, never static: it changes the compiled output, so it must not leak into a concurrent
+    /// unrelated compile.</summary>
+    private bool _forceAlwaysVote;
 
     /// <summary>The captured joins of the LAST flood when <see cref="CaptureJoins"/> is set.
     /// Face indices are in the room-builder's face list (pre-compaction).</summary>
@@ -80,8 +82,12 @@ public sealed class RoomBuilder
         IReadOnlyList<PortalMembrane> membranes,
         IReadOnlyList<RoomEffect> effects,
         bool alpine,
-        bool portalFaceVote = true)
+        bool portalFaceVote = true,
+        bool forceAlwaysVote = false,
+        BuildRepair? repair = null,
+        bool insideOutRooms = true)
     {
+        _forceAlwaysVote = forceAlwaysVote;
         int n = faces.Count;
         if (CaptureJoins)
         {
@@ -183,6 +189,12 @@ public sealed class RoomBuilder
         // its largest face lands in.
         MergeJunkRooms(faces, result);
 
+        // --- Inside-out rooms become detail rooms (RED FUN_0048bd90) -------------------
+        if (insideOutRooms)
+        {
+            MarkInsideOutRooms(faces, result);
+        }
+
         // --- Room AABBs from member faces (portal faces added by BuildRecords) ---
         // Computed BEFORE membrane side-resolution so the portal side probe can use RF's own
         // point-in-room rule (smallest-volume containing room) against the member-face extents.
@@ -257,10 +269,259 @@ public sealed class RoomBuilder
             }
         }
 
+        // Alpine build repair pass C (build_repair.cpp:1436-1464 — RED's room builder right after the flood fill,
+        // before detail marking and portal linking): every face, portal copies included, now has its room.
+        if (repair is not null && repair.AfterFlood(faces, facePoolIndices, pool, result))
+        {
+            result.Locator = new RoomLocator(faces, result.FaceRoom);
+            mainFaceRoom = (int[])result.FaceRoom.Clone();
+            for (int i = 0; i < n; i++)
+            {
+                if (mainFaceRoom[i] >= 0 && result.Rooms[mainFaceRoom[i]].IsSubroom != 0)
+                {
+                    mainFaceRoom[i] = -1;
+                }
+            }
+
+            mainLocator = new RoomLocator(faces, mainFaceRoom);
+        }
+
         AssignRoomEffects(result, effects);
         RollUpAlpha(faces, result);
         BuildSubroomLists(faces, result, mainLocator);
         return result;
+    }
+
+    /// <summary>
+    /// RED's inside-out room test. After its flood, RED's room builder turns every non-detail room for which
+    /// <c>FUN_0048bd90</c> answers true into a DETAIL room (RED.exe <c>FUN_00485990</c>, the call at 0x00485e05, then
+    /// <c>FUN_00486a10(room, 1)</c>). The test casts one ray per room: from a face's centroid pushed out along
+    /// the face normal by the room's box extent (width + height + depth), back along the normal for that extent
+    /// plus one metre, against the room's own faces (<c>FUN_0048e240</c> sets the ray up, <c>FUN_0048e2c0</c>
+    /// keeps the nearest hit, 1e-4 tie band, a front-side hit winning a tie). The room is inside-out when the
+    /// nearest face the ray meets is met on its FRONT side (<c>FUN_0048e530</c> == 1): a free-standing lump of
+    /// solid seen from the open space around it — a floating island, a pillar that touches nothing — rather than
+    /// walls seen from behind. A ray that lands on a face's edge is discarded and the room's next face is tried
+    /// (<c>FUN_0048b2e0</c>). Such a room encloses nothing the game can stand in, and as a detail room it hangs
+    /// under the room that contains it instead of standing as a portal-less main room.
+    /// <para>
+    /// Glacier's membrane faces are not in their rooms yet at this point (RED's are), so every portal face
+    /// counts as a wall seen from behind: a ray that meets one first leaves the room as it is.
+    /// </para>
+    /// </summary>
+    private void MarkInsideOutRooms(List<CsgFace> faces, RoomBuildResult result)
+    {
+        int roomCount = result.Rooms.Count;
+        var members = new List<int>[roomCount];
+        var portals = new List<int>();
+        var boxMin = new Vec3[faces.Count];
+        var boxMax = new Vec3[faces.Count];
+        for (int i = 0; i < faces.Count; i++)
+        {
+            var fmn = new Vec3(float.MaxValue, float.MaxValue, float.MaxValue);
+            var fmx = new Vec3(float.MinValue, float.MinValue, float.MinValue);
+            faces[i].GrowAabb(ref fmn, ref fmx);
+            boxMin[i] = fmn;
+            boxMax[i] = fmx;
+            if (faces[i].IsPortal)
+            {
+                portals.Add(i);
+                continue;
+            }
+
+            int r = result.FaceRoom[i];
+            if (r >= 0 && result.Rooms[r].IsSubroom == 0 && faces[i].Vertices.Count >= 3)
+            {
+                (members[r] ??= new List<int>()).Add(i);
+            }
+        }
+
+        int marked = 0;
+        for (int r = 0; r < roomCount; r++)
+        {
+            if (members[r] is { } list && IsInsideOut(faces, boxMin, boxMax, list, portals))
+            {
+                result.Rooms[r].IsSubroom = 1;
+                marked++;
+            }
+        }
+
+        if (marked > 0)
+        {
+            _report.Add(BuildSeverity.Info, $"Rooms: {marked} free-standing solid shell(s) built as detail rooms.");
+        }
+    }
+
+    private static bool IsInsideOut(List<CsgFace> faces, Vec3[] boxMin, Vec3[] boxMax, List<int> members, List<int> portals)
+    {
+        var mn = new Vec3(float.MaxValue, float.MaxValue, float.MaxValue);
+        var mx = new Vec3(float.MinValue, float.MinValue, float.MinValue);
+        foreach (int i in members)
+        {
+            mn = Vec3Math.Min(mn, boxMin[i]);
+            mx = Vec3Math.Max(mx, boxMax[i]);
+        }
+
+        float extent = (mx.X - mn.X) + (mx.Y - mn.Y) + (mx.Z - mn.Z);
+
+        // RED's ray, from the first face of the room that gives a clean one (its flood seed, list order).
+        int verdict = 0;
+        for (int k = 0; k < members.Count && verdict == 0; k++)
+        {
+            verdict = SeenFromOutside(faces, boxMin, boxMax, members, portals, members[k], extent);
+        }
+
+        if (verdict != 1)
+        {
+            return false;
+        }
+
+        // RED's answer hangs on which face seeded the room; on a closed shell every face agrees, and Glacier's
+        // seed is not RED's. So a yes must be the answer of most of the room's faces, not of the seed alone:
+        // a real room whose seed happens to be a ledge top under an opening stays a room.
+        int yes = 0, no = 0, half = members.Count / 2;
+        foreach (int source in members)
+        {
+            int v = SeenFromOutside(faces, boxMin, boxMax, members, portals, source, extent);
+            if (v == 1)
+            {
+                yes++;
+            }
+            else if (v == -1)
+            {
+                no++;
+            }
+
+            if (yes > half || no >= members.Count - half)
+            {
+                break; // decided
+            }
+        }
+
+        return yes > no;
+    }
+
+    /// <summary>
+    /// One inside-out ray from <paramref name="source"/>: 1 = the nearest face is met on its front side (the
+    /// room is seen from outside), -1 = it is not (or the ray meets nothing, or a portal face first), 0 = the ray
+    /// lands on an edge and is discarded.
+    /// </summary>
+    private static int SeenFromOutside(
+        List<CsgFace> faces, Vec3[] boxMin, Vec3[] boxMax, List<int> members, List<int> portals, int source, float extent)
+    {
+        const float Band = 1e-4f;
+        float length = extent + 1f;
+        CsgFace sf = faces[source];
+        Vec3 normal = sf.Plane.Normal;
+        Vec3 origin = sf.Centroid().Add(normal.Scale(extent));
+        Vec3 dir = normal.Scale(-1f);
+        Vec3 end = origin.Add(dir.Scale(length));
+        Vec3 smn = Vec3Math.Min(origin, end), smx = Vec3Math.Max(origin, end);
+
+        bool ambiguous = false;
+        bool hit = false;
+        bool hitFront = false;
+        bool hitPortal = false;
+        float best = 0f;
+        for (int pass = 0; pass < 2 && !ambiguous; pass++)
+        {
+            List<int> set = pass == 0 ? members : portals;
+            foreach (int i in set)
+            {
+                Vec3 gmn = boxMin[i], gmx = boxMax[i];
+                if (gmn.X > smx.X + Band || gmx.X < smn.X - Band || gmn.Y > smx.Y + Band || gmx.Y < smn.Y - Band ||
+                    gmn.Z > smx.Z + Band || gmx.Z < smn.Z - Band)
+                {
+                    continue;
+                }
+
+                CsgFace g = faces[i];
+                float denom = g.Plane.Normal.Dot(dir);
+                if (denom == 0f)
+                {
+                    continue;
+                }
+
+                float t = -g.Plane.Distance(origin) / denom;
+                if (t <= -Band || t > length + Band)
+                {
+                    continue;
+                }
+
+                Vec3 at = origin.Add(dir.Scale(t));
+                int where = PointInFace(g, at, Band);
+                if (where == 0)
+                {
+                    continue;
+                }
+
+                if (where == 2 && t > Band)
+                {
+                    ambiguous = true; // on an edge: RED drops this ray and tries the next face
+                    break;
+                }
+
+                bool front = g.Plane.Distance(origin) > Band;
+                float dist = MathF.Abs(t);
+                if (hit)
+                {
+                    if (dist > best + Band)
+                    {
+                        continue;
+                    }
+
+                    if (dist >= best - Band && !(front && !hitFront) && dist >= best)
+                    {
+                        continue; // a tie goes to the face met on its front side, else to the nearer
+                    }
+                }
+
+                hit = true;
+                best = dist;
+                hitFront = front;
+                hitPortal = pass == 1;
+            }
+        }
+
+        return ambiguous ? 0 : hit && hitFront && !hitPortal ? 1 : -1;
+    }
+
+    /// <summary>0 = outside, 1 = inside, 2 = on an edge (within <paramref name="band"/>).</summary>
+    private static int PointInFace(CsgFace f, Vec3 p, float band)
+    {
+        Vec3 n = f.Plane.Normal;
+        float ax = MathF.Abs(n.X), ay = MathF.Abs(n.Y), az = MathF.Abs(n.Z);
+        int drop = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
+        static (float U, float V) Project(Vec3 q, int drop) => drop switch
+        {
+            0 => (q.Y, q.Z),
+            1 => (q.X, q.Z),
+            _ => (q.X, q.Y),
+        };
+
+        (float pu, float pv) = Project(p, drop);
+        bool inside = false;
+        int count = f.Vertices.Count;
+        for (int i = 0, j = count - 1; i < count; j = i++)
+        {
+            Vec3 a3 = f.Vertices[i].Position, b3 = f.Vertices[j].Position;
+            Vec3 ab = b3.Sub(a3);
+            float len2 = ab.LengthSquared();
+            float t = len2 > 0f ? Math.Clamp(p.Sub(a3).Dot(ab) / len2, 0f, 1f) : 0f;
+            if (a3.Add(ab.Scale(t)).Sub(p).Length() <= band)
+            {
+                return 2;
+            }
+
+            (float au, float av) = Project(a3, drop);
+            (float bu, float bv) = Project(b3, drop);
+            if ((av > pv) != (bv > pv) && pu < (bu - au) * (pv - av) / (bv - av) + au)
+            {
+                inside = !inside;
+            }
+        }
+
+        return inside ? 1 : 0;
     }
 
     /// <summary>
@@ -708,20 +969,26 @@ public sealed class RoomBuilder
         {
             List<(int Face, int A, int B)> shares = entry.Value;
 
-            // An edge lying on a membrane sheet is the doorway boundary: the faces
-            // meeting there belong to different rooms, so it connects nothing (and
-            // must not be revived by the geometric pass either).
+            // An edge lying on a membrane sheet is the doorway boundary: the WORLD faces
+            // meeting there belong to different rooms, so it connects none of them (and
+            // must not be revived by the geometric pass either). Detail faces still pair
+            // across it: RED's room flood collects the portal faces around a face only while
+            // it floods a non-detail room (RED.exe FUN_00485990, the FUN_00426210 test at
+            // 0x00485be7), so a portal never divides a detail room.
+            bool onSheet = false;
             if (sheets.Count > 0)
             {
                 (int a, int b) = entry.Key;
-                if (OnSheet(Vec3Math.Lerp(pool[a], pool[b], 0.5f)))
+                onSheet = OnSheet(Vec3Math.Lerp(pool[a], pool[b], 0.5f));
+                if (onSheet)
                 {
                     foreach ((int Face, int A, int B) share in shares)
                     {
-                        pairedInstances.Add(share);
+                        if (!isDetail[share.Face])
+                        {
+                            pairedInstances.Add(share);
+                        }
                     }
-
-                    continue;
                 }
             }
 
@@ -740,6 +1007,11 @@ public sealed class RoomBuilder
                     }
 
                     int fi = shares[i].Face, fj = shares[j].Face;
+                    if (onSheet && !(isDetail[fi] && isDetail[fj]))
+                    {
+                        continue;
+                    }
+
                     pairedInstances.Add(shares[i]);
                     pairedInstances.Add(shares[j]);
                     if (CanJoin(faces, isDetail, isolated, fi, fj))
@@ -886,9 +1158,9 @@ public sealed class RoomBuilder
                         continue;
                     }
 
-                    if (EdgeOverlapMid(a.P0, a.P1, b.P0, b.P1) is not Vec3 mid || onSheet(mid))
+                    if (EdgeOverlapMid(a.P0, a.P1, b.P0, b.P1) is not Vec3 mid || (!isDetail[a.Face] && onSheet(mid)))
                     {
-                        continue;
+                        continue; // (CanJoin: both detail or both world — only world faces stop at a sheet)
                     }
 
                     adj[a.Face].Add(b.Face);
@@ -1079,7 +1351,7 @@ public sealed class RoomBuilder
 
             // Majority of the membrane's area could not be sliced by the ray (both sides one room).
             bool majorityDrop = area > 0f && dropArea > 0.5f * area;
-            needsVote[mi] = majorityDrop || ForceAlwaysVote;
+            needsVote[mi] = majorityDrop || _forceAlwaysVote;
         }
 
         // --- Group COPLANAR + footprint-adjacent membranes (union-find). RED emits ONE portal per portal

@@ -13,7 +13,7 @@ using Xunit;
 namespace Ged.App.Tests;
 
 /// <summary>
-/// Headless UI coverage for the scripting shell (plan §6): the console evaluates through the
+/// Headless UI coverage for the scripting shell: the console evaluates through the
 /// service, the console panel builds, and — the key AvaloniaEdit integration check — the Script
 /// Editor window opens with its Lua syntax highlighting + theme include loaded, without throwing.
 /// </summary>

@@ -5,9 +5,8 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Ged.Core.Editing;
 using Ged.Core.Editor;
-using Ged.Core.IO.Rfl;
-using Ged.Core.IO.Rfl.Sections;
 using Ged.Core.Model;
+using Ged.Core.Tables;
 
 namespace Ged.App.Dialogs;
 
@@ -15,8 +14,11 @@ namespace Ged.App.Dialogs;
 /// The Level Properties dialog: stock fields (name/author/date,
 /// ambient colour, fog colour/near/far, hardness, geomod texture, multiplayer flag)
 /// plus the Alpine section (RFL version display, legacy cyclic timers/movers,
-/// headlamp start, static-mesh ambient override + value, RF2-style geomod). Every
-/// edit is undo-safe through the document.
+/// headlamp start, static-mesh ambient override + value, RF2-style geomod). The rows are
+/// rendered from the Core schemas (<see cref="LevelPropertiesSchema"/>,
+/// <see cref="AlpineLevelPropertiesSchema"/>) and read/written through
+/// <see cref="LevelPropertyAccess"/> — the same path scripts use (<c>level.props</c> /
+/// <c>level.alpine</c>). Every edit is undo-safe through the document.
 /// </summary>
 internal sealed class LevelPropertiesDialog : Window
 {
@@ -45,10 +47,6 @@ internal sealed class LevelPropertiesDialog : Window
         Content = new ScrollViewer { Content = content };
     }
 
-    private LevelInfoSection? Info => Find<LevelInfoSection>();
-
-    private LevelPropertiesSection? Props => Find<LevelPropertiesSection>();
-
     // ---- level_info -----------------------------------------------------------
 
     private void BuildInfo(StackPanel root)
@@ -62,21 +60,13 @@ internal sealed class LevelPropertiesDialog : Window
             ? "Last Modified: not set (set automatically on save)"
             : $"Last Modified: {_doc.Rfl.Header.TimestampUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} (set automatically on save)"));
 
-        if (Info is not { } info)
+        if (!LevelPropertyAccess.HasSection(_doc, LevelPropertyTarget.LevelInfo))
         {
             root.Children.Add(Note("This level has no level_info section."));
             return;
         }
 
-        RflSection host = Host<LevelInfoSection>()!;
-        root.Children.Add(Text("Level Name", info.LevelName, v => Edit(host, "Level name", info.LevelName, v, x => info.LevelName = x)));
-        root.Children.Add(Text("Author", info.Author, v => Edit(host, "Author", info.Author, v, x => info.Author = x)));
-
-        // Date is NOT user-editable: every real Save/Save As stamps it to the current
-        // date/time automatically (RED parity), mirroring the header timestamp.
-        root.Children.Add(ReadOnly("Date", string.IsNullOrEmpty(info.Date) ? "(set automatically on save)" : info.Date));
-        root.Children.Add(Note("Date is set automatically on save."));
-        root.Children.Add(Check("Multiplayer Level", info.MultiplayerLevel != 0, v => Edit(host, "Multiplayer", info.MultiplayerLevel, B(v), x => info.MultiplayerLevel = x)));
+        AddRows(root, LevelPropertiesSchema.Fields, LevelPropertyTarget.LevelInfo);
     }
 
     // ---- level_properties -----------------------------------------------------
@@ -84,19 +74,13 @@ internal sealed class LevelPropertiesDialog : Window
     private void BuildStock(StackPanel root)
     {
         root.Children.Add(Header("Stock (level_properties)"));
-        if (Props is not { } p)
+        if (!LevelPropertyAccess.HasSection(_doc, LevelPropertyTarget.LevelProperties))
         {
             root.Children.Add(Note("This level has no level_properties section."));
             return;
         }
 
-        RflSection host = Host<LevelPropertiesSection>()!;
-        root.Children.Add(Text("Default Geomod Texture", p.GeomodTexture, v => Edit(host, "Geomod texture", p.GeomodTexture, v, x => p.GeomodTexture = x)));
-        root.Children.Add(IntNum("Hardness (0–100, 0 allowed [Alpine])", p.Hardness, 0, 100, v => Edit(host, "Hardness", p.Hardness, v, x => p.Hardness = x)));
-        root.Children.Add(Color("Ambient Light", p.AmbientColor, c => Edit(host, "Ambient color", p.AmbientColor, c, x => p.AmbientColor = x)));
-        root.Children.Add(Color("Fog Color", p.FogColor, c => Edit(host, "Fog color", p.FogColor, c, x => p.FogColor = x)));
-        root.Children.Add(Num("Fog Near Plane (PS2 only)", p.FogNearPlane, v => Edit(host, "Fog near", p.FogNearPlane, v, x => p.FogNearPlane = x)));
-        root.Children.Add(Num("Fog Far Plane", p.FogFarPlane, v => Edit(host, "Fog far", p.FogFarPlane, v, x => p.FogFarPlane = x)));
+        AddRows(root, LevelPropertiesSchema.Fields, LevelPropertyTarget.LevelProperties);
     }
 
     // ---- alpine_level_properties ----------------------------------------------
@@ -106,78 +90,67 @@ internal sealed class LevelPropertiesDialog : Window
         root.Children.Add(Header("Alpine (alpine_level_properties)"));
         root.Children.Add(Note($"RFL version: {_doc.Rfl.Header.Version} (0x{_doc.Rfl.Header.Version:X})  —  " + SaveTargets.DisplayName(SaveTargets.FromVersion(_doc.Rfl.Header.Version))));
 
-        // Read current values (defaults when the section is absent); the section is
-        // only created lazily when a field is actually edited, so opening the dialog
-        // on a stock level never adds it.
-        AlpineLevelPropertiesSection? cur = Find<AlpineLevelPropertiesSection>();
-
-        root.Children.Add(Check("Legacy Cyclic Timers", (cur?.LegacyCyclicTimers ?? 0) != 0, v => SetAlpineByte("Legacy cyclic timers", a => a.LegacyCyclicTimers, (a, x) => a.LegacyCyclicTimers = x, B(v))));
-        root.Children.Add(Check("Legacy Movers", (cur?.LegacyMovers ?? 0) != 0, v => SetAlpineByte("Legacy movers", a => a.LegacyMovers, (a, x) => a.LegacyMovers = x, B(v))));
-        root.Children.Add(Check("Player Starts With Headlamp", (cur?.StartsWithHeadlamp ?? 0) != 0, v => SetAlpineByte("Headlamp", a => a.StartsWithHeadlamp, (a, x) => a.StartsWithHeadlamp = x, B(v))));
-        root.Children.Add(Check("Override Static-Mesh Ambient", (cur?.OverrideStaticMeshAmbientLightModifier ?? 0) != 0, v => SetAlpineByte("SM ambient override", a => a.OverrideStaticMeshAmbientLightModifier, (a, x) => a.OverrideStaticMeshAmbientLightModifier = x, B(v))));
-        root.Children.Add(Num("Static-Mesh Ambient Value", cur?.StaticMeshAmbientLightModifier ?? 1f, v => SetAlpineFloat("SM ambient value", a => a.StaticMeshAmbientLightModifier, (a, x) => a.StaticMeshAmbientLightModifier = x, v)));
-        root.Children.Add(Check("RF2-Style (brush) Geomod", (cur?.Rf2StyleGeomod ?? 0) != 0, v => SetAlpineByte("RF2 geomod", a => a.Rf2StyleGeomod, (a, x) => a.Rf2StyleGeomod = x, B(v))));
+        // Current values read through the shared accessor (defaults while the section is absent);
+        // the section is only created by an actual edit, inside that edit's undo step, so opening
+        // the dialog on a stock level never adds it and undoing the first edit removes it again.
+        AddRows(root, AlpineLevelPropertiesSchema.Fields, LevelPropertyTarget.AlpineLevelProperties);
     }
 
-    private void SetAlpineByte(string desc, Func<AlpineLevelPropertiesSection, byte> get, Action<AlpineLevelPropertiesSection, byte> set, byte value)
-    {
-        AlpineLevelPropertiesSection alp = EnsureAlpine();
-        RflSection host = Host<AlpineLevelPropertiesSection>()!;
-        Edit(host, desc, get(alp), value, x => set(alp, x));
-    }
+    // ---- schema-driven rows ---------------------------------------------------
 
-    private void SetAlpineFloat(string desc, Func<AlpineLevelPropertiesSection, float> get, Action<AlpineLevelPropertiesSection, float> set, float value)
+    /// <summary>
+    /// One row per schema field stored in <paramref name="target"/>, in schema order: the editor
+    /// kind picks the control (text, checkbox, ranged integer, number, colour; read-only display),
+    /// and every value is read and written through <see cref="LevelPropertyAccess"/>.
+    /// </summary>
+    private void AddRows(StackPanel root, System.Collections.Generic.IReadOnlyList<LevelPropertyField> fields, LevelPropertyTarget target)
     {
-        AlpineLevelPropertiesSection alp = EnsureAlpine();
-        RflSection host = Host<AlpineLevelPropertiesSection>()!;
-        Edit(host, desc, get(alp), value, x => set(alp, x));
-    }
-
-    // ---- helpers --------------------------------------------------------------
-
-    private AlpineLevelPropertiesSection EnsureAlpine()
-    {
-        RflSection host = _doc.Rfl.GetOrCreateSection(SectionType.AlpineLevelProperties, () => new AlpineLevelPropertiesSection { Version = 4 });
-        var alp = (AlpineLevelPropertiesSection)host.Content!;
-        if (alp.Version < 4)
+        foreach (LevelPropertyField f in fields)
         {
-            alp.Version = 4;
-        }
-
-        return alp;
-    }
-
-    private void Edit<T>(RflSection host, string desc, T oldValue, T newValue, Action<T> apply) =>
-        _doc.EditValue(host, desc, oldValue, newValue, apply);
-
-    private static byte B(bool v) => v ? (byte)1 : (byte)0;
-
-    private T? Find<T>()
-        where T : class, IRflSectionContent
-    {
-        foreach (RflSection s in _doc.Rfl.Sections)
-        {
-            if (s.Content is T t)
+            if (f.Target == target)
             {
-                return t;
+                root.Children.Add(Row(f));
             }
         }
-
-        return null;
     }
 
-    private RflSection? Host<T>()
-        where T : class, IRflSectionContent
+    private Control Row(LevelPropertyField f)
     {
-        foreach (RflSection s in _doc.Rfl.Sections)
+        InspectorField field = f.Field;
+        object? value = LevelPropertyAccess.Get(_doc, f);
+        void Set(object? v) => LevelPropertyAccess.Set(_doc, f, v);
+
+        if (field.ReadOnly)
         {
-            if (s.Content is T)
+            // Date is NOT user-editable: every real Save/Save As stamps it to the current
+            // date/time automatically (RED parity), mirroring the header timestamp.
+            var stack = new StackPanel { Spacing = 6 };
+            bool date = field.EffectiveKey == "date";
+            string shown = value switch
             {
-                return s;
+                string s when s.Length > 0 => s,
+                null or "" when date => "(set automatically on save)",
+                null or "" => "(not set)",
+                _ => System.Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            };
+            stack.Children.Add(ReadOnly(field.Label, shown));
+            if (date)
+            {
+                stack.Children.Add(Note("Date is set automatically on save."));
             }
+
+            return stack;
         }
 
-        return null;
+        return field.Editor switch
+        {
+            InspectorEditor.Bool => Check(field.Label, value is true, v => Set(v)),
+            InspectorEditor.Int =>
+                IntNum(field.Label, value is int i ? i : 0, field.Min is double lo ? (int)lo : int.MinValue, field.Max is double hi ? (int)hi : int.MaxValue, v => Set(v)),
+            InspectorEditor.Float => Num(field.Label, value is float fl ? fl : 0f, field.Min, field.Max, v => Set(v)),
+            InspectorEditor.Color => Color(field.Label, value is RfColor c ? c : default, c => Set(c)),
+            _ => Text(field.Label, value as string ?? string.Empty, v => Set(v)),
+        };
     }
 
     private static Control Header(string t) => new TextBlock { Text = t, FontWeight = FontWeight.Bold, Margin = new Avalonia.Thickness(0, 8, 0, 2) };
@@ -203,9 +176,15 @@ internal sealed class LevelPropertiesDialog : Window
     private static Control ReadOnly(string label, string value) =>
         Labeled(label, new TextBox { Text = value, IsReadOnly = true, IsEnabled = false });
 
-    private static Control Num(string label, float value, Action<float> set)
+    private static Control Num(string label, float value, double? min, double? max, Action<float> set)
     {
-        var box = new NumericUpDown { Value = (decimal)value, Increment = 1m, Minimum = -1000000m, Maximum = 1000000m };
+        // A ranged field (the payload rules) keeps to Alpine RED's dialog limits, in tenths when the range is small.
+        decimal lo = min is double l ? (decimal)l : -1000000m;
+        decimal hi = max is double h ? (decimal)h : 1000000m;
+        var box = new NumericUpDown
+        {
+            Value = Math.Clamp((decimal)value, lo, hi), Increment = hi - lo <= 10m ? 0.1m : 1m, Minimum = lo, Maximum = hi,
+        };
         box.ValueChanged += (_, _) => set((float)(box.Value ?? 0));
         return Labeled(label, box);
     }

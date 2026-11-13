@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The UI-free automation layer: the command handlers (info / run / build / holes / lint /
+       summary / save / new / open / snapshot) that the glacier-cli headless host and the editor's
+       command-line bridge both execute, the headless session, the editor-settings reader, the
+       path allow-list, the bridge wire protocol (named pipe), and the offscreen level renderer used by
+       glacier-cli render (Ged.Rendering; it runs in the CLI process, never in the editor). No Avalonia;
+       no new packages. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Ged.Automation</RootNamespace>
+    <AssemblyName>Ged.Automation</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ged.Core\Ged.Core.csproj" />
+    <ProjectReference Include="..\Ged.Scripting\Ged.Scripting.csproj" />
+    <!-- The render command (glacier-cli render) draws offscreen with the editor's own renderer. -->
+    <ProjectReference Include="..\Ged.Rendering\Ged.Rendering.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ged.Automation.Tests" />
+    <InternalsVisibleTo Include="Ged.App.Tests" />
+  </ItemGroup>
+
+</Project>

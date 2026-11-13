@@ -197,7 +197,8 @@ public sealed partial class MainWindow
             }
         }
 
-        return Document is { } doc && doc.Selection.Count > 0 ? GizmoSelKind.Object : GizmoSelKind.None;
+        // Read-only (Alpine Faction 1.5) objects get no gizmo: a selection of only those cannot be transformed.
+        return Document is { } doc && doc.Selection.Any(o => !o.IsReadOnly) ? GizmoSelKind.Object : GizmoSelKind.None;
     }
 
     private bool ToolAllowed(GizmoTool t) => TransformableKind() switch
@@ -637,9 +638,9 @@ public sealed partial class MainWindow
     private List<int> TransformableBrushUids(BrushEditor be) =>
         be.SelectedBrushes.Where(u => !be.IsBrushLocked(u)).ToList();
 
-    /// <summary>Selected objects excluding locked ones (untransformable even if stale-selected).</summary>
+    /// <summary>Selected objects excluding locked and read-only ones (untransformable even if stale-selected).</summary>
     private List<LevelObject> TransformableObjects(EditorDocument doc) =>
-        doc.Selection.Where(o => !doc.IsLocked(o)).ToList();
+        doc.Selection.Where(o => !doc.IsLocked(o) && !o.IsReadOnly).ToList();
 
     private void GizmoMoveSubGeometry(CoreVec3 delta)
     {

@@ -134,6 +134,14 @@ public static class BrushOps
 
         GeometryUtil.WeldVertices(result);
         BrushFactory.OrientOutward(result);
+
+        // Keep the source's stored orientation: an air brush (stored inward, as RED does) clips into
+        // inward pieces, so the pieces rebuild the same in RED.
+        if (BrushOrientation.MeasureLocal(g) == BrushWinding.Inward)
+        {
+            BrushOrientation.Reverse(result);
+        }
+
         GeometryUtil.AssignAllPlanarUv(result);
         return GeometryUtil.Validate(result) ? result : null;
     }
@@ -304,7 +312,9 @@ public static class BrushOps
     /// <summary>
     /// Mirrors a brush across the plane through its world centroid perpendicular to
     /// a world axis (0=X, 1=Y, 2=Z). Position is preserved; the local geometry is
-    /// reflected and re-oriented. [ALPINE] Group and object mirroring have dedicated operators.
+    /// reflected and every face reversed (a reflection inverts handedness), so the brush keeps
+    /// its stored orientation — outward for a solid, inward for an air brush, as RED stores them.
+    /// [ALPINE] Group and object mirroring have dedicated operators.
     /// </summary>
     public static void Mirror(Brush brush, int axis)
     {
@@ -319,7 +329,8 @@ public static class BrushOps
             brush.Geometry.Vertices[i] = brush.Rotation.InverseTransform(world.Sub(brush.Position));
         }
 
-        BrushFactory.OrientOutward(brush.Geometry);
+        BrushOrientation.Reverse(brush.Geometry);
+        GeometryUtil.RecomputeAllPlanes(brush.Geometry);
         GeometryUtil.AssignAllPlanarUv(brush.Geometry);
     }
 

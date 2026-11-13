@@ -20,11 +20,27 @@ public static class BrushWorld
     /// Emits one <see cref="CsgFace"/> per brush face (≥3 vertices), assigning a
     /// stable sequential face id starting at <paramref name="faceIdStart"/>.
     /// Returns the faces and the next free face id. Faces keep their authored
-    /// outward winding; texture names, flags and smoothing groups are carried
+    /// winding (outward for a solid, inward for an air brush as RED stores it — an air brush stored
+    /// outward is presented inward); texture names, flags and smoothing groups are carried
     /// through. Portal faces (texture &lt; 0) get an empty texture name and are
     /// flagged as portals.
     /// </summary>
     public static List<CsgFace> ToWorldFaces(Brush brush, int faceIdStart, out int nextFaceId)
+    {
+        // The compiler always sees an air brush the way RED stores it — faces wound inward
+        // (Editing.BrushOrientation) — so a level written by an older Glacier (air stored outward) builds
+        // exactly as it will after a save re-stores it (corner order reversed, as BrushOrientation.Reverse
+        // does, so the planes come out bit-identical), and exactly as RED-made levels build.
+        bool reverse = Editing.BrushOrientation.RequiresInward(brush.Flags)
+            && Editing.BrushOrientation.Measure(brush) == Editing.BrushWinding.Outward;
+        return ToWorldFacesCore(brush, faceIdStart, reverse, out nextFaceId);
+    }
+
+    /// <summary><see cref="ToWorldFaces"/> with the stored winding as-is.</summary>
+    private static List<CsgFace> ToWorldFacesAsStored(Brush brush, int faceIdStart, out int nextFaceId) =>
+        ToWorldFacesCore(brush, faceIdStart, reverse: false, out nextFaceId);
+
+    private static List<CsgFace> ToWorldFacesCore(Brush brush, int faceIdStart, bool reverse, out int nextFaceId)
     {
         var result = new List<CsgFace>();
         Geometry g = brush.Geometry;
@@ -59,6 +75,11 @@ public static class BrushWorld
                 verts.Add(new CsgVertex(ToWorld(rot, pos, local), fv.TextureCoords));
             }
 
+            if (reverse)
+            {
+                verts.Reverse();
+            }
+
             bool portal = f.Texture < 0;
             string tex = !portal && f.Texture < g.Textures.Count ? g.Textures[f.Texture] : string.Empty;
 
@@ -88,6 +109,26 @@ public static class BrushWorld
 
         nextFaceId = faceId;
         return result;
+    }
+
+    /// <summary>
+    /// <see cref="ToWorldFaces"/> with every face wound OUTWARD of the brush volume, whichever way the brush
+    /// is stored (RED stores an air brush inward — <see cref="Editing.BrushOrientation"/>). For the editor
+    /// tools that need a solid's outward shell — point-in-brush tests, carve operands — never the compiler,
+    /// which decides orientation itself.
+    /// </summary>
+    public static List<CsgFace> ToOutwardWorldFaces(Brush brush)
+    {
+        List<CsgFace> faces = ToWorldFacesAsStored(brush, 0, out _);
+        if (Editing.BrushOrientation.WorldWindsInward(brush))
+        {
+            foreach (CsgFace f in faces)
+            {
+                f.Flip();
+            }
+        }
+
+        return faces;
     }
 
     /// <summary>Total number of face-id slots a brush consumes (all faces, including tiny ones).</summary>

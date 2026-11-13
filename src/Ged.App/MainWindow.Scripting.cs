@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -12,7 +13,7 @@ using Ged.Core.Scripting;
 namespace Ged.App;
 
 /// <summary>
-/// Scripting UI wiring (plan §6): the Script Console panel, Script Editor window, the Scripts menu,
+/// Scripting UI wiring: the Script Console panel, Script Editor window, the Scripts menu,
 /// palette/keymap registration of user scripts, and the bridge that hands the runner the live
 /// document services (<see cref="IScriptEnvironment"/>). Built as a partial so the shared
 /// <c>MainWindow.cs</c> only gains three one-line touch points (init call, dock arg, menu insert).
@@ -81,7 +82,7 @@ public sealed partial class MainWindow : IScriptEnvironment
             return;
         }
 
-        foreach (ScriptLibraryEntry e in _scriptLibrary.Entries)
+        foreach (ScriptLibraryEntry e in _scriptLibrary.Scripts)
         {
             var item = new MenuItem { Header = e.Title };
             ScriptLibraryEntry captured = e;
@@ -148,7 +149,7 @@ public sealed partial class MainWindow : IScriptEnvironment
 
     private ScriptLibraryEntry FindEntry(string commandId)
     {
-        foreach (ScriptLibraryEntry e in _scriptLibrary!.Entries)
+        foreach (ScriptLibraryEntry e in _scriptLibrary!.Scripts)
         {
             if (e.Metadata.IsCommand && e.CommandId == commandId)
             {
@@ -163,7 +164,7 @@ public sealed partial class MainWindow : IScriptEnvironment
     {
         LoadScriptLibrary();
         RefreshScriptMenus();
-        _dispatcher.ShowMessage($"Scripts reloaded ({_scriptLibrary?.Entries.Count ?? 0} found).");
+        _dispatcher.ShowMessage($"Scripts reloaded ({_scriptLibrary?.Scripts.Count() ?? 0} found).");
     }
 
     private void RunLibraryScript(ScriptLibraryEntry entry)
@@ -240,6 +241,18 @@ public sealed partial class MainWindow : IScriptEnvironment
 
     // ---- IScriptEnvironment ---------------------------------------------------
 
+    private Ged.Automation.PathAllowList? _scriptFilePolicy;
+
+    /// <summary>The folders editor script runs may read model files from / write meshes to (level folder, user_maps, scripts).</summary>
+    private Ged.Automation.PathAllowList ScriptFilePolicy => _scriptFilePolicy ??= new Ged.Automation.PathAllowList(ScriptFileRoots);
+
+    private System.Collections.Generic.IEnumerable<string?> ScriptFileRoots()
+    {
+        yield return Document?.Path is { Length: > 0 } p ? System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(p)) : null;
+        yield return _session.RfInstallDir is { Length: > 0 } rf ? System.IO.Path.Combine(rf, "user_maps") : null;
+        yield return Ged.Core.AppPaths.ScriptsDirectory;
+    }
+
     ScriptServices? IScriptEnvironment.BuildServices(IScriptProgressSink progress, IScriptConfirmation confirmation)
     {
         if (Document is null)
@@ -253,7 +266,12 @@ public sealed partial class MainWindow : IScriptEnvironment
             Brushes = BrushEd,
             Links = _links,
             Groups = _groups,
+            Movers = _movers,
+            Prefabs = _prefabInstances,
+            Metadata = _metadata,
+            PrefabsDirectory = PrimaryPrefabDir(),
             Assets = _session.Vfs,
+            Catalogs = _session.Catalogs,
             InstallDirectory = _session.RfInstallDir,
             ScanOptionsFactory = _session.BuildScanOptions,
             Progress = progress,
@@ -263,12 +281,53 @@ public sealed partial class MainWindow : IScriptEnvironment
             DefaultFloorTexture = _settings.DefaultFloorTexture,
             DefaultWallTexture = _settings.DefaultWallTexture,
             DefaultCeilingTexture = _settings.DefaultCeilingTexture,
+
+            // Builds/lights compile with the user's actual build + lightmap method through the shared
+            // Core factory, and the editor adopts the result (viewport, dirty state, Build Output) the
+            // same way as after a toolbar build; ops.playtest queues the Play-button flow.
+            BuildSettings = _buildController?.CurrentBuildSettings,
+            TextureTraits = _buildController?.TextureTraits,
+
+            // level.import_mesh reads only under the level's folder, user_maps and the scripts library
+            // (the same roots command-line runs get; explicit --allow-import files are headless-only).
+            ImportFileAccess = path => ScriptFilePolicy.RequireScriptRead(path, "level.import_mesh"),
+            MeshWriteAccess = path => ScriptFilePolicy.RequireScriptWrite(path, "level.import_mesh"),
+            OperationsFactory = ctx => new AppScriptOperations(
+                ctx, _buildController, ShowScriptHoleMarkers, mode => _pendingScriptPlaytest = mode),
         };
     }
 
     void IScriptEnvironment.OnScriptApplied()
     {
         RebuildScene();
+        RefreshSelectionOverlay();
+    }
+
+    /// <summary>A playtest a script queued with <c>ops.playtest</c>; launched once the run finishes.</summary>
+    private Ged.Core.Playtest.PlaytestMode? _pendingScriptPlaytest;
+
+    void IScriptEnvironment.OnScriptFinished(ScriptRunResult result)
+    {
+        if (_pendingScriptPlaytest is not { } mode)
+        {
+            return;
+        }
+
+        _pendingScriptPlaytest = null;
+        if (!result.Success || result.WasDryRun)
+        {
+            return; // a failed or rolled-back run never launches
+        }
+
+        // Same path as the Play button (save → stage → launch). Posted so it runs after the script
+        // run has fully unwound on the UI thread.
+        Avalonia.Threading.Dispatcher.UIThread.Post(() => _ = PlayAsync(mode, fromCamera: false));
+    }
+
+    /// <summary>Draws hole markers for a script hole check (no camera jump — the script keeps control).</summary>
+    private void ShowScriptHoleMarkers(IReadOnlyList<Ged.Core.Model.Vec3> holes)
+    {
+        _holeLines = HoleMarkerLines(holes);
         RefreshSelectionOverlay();
     }
 }

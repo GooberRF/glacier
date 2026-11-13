@@ -63,7 +63,7 @@ public sealed class GeometryAssembler
                 RoomIndex = cf.RoomIndex,
             };
 
-            bool hasLm = cf.SurfaceIndex >= 0 && (cf.SurfaceIndex & 0xFFFF) != 0xFFFF && cf.LightmapUvs is not null;
+            bool hasLm = cf.SurfaceIndex >= 0 && (short)(cf.SurfaceIndex & 0xFFFF) >= 0 && cf.LightmapUvs is not null;
             for (int v = 0; v < cf.Vertices.Count; v++)
             {
                 var fv = new FaceVertex

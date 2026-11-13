@@ -20,5 +20,5 @@ public delegate void ScriptBrushAction(ScriptBrushHandle brush);
 /// <summary>A face predicate for face queries.</summary>
 public delegate bool ScriptFacePredicate(ScriptFaceHandle face);
 
-/// <summary>A lint-finding contributor callback (plan §5.4 / §2.5).</summary>
+/// <summary>A lint-finding contributor callback.</summary>
 public delegate void ScriptLintVisitor(ScriptObjectHandle obj);

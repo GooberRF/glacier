@@ -1,0 +1,260 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Text.Json.Nodes;
+
+namespace Ged.Automation.Tools;
+
+/// <summary>How a tool call becomes an automation request (set by the server, never by the call).</summary>
+public sealed class ToolRequestOptions
+{
+    /// <summary>The request origin (labels "AI: …" for "mcp").</summary>
+    public string Origin { get; init; } = "mcp";
+
+    /// <summary>The largest image side a render may use (the server's <c>--max-image</c>).</summary>
+    public int MaxImageSide { get; init; } = ToolCatalog.DefaultImageSide;
+
+    /// <summary>Supplies the script name of a <c>run_lua</c> call that names none (e.g. "mcp-3.lua").</summary>
+    public Func<string>? DefaultScriptName { get; init; }
+
+    /// <summary>Supplies the PNG path a render writes (inside the session's scratch folder).</summary>
+    public Func<string>? RenderOutPath { get; init; }
+}
+
+/// <summary>
+/// Validates a tool call's arguments against its <see cref="ToolSpec"/> and maps them onto the automation
+/// request the tool runs. Unknown or ill-typed arguments are rejected with a <c>usage</c> error naming the
+/// argument; nothing a call sends can add an authorisation argument (the catalog has none to map).
+/// </summary>
+public static class ToolRequests
+{
+    /// <summary>The request for a call of <paramref name="spec"/> with <paramref name="arguments"/>, plus notes about adjusted values.</summary>
+    public static (AutomationRequest Request, List<string> Notes) Build(ToolSpec spec, JsonObject? arguments, ToolRequestOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        ArgumentNullException.ThrowIfNull(options);
+        JsonObject given = arguments ?? new JsonObject();
+        var notes = new List<string>();
+        var args = new JsonObject();
+        foreach (KeyValuePair<string, JsonNode?> kv in given)
+        {
+            if (spec.Args.All(a => a.Name != kv.Key))
+            {
+                string known = spec.Args.Count == 0 ? "it takes no arguments" : "arguments: " + string.Join(", ", spec.Args.Select(a => a.Name));
+                throw Usage($"Unknown argument '{kv.Key}' for {spec.Name} ({known}).");
+            }
+        }
+
+        foreach (ToolArg a in spec.Args)
+        {
+            if (!given.TryGetPropertyValue(a.Name, out JsonNode? value) || value is null)
+            {
+                if (a.Required)
+                {
+                    throw Usage($"{spec.Name} needs '{a.Name}': {a.Doc}");
+                }
+
+                continue;
+            }
+
+            JsonNode checkedValue = Check(spec, a, value);
+            if (a.CommandName.Length > 0)
+            {
+                args[a.CommandName] = checkedValue;
+            }
+        }
+
+        foreach ((string key, string v) in spec.FixedArgs ?? new Dictionary<string, string>())
+        {
+            args[key] = v;
+        }
+
+        switch (spec.Name)
+        {
+            case "run_lua":
+                if (!args.ContainsKey("name") && options.DefaultScriptName is { } next)
+                {
+                    args["name"] = next();
+                }
+
+                switch (Str(given, "build"))
+                {
+                    case "sealed":
+                        args["build"] = true;
+                        break;
+                    case "lit":
+                        args["build"] = true;
+                        args["light"] = true;
+                        break;
+                }
+
+                if (Str(given, "build") is "sealed" or "lit" && given["dry_run"]?.GetValue<bool>() == true)
+                {
+                    throw Usage("run_lua: build cannot be combined with dry_run (a dry run changes nothing to build).");
+                }
+
+                break;
+
+            case "build":
+                if (!args.ContainsKey("sealed"))
+                {
+                    args["sealed"] = true; // MCP default: holes and lint need a sealed build
+                }
+
+                break;
+
+            case "render_plan":
+            case "render_view":
+            {
+                int cap = Math.Clamp(options.MaxImageSide, 16, ToolCatalog.MaxImageSide);
+                int w = Math.Min(ToolCatalog.DefaultImageSide, cap), h = w;
+                if (Str(given, "size") is not { } size)
+                {
+                    // No fixed size: the longest side, so a region framing can take the region's proportions.
+                    args["maxSide"] = (double)w;
+                }
+                else
+                {
+                    string[] parts = size.ToLowerInvariant().Split('x');
+                    if (parts.Length != 2 || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out w)
+                        || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out h) || w < 16 || h < 16)
+                    {
+                        throw Usage($"{spec.Name}: size must be WIDTHxHEIGHT with each side at least 16, e.g. 1024x768 (got '{size}').");
+                    }
+
+                    if (w > cap || h > cap)
+                    {
+                        double scale = Math.Min((double)cap / w, (double)cap / h);
+                        int cw = Math.Max(16, (int)Math.Floor(w * scale)), ch = Math.Max(16, (int)Math.Floor(h * scale));
+                        notes.Add($"The requested size {w}x{h} exceeds this server's image cap ({cap} per side): rendered at {cw}x{ch}.");
+                        (w, h) = (cw, ch);
+                    }
+
+                    args["width"] = (double)w;
+                    args["height"] = (double)h;
+                }
+
+                if (options.RenderOutPath is { } outPath)
+                {
+                    args["out"] = outPath();
+                }
+
+                break;
+            }
+        }
+
+        args["origin"] = options.Origin;
+        return (new AutomationRequest(spec.Command, args), notes);
+    }
+
+    private static JsonNode Check(ToolSpec spec, ToolArg a, JsonNode value)
+    {
+        string where = $"{spec.Name}: '{a.Name}'";
+        switch (a.Type)
+        {
+            case "string":
+            {
+                if (value is not JsonValue v || !v.TryGetValue(out string? s))
+                {
+                    throw Usage($"{where} must be a string.");
+                }
+
+                if (a.Enum is { } options && !options.Contains(s, StringComparer.Ordinal))
+                {
+                    throw Usage($"{where} must be one of {string.Join(", ", options)} (got '{s}').");
+                }
+
+                if (a.MaxLength is int max && s.Length > max)
+                {
+                    throw Usage($"{where} is longer than {max} characters.");
+                }
+
+                return JsonValue.Create(s)!;
+            }
+
+            case "boolean":
+                return value is JsonValue b && b.TryGetValue(out bool flag)
+                    ? JsonValue.Create(flag)
+                    : throw Usage($"{where} must be true or false.");
+
+            case "number":
+            case "integer":
+            {
+                double d = Number(value) ?? throw Usage($"{where} must be a number.");
+                if (a.Type == "integer" && d != Math.Floor(d))
+                {
+                    throw Usage($"{where} must be a whole number.");
+                }
+
+                Range(where, a, d);
+                return JsonValue.Create(d);
+            }
+
+            case "array":
+            {
+                if (value is not JsonArray arr)
+                {
+                    throw Usage($"{where} must be an array.");
+                }
+
+                if (a.Items is int n && arr.Count != n)
+                {
+                    throw Usage($"{where} needs exactly {n} numbers (got {arr.Count}).");
+                }
+
+                var copy = new JsonArray();
+                foreach (JsonNode? item in arr)
+                {
+                    double d = (item is null ? null : Number(item)) ?? throw Usage($"{where} must contain only numbers.");
+                    copy.Add(d);
+                }
+
+                return copy;
+            }
+
+            default:
+                return value.DeepClone();
+        }
+    }
+
+    private static void Range(string where, ToolArg a, double d)
+    {
+        if (!double.IsFinite(d) || (a.Min is double min && d < min) || (a.Max is double max && d > max))
+        {
+            string range = (a.Min, a.Max) switch
+            {
+                (double lo, double hi) => $"from {lo.ToString(CultureInfo.InvariantCulture)} to {hi.ToString(CultureInfo.InvariantCulture)}",
+                (double lo, null) => $"at least {lo.ToString(CultureInfo.InvariantCulture)}",
+                (null, double hi) => $"at most {hi.ToString(CultureInfo.InvariantCulture)}",
+                _ => "finite",
+            };
+            throw Usage($"{where} must be {range} (got {d.ToString(CultureInfo.InvariantCulture)}).");
+        }
+    }
+
+    private static double? Number(JsonNode node)
+    {
+        if (node is not JsonValue v)
+        {
+            return null;
+        }
+
+        if (v.TryGetValue(out double d))
+        {
+            return d;
+        }
+
+        if (v.TryGetValue(out long l))
+        {
+            return l;
+        }
+
+        return v.TryGetValue(out int i) ? i : null;
+    }
+
+    private static string? Str(JsonObject o, string name) =>
+        o[name] is JsonValue v && v.TryGetValue(out string? s) ? s : null;
+
+    private static AutomationException Usage(string message) => new(AutomationErrorCodes.Usage, message);
+}

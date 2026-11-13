@@ -16,6 +16,37 @@ internal interface IScriptEnvironment
 
     /// <summary>Called after a run applied changes, so the shell can rebuild the scene + refresh UI.</summary>
     void OnScriptApplied();
+
+    /// <summary>Called after every run / console line (success or failure), after <see cref="OnScriptApplied"/>,
+    /// so the shell can carry out work a script queued for after it finishes (e.g. a playtest launch).</summary>
+    void OnScriptFinished(ScriptRunResult result)
+    {
+    }
+}
+
+/// <summary>Per-caller overrides for <see cref="ScriptingService.Run(string, string, bool, bool, CancellationToken, ScriptRunExtras?)"/>.</summary>
+internal sealed class ScriptRunExtras
+{
+    /// <summary>The undo entry label (null = "Script: &lt;chunk&gt;").</summary>
+    public string? UndoLabel { get; init; }
+
+    /// <summary>Execution limits (null = the interactive editor limits).</summary>
+    public ScriptExecutionLimits? Limits { get; init; }
+
+    /// <summary>Receives every log line of the run (in addition to the Script Log), on the run's thread.</summary>
+    public Action<ScriptLogEntry>? LogTap { get; init; }
+
+    /// <summary>
+    /// Wraps the editor's script operations for this run (e.g. the command-line path allow-list on
+    /// <c>ops.save</c> / <c>ops.package</c>); receives the run's context and the editor's backend.
+    /// </summary>
+    public Func<ScriptContext, IScriptOperations, IScriptOperations>? WrapOperations { get; init; }
+
+    /// <summary>
+    /// Provenance tags applied to everything the run creates (command-line runs; see
+    /// <see cref="ScriptServices.AutoTags"/>). Null for Script Editor / Console runs, which never auto-tag.
+    /// </summary>
+    public System.Collections.Generic.IReadOnlyDictionary<string, string>? AutoTags { get; init; }
 }
 
 /// <summary>
@@ -23,7 +54,7 @@ internal interface IScriptEnvironment
 /// and REPL lines synchronously on the UI thread — which keeps the document single-threaded and
 /// safe — while the instruction budget + timeout (a background timer cancels the token) still abort
 /// a runaway loop. All script output is raised via <see cref="LogWritten"/> so the Script Console
-/// (the dedicated Script Log surface, §5.6) sees it. Heavy operations report to the shared progress
+/// (the dedicated Script Log surface) sees it. Heavy operations report to the shared progress
 /// overlay via a lazily-begun operation card.
 /// </summary>
 internal sealed class ScriptingService
@@ -50,14 +81,33 @@ internal sealed class ScriptingService
     public string EngineVersion => _runner.EngineVersion;
 
     /// <summary>Runs a full script once as a single undo step (or a preview when <paramref name="dryRun"/>).</summary>
-    public ScriptRunResult Run(string source, string chunkName, bool dryRun, bool allowDestructive, CancellationToken cancellation)
+    public ScriptRunResult Run(string source, string chunkName, bool dryRun, bool allowDestructive, CancellationToken cancellation) =>
+        Run(source, chunkName, dryRun, allowDestructive, cancellation, extras: null);
+
+    /// <summary>
+    /// Runs a full script once as a single undo step, with the per-caller overrides in
+    /// <paramref name="extras"/> (undo label, limits, a log tap) — used by command-line runs sent to
+    /// the open editor. Output still reaches the Script Log exactly as for an editor-started run.
+    /// </summary>
+    public ScriptRunResult Run(
+        string source, string chunkName, bool dryRun, bool allowDestructive, CancellationToken cancellation, ScriptRunExtras? extras)
     {
-        var log = new ScriptLog(new RelaySink(Raise));
+        Action<ScriptLogEntry>? tap = extras?.LogTap;
+        var log = new ScriptLog(new RelaySink(e =>
+        {
+            tap?.Invoke(e);
+            Raise(e);
+        }));
         using var progress = new LazyProgressSink(_progress, $"Script: {chunkName}");
         ScriptServices? services = _env.BuildServices(progress, Confirmation(allowDestructive || dryRun));
         if (services is null)
         {
             return Fail(chunkName, dryRun);
+        }
+
+        if (extras?.WrapOperations is not null || extras?.AutoTags is { Count: > 0 })
+        {
+            services = WithOverrides(services, extras!.WrapOperations, extras.AutoTags);
         }
 
         ScriptMetadata meta = ScriptMetadata.Parse(source);
@@ -68,7 +118,8 @@ internal sealed class ScriptingService
             AllowDestructive = allowDestructive || meta.AllowDestructive,
             DeclaredApiVersion = meta.ApiVersion,
             Seed = 0,
-            Limits = ScriptExecutionLimits.Interactive,
+            Limits = extras?.Limits ?? ScriptExecutionLimits.Interactive,
+            UndoLabel = extras?.UndoLabel,
         };
 
         ScriptRunResult result = _runner.Run(services, source, options, log, cancellation);
@@ -77,10 +128,11 @@ internal sealed class ScriptingService
             _env.OnScriptApplied();
         }
 
+        _env.OnScriptFinished(result);
         return result;
     }
 
-    /// <summary>Evaluates one REPL line in a session whose globals persist across lines (plan §6.1).</summary>
+    /// <summary>Evaluates one REPL line in a session whose globals persist across lines.</summary>
     public ScriptRunResult EvalConsole(string line, CancellationToken cancellation)
     {
         ScriptReplSession? repl = EnsureRepl();
@@ -95,6 +147,7 @@ internal sealed class ScriptingService
             _env.OnScriptApplied();
         }
 
+        _env.OnScriptFinished(result);
         return result;
     }
 
@@ -151,6 +204,27 @@ internal sealed class ScriptingService
 
     private static IScriptConfirmation Confirmation(bool allow) =>
         allow ? new AllowAllConfirmation() : new DenyAllConfirmation();
+
+    /// <summary>
+    /// A copy of <paramref name="s"/> whose operation backend is wrapped by <paramref name="wrap"/> (when
+    /// given) and which auto-tags with <paramref name="autoTags"/> (when given).
+    /// </summary>
+    private static ScriptServices WithOverrides(
+        ScriptServices s,
+        Func<ScriptContext, IScriptOperations, IScriptOperations>? wrap,
+        System.Collections.Generic.IReadOnlyDictionary<string, string>? autoTags)
+    {
+        IScriptOperations? fixedOps = s.Operations;
+        Func<ScriptContext, IScriptOperations>? factory = s.OperationsFactory;
+        return s with
+        {
+            AutoTags = autoTags ?? s.AutoTags,
+            Operations = wrap is null ? fixedOps : null,
+            OperationsFactory = wrap is null
+                ? factory
+                : ctx => wrap(ctx, fixedOps ?? factory?.Invoke(ctx) ?? new CoreScriptOperations(ctx)),
+        };
+    }
 
     private sealed class RelaySink : IScriptLogSink
     {

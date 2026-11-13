@@ -217,6 +217,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         // mode on a freshly opened level materializes the merged view without a toggle/edit.
         _session.RequestMergedBrushStash = () => _buildController!.EnsureMergedBrushStash();
         _buildController.UseSharedBspBuild = _settings.UseSharedBspBuild; // Geometry menu "Build method" (persisted)
+        _buildController.RepairBuildHoles = _settings.RepairBuildHoles; // Geometry menu "Repair holes when building" (persisted)
         SyncLightingMethodToController(); // feature 1: seed the bake method from the global default
 
         // Unified notifications: every Notify hits the status bar + Log always, and additionally raises
@@ -261,8 +262,13 @@ public sealed partial class MainWindow : Window, IEditorHost
         _autosaveTimer.Start();
 
         Opened += OnOpened;
+        Opened += (_, _) => ApplyAutomationBridgeSetting(); // glacier-cli --attach (Settings ▸ General)
         Closing += OnClosing;
-        Closed += (_, _) => _session.Dispose();
+        Closed += (_, _) =>
+        {
+            ShutdownAutomationBridge();
+            _session.Dispose();
+        };
     }
 
     /// <summary>
@@ -709,6 +715,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         };
         geometry.Items.Add(livePreview);
         geometry.Items.Add(BuildMethodMenu());
+        geometry.Items.Add(ToggleCmd("Repair Holes When Building", _settings.RepairBuildHoles, SetRepairBuildHoles));
         geometry.Items.Add(new Separator());
         var checkHoles = new MenuItem { Header = "Check for Holes (draw hole lines)" };
         checkHoles.Click += (_, _) => _ = CheckHolesAsync();
@@ -1230,13 +1237,14 @@ public sealed partial class MainWindow : Window, IEditorHost
 
     // ---- Command implementations ----
 
-    private async Task NewLevelAsync()
+    /// <param name="interactive">False for command-line requests: never prompt (no install picker).</param>
+    private async Task NewLevelAsync(bool interactive = true)
     {
         // A new level needs the VFS exactly like an opened one (default brush textures,
         // the palette's clutter/item catalogs, mesh previews) — mount first, prompting only
         // when no valid install is configured (the same behaviour as File ▸ Open). The
         // startup mount usually makes this a no-op.
-        await EnsureVfsAsync();
+        await EnsureVfsAsync(prompt: interactive);
 
         Ged.Rendering.Scene.RenderScene scene = _session.NewLevel();
         LoadSceneIntoViewports(scene);
@@ -1266,12 +1274,18 @@ public sealed partial class MainWindow : Window, IEditorHost
         }
     }
 
-    public async Task OpenLevelFileAsync(string path)
+    /// <param name="path">The level to open.</param>
+    /// <param name="interactive">
+    /// False for command-line requests: no dialog of any kind — no install picker and no autosave
+    /// recovery prompt (the file itself is opened; a newer autosave is left untouched for the next
+    /// interactive open). Failures throw instead of only reaching the status bar.
+    /// </param>
+    public async Task OpenLevelFileAsync(string path, bool interactive = true)
     {
         try
         {
-            await EnsureVfsAsync();
-            RecoveryOutcome? recovery = await MaybeRecoverAsync(path);
+            await EnsureVfsAsync(prompt: interactive);
+            RecoveryOutcome? recovery = interactive ? await MaybeRecoverAsync(path) : null;
             string loadPath = recovery?.LoadPath ?? path;
             if (recovery is { DeleteAutosaveNow: true })
             {
@@ -1297,6 +1311,7 @@ public sealed partial class MainWindow : Window, IEditorHost
             ApplyBackfaceCulling();
             SetEmitterAnimation(_session.AnimateEmitters);
             MaybeWarnLegacyLevel();
+            MaybeWarnReadVariants();
 
             _settings.PushRecent(path);
             Persist();
@@ -1309,6 +1324,10 @@ public sealed partial class MainWindow : Window, IEditorHost
         catch (Exception ex)
         {
             _statusMessage.Text = $"Open failed: {ex.Message}";
+            if (!interactive)
+            {
+                throw new Ged.Automation.AutomationException(Ged.Automation.AutomationErrorCodes.Io, $"Open failed: {ex.Message}", ex);
+            }
         }
     }
 
@@ -1347,129 +1366,105 @@ public sealed partial class MainWindow : Window, IEditorHost
             return false;
         }
 
-        // GED writes Alpine v305 always (Goober's format policy) — there is no version
-        // target to choose. A loaded pre-305 level is upgraded to v305 on save
-        // (EditorDocument.Save / SaveAs → RflFile.UpgradeToAlpine), exactly as Alpine
-        // RED does. Save As only picks a new path.
+        return (await SaveToPathAsync(path, saveAs)).Written;
+    }
 
-        // The header timestamp bumps to "now" on every real save that carries a change,
-        // but a no-op Save of an untouched file stays byte-identical (the timestamp is
-        // preserved). "Changed" = document edits OR pending geometry/lighting rebakes;
-        // captured before the bake below since MarkSaved will clear IsDirty. Save As is
-        // always a fresh artifact, so it always stamps.
-        bool modified = saveAs
-            || Document.IsDirty
-            || (_buildController is { GeometryDirty: true } or { GeometryIsPreview: true } or { LightingDirty: true });
-
-        // RED-style save (owner decision — "RED-style + seal guard"). Writing NEVER bakes lighting or
-        // recompiles geometry: stock RED serializes exactly what was last built, and Glacier now matches.
-        // Stale compiled geometry / stale lightmaps are the author's to rebuild (Geometry ▸ Build,
-        // Build ▸ Calculate Lighting); a merely-dirty save proceeds as-is, nudged by a Hint.
-        //
-        // The ONE exception is GED's live-CSG / merged-stash PREVIEW: it applied UNSEALED geometry into
-        // the document (a state RED never has — the fast path skips the t-joint seal, leaving thousands
-        // of open edges), so persisting it would ship a level that sparkles / leaks in-game. The SEAL
-        // GUARD re-seals that with a geometry-only build (no lighting bake) before writing, and is the
-        // SOLE rebuild trigger and the SOLE path that can abort a save.
-        //
-        // Captured before the seal build / write, which clear these flags.
-        bool wasPreview = _buildController?.GeometryIsPreview ?? false;
-        bool wasGeometryDirty = _buildController?.GeometryDirty ?? false;
-        bool wasLightingDirty = _buildController?.LightingDirty ?? false;
-
-        SaveGuard.SaveNotice notice;
-        if (_buildController is { } build && SaveGuard.RequiresSeal(wasPreview))
+    /// <summary>
+    /// The save for an already-chosen path (File ▸ Save / Save As after the picker, and command-line
+    /// saves into the running editor, which never show a dialog). GED writes Alpine v306 always — a
+    /// loaded pre-306 level is upgraded on save, exactly as Alpine RED does; a level newer than 306 is
+    /// read-only and the save is refused before anything runs. The shared
+    /// <see cref="EditorSaveFlow"/> decides the timestamp stamp (a no-op Save of an untouched file stays
+    /// byte-identical), runs the SEAL GUARD — the sole rebuild a save triggers, for unsealed live-CSG
+    /// preview geometry, and the sole path that can abort a save — and writes the level + sidecar. The
+    /// pre-save linter summary runs just before the write (informational: GED always saves Alpine v306,
+    /// which supports every feature). Afterwards the shell refreshes, and one advisory nudge is shown.
+    /// </summary>
+    internal async Task<EditorSaveResult> SaveToPathAsync(string path, bool saveAs)
+    {
+        if (Document is null)
         {
-            _dispatcher.ShowMessage("Re-sealing preview geometry before save…");
-            bool sealBuildRan = await build.BuildAsync(); // interactive geometry-only re-seal — no lighting bake
-
-            // Only the seal path can abort. A refused seal (another user build in flight) or one that
-            // completes with the geometry still unsealed writes NOTHING and tells the user why.
-            switch (SaveGuard.EvaluateSeal(sealBuildRan, build.GeometryDirty, build.GeometryIsPreview))
-            {
-                case SaveGuard.PreSaveOutcome.AbortBuildRunning:
-                    _notifications.Notify(Services.NotificationSeverity.Warning,
-                        "Save aborted — a build is already running. Retry when it finishes.");
-                    return false;
-                case SaveGuard.PreSaveOutcome.AbortSealIncomplete:
-                    _notifications.Notify(Services.NotificationSeverity.Warning,
-                        "Save aborted — the geometry re-seal did not complete.");
-                    return false;
-            }
-
-            notice = SaveGuard.SaveNotice.GeometryResealed;
-        }
-        else
-        {
-            // Merely dirty ⇒ save as-is (RED-style); one nudge per save, geometry winning over lighting.
-            notice = SaveGuard.NoticeForDirtySave(wasGeometryDirty, wasLightingDirty);
+            return new EditorSaveResult(false, LevelSaveSealOutcome.Proceed, LevelSaveNotice.None, "No level is open.");
         }
 
-        // Pre-save linter summary: budget/compatibility violations are surfaced
-        // (informational — GED always saves Alpine v305, which supports every feature).
-        Ged.Core.Linting.LintReport lint = RunLinter(showPanel: false);
-        if (!lint.IsClean)
+        if (Document.SaveBlockedReason is string blocked)
         {
-            _lintPanel.Show(lint, FrameUid);
-            if (lint.HasBlockingIssues)
-            {
-                _dispatcher.ShowMessage($"Pre-save linter: {lint.Blocking.Count} save-target violation(s) — see Linter panel.");
-            }
+            _notifications.Notify(Services.NotificationSeverity.Error, $"Save refused: {blocked}");
+            return new EditorSaveResult(false, LevelSaveSealOutcome.Proceed, LevelSaveNotice.None, blocked);
         }
 
+        EditorSaveResult result;
         try
         {
-            if (saveAs)
-            {
-                Document.SaveAs(path, updateTimestamp: true);
-            }
-            else
-            {
-                // Writes Alpine v305 (upgrading a loaded pre-305 level in place). The
-                // header stamps only when something actually changed, so a no-op Save of
-                // an untouched v305 file stays byte-identical (the v305-source invariant).
-                Document.Save(path, updateTimestamp: modified);
-            }
-
-            SaveSidecarFor(path); // B7 annotations + feature-1 lighting method (editor-only)
-
-            // A successful save supersedes a recovered autosave — remove it now (item 18).
-            if (_pendingAutosaveDelete is string pending)
-            {
-                TryDeleteAutosave(pending);
-                _pendingAutosaveDelete = null;
-            }
-
-            _settings.PushRecent(path);
-            Persist();
-            UpdateTitle();
-            AfterMutation();
-            _statusMessage.Text = $"Saved {Path.GetFileName(path)} [Alpine v{Document.Rfl.Header.Version}]";
-
-            // RED-style advisory (owner decision): one nudge per save about staleness / re-seal.
-            switch (notice)
-            {
-                case SaveGuard.SaveNotice.UnbuiltGeometry:
-                    _notifications.Notify(Services.NotificationSeverity.Hint,
-                        "Saved with unbuilt geometry changes — rebuild when ready.");
-                    break;
-                case SaveGuard.SaveNotice.UnbakedLighting:
-                    _notifications.Notify(Services.NotificationSeverity.Hint,
-                        "Saved with unbaked lighting changes — bake when ready.");
-                    break;
-                case SaveGuard.SaveNotice.GeometryResealed:
-                    _notifications.Notify(Services.NotificationSeverity.Info,
-                        "Geometry re-sealed for save — lightmaps were reset; bake lighting when ready.");
-                    break;
-            }
-
-            return true;
+            result = await EditorSaveFlow.SaveAsync(
+                Document,
+                _buildController,
+                path,
+                saveAs,
+                LevelLightingMethodOrNull(),
+                status: msg => _dispatcher.ShowMessage(msg),
+                beforeWrite: () =>
+                {
+                    Ged.Core.Linting.LintReport lint = RunLinter(showPanel: false);
+                    if (!lint.IsClean)
+                    {
+                        _lintPanel.Show(lint, FrameUid, FramePoint);
+                        if (lint.HasBlockingIssues)
+                        {
+                            _dispatcher.ShowMessage($"Pre-save linter: {lint.Blocking.Count} save-target violation(s) — see Linter panel.");
+                        }
+                    }
+                });
         }
         catch (Exception ex)
         {
             _notifications.Notify(Services.NotificationSeverity.Error, $"Save failed: {ex.Message}");
-            return false;
+            return new EditorSaveResult(false, LevelSaveSealOutcome.Proceed, LevelSaveNotice.None, ex.Message);
         }
+
+        switch (result.Seal)
+        {
+            case LevelSaveSealOutcome.AbortBuildRunning:
+                _notifications.Notify(Services.NotificationSeverity.Warning,
+                    "Save aborted — a build is already running. Retry when it finishes.");
+                return result;
+            case LevelSaveSealOutcome.AbortSealIncomplete:
+                _notifications.Notify(Services.NotificationSeverity.Warning,
+                    "Save aborted — the geometry re-seal did not complete.");
+                return result;
+        }
+
+        // A successful save supersedes a recovered autosave — remove it now (item 18).
+        if (_pendingAutosaveDelete is string pending)
+        {
+            TryDeleteAutosave(pending);
+            _pendingAutosaveDelete = null;
+        }
+
+        _settings.PushRecent(path);
+        Persist();
+        UpdateTitle();
+        AfterMutation();
+        _statusMessage.Text = $"Saved {Path.GetFileName(path)} [Alpine v{Document.Rfl.Header.Version}]";
+
+        // The v306 upgrade's save-log lines (fog near clip reset, Looping now honoured, props layout rewrite).
+        foreach (string note in Document.LastSaveNotes)
+        {
+            LogOperation("Save", note);
+            _notifications.Notify(Services.NotificationSeverity.Info, note);
+        }
+
+        // RED-style advisory (owner decision): one nudge per save about staleness / re-seal.
+        if (LevelSavePolicy.NoticeText(result.Notice) is string advisory)
+        {
+            _notifications.Notify(
+                result.Notice == LevelSaveNotice.GeometryResealed
+                    ? Services.NotificationSeverity.Info
+                    : Services.NotificationSeverity.Hint,
+                advisory);
+        }
+
+        return result;
     }
 
     private async Task SelectByUidAsync()
@@ -1595,6 +1590,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         ApplyBackfaceCulling();
         RebuildScene();
         UpdateStatusStatics();
+        ApplyAutomationBridgeSetting();
     }
 
     private void CycleGridBrightness()
@@ -1799,6 +1795,15 @@ public sealed partial class MainWindow : Window, IEditorHost
         lines.AppendLine($"Rooms {r.Rooms}  (subrooms {r.Subrooms})   Portals {r.Portals}");
         lines.AppendLine($"Faces {r.Faces}   Face-verts {r.FaceVertices}   Vertices {r.Vertices}");
         lines.AppendLine($"Brushes {r.Brushes}   Surfaces {r.Surfaces}   Lightmap pages {r.LightmapPages}   UIDs {r.Uids}");
+        if (r.Repair.Ran)
+        {
+            // Alpine RED's build-repair counters, in its log's order and wording.
+            lines.AppendLine("Repairing holes:");
+            foreach ((string name, int value) in r.Repair.Counters())
+            {
+                lines.AppendLine($"  {name}: {value}");
+            }
+        }
         if (r.Messages.Count > 0)
         {
             lines.AppendLine();
@@ -1831,8 +1836,28 @@ public sealed partial class MainWindow : Window, IEditorHost
         if (version < Ged.Core.Editing.SaveTargets.FirstAlpineVersion)
         {
             _dispatcher.ShowMessage(
-                $"Legacy level (v{version}, pre-Alpine). GED opens it read-write; saving to Alpine (v305) upgrades it. " +
+                $"Legacy level (v{version}, pre-Alpine). GED opens it read-write; saving to Alpine (v306) upgrades it. " +
                 "Disable this notice in Settings ▸ General.");
+        }
+    }
+
+    /// <summary>Shows the opened file's load notes (unreadable version, interrupted save, non-standard layouts).</summary>
+    private void MaybeWarnReadVariants()
+    {
+        if (Document is null)
+        {
+            return;
+        }
+
+        foreach (string note in Document.Rfl.LoadNotes())
+        {
+            _dispatcher.ShowMessage(note);
+        }
+
+        // A level from a newer Alpine Faction is read-only: say so prominently, not only in the status bar.
+        if (Document.SaveBlockedReason is string blocked)
+        {
+            _notifications.Notify(Services.NotificationSeverity.Warning, blocked);
         }
     }
 
@@ -2116,7 +2141,8 @@ public sealed partial class MainWindow : Window, IEditorHost
     {
         string name = Document?.Path is string p ? Path.GetFileName(p) : "untitled.rfl";
         string dirty = Document?.IsDirty == true ? "*" : string.Empty;
-        Title = $"Glacier — {dirty}{name}";
+        string readOnly = Document?.IsSaveBlocked == true ? " [read-only: newer Alpine version]" : string.Empty;
+        Title = $"Glacier — {dirty}{name}{readOnly}";
     }
 
     // ---- Live previews, room modes, linter/statistics ----
@@ -2278,9 +2304,13 @@ public sealed partial class MainWindow : Window, IEditorHost
             Vfs = _session.Vfs,
             ScanOptions = _session.BuildScanOptions(),
             MaxTextureDimension = 1024,
+            // Out-of-norm hints on explicit runs only (never the implicit save-time lint).
+            CheckNorms = showPanel,
+            GeometryIsPreview = _buildController?.GeometryIsPreview ?? false,
+            FileName = Document.Path is { Length: > 0 } levelPath ? System.IO.Path.GetFileName(levelPath) : null,
         };
         Ged.Core.Linting.LintReport report = Ged.Core.Linting.LevelLinter.Lint(Document.Rfl, options);
-        _lintPanel.Show(report, FrameUid);
+        _lintPanel.Show(report, FrameUid, FramePoint);
         _statusMessage.Text = report.Summary();
         return report;
     }
@@ -2293,17 +2323,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         }
 
         await _buildController.CheckHolesAsync();
-        var lines = new List<Ged.Rendering.Scene.LineSegment>();
-        uint red = Ged.Rendering.Scene.Palette.Rgba(255, 40, 40, 255);
-        foreach (Ged.Core.Model.Vec3 h in _buildController.HoleLocations)
-        {
-            var c = new Vector3(h.X, h.Y, h.Z);
-            lines.Add(new Ged.Rendering.Scene.LineSegment(c - new Vector3(0.5f, 0, 0), c + new Vector3(0.5f, 0, 0), red));
-            lines.Add(new Ged.Rendering.Scene.LineSegment(c - new Vector3(0, 0.5f, 0), c + new Vector3(0, 0.5f, 0), red));
-            lines.Add(new Ged.Rendering.Scene.LineSegment(c - new Vector3(0, 0, 0.5f), c + new Vector3(0, 0, 0.5f), red));
-        }
-
-        _holeLines = lines;
+        _holeLines = HoleMarkerLines(_buildController.HoleLocations);
         RefreshSelectionOverlay();
 
         // Jump the camera to the first leak.
@@ -2313,6 +2333,26 @@ public sealed partial class MainWindow : Window, IEditorHost
             _viewportGrid.ActiveSurface.FramePoint(new Vector3(first.X, first.Y, first.Z));
         }
     }
+
+    /// <summary>A red 1 m axis cross at each leak location (the hole-marker overlay).</summary>
+    private static List<Ged.Rendering.Scene.LineSegment> HoleMarkerLines(IReadOnlyList<Ged.Core.Model.Vec3> holes)
+    {
+        var lines = new List<Ged.Rendering.Scene.LineSegment>();
+        uint red = Ged.Rendering.Scene.Palette.Rgba(255, 40, 40, 255);
+        foreach (Ged.Core.Model.Vec3 h in holes)
+        {
+            var c = new Vector3(h.X, h.Y, h.Z);
+            lines.Add(new Ged.Rendering.Scene.LineSegment(c - new Vector3(0.5f, 0, 0), c + new Vector3(0.5f, 0, 0), red));
+            lines.Add(new Ged.Rendering.Scene.LineSegment(c - new Vector3(0, 0.5f, 0), c + new Vector3(0, 0.5f, 0), red));
+            lines.Add(new Ged.Rendering.Scene.LineSegment(c - new Vector3(0, 0, 0.5f), c + new Vector3(0, 0, 0.5f), red));
+        }
+
+        return lines;
+    }
+
+    /// <summary>Frames a world-space point in the active viewport (lint findings with a location).</summary>
+    private void FramePoint(Ged.Core.Model.Vec3 p) =>
+        _viewportGrid.ActiveSurface.FramePoint(new Vector3(p.X, p.Y, p.Z));
 
     private void ToggleSelectedLightsEditorOnly()
     {
@@ -2540,7 +2580,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         return await tcs.Task;
     }
 
-    private async Task EnsureVfsAsync()
+    private async Task EnsureVfsAsync(bool prompt = true)
     {
         if (_session.Vfs is not null)
         {
@@ -2548,7 +2588,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         }
 
         string? dir = _settings.RfInstallDir;
-        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+        if ((string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) && prompt)
         {
             dir = await PromptForRfInstallAsync();
         }
@@ -3062,6 +3102,16 @@ public sealed partial class MainWindow : Window, IEditorHost
         try
         {
             string autosavePath = Document.Path + ".autosave.rfl";
+
+            // A recovered autosave must not carry a stale mover copy (once reopened, its edited member
+            // would read as untouched). Refresh edited movers first — folded into the latest undo step —
+            // unless a build is in flight on another thread (it reads those copies; that build syncs them
+            // itself, and the next autosave catches up).
+            if (_buildController?.IsBuildRunning != true)
+            {
+                Document.SyncStaleMoverCopies();
+            }
+
             File.WriteAllBytes(autosavePath, Document.SaveToBytes(updateTimestamp: false));
             if (!force)
             {
@@ -3216,6 +3266,23 @@ public sealed partial class MainWindow : Window, IEditorHost
         menu.Items.Add(shared);
         menu.Items.Add(legacy);
         return menu;
+    }
+
+    /// <summary>
+    /// Geometry-menu "Repair Holes When Building" (Alpine RED's build repair, on by default). Persisted
+    /// (<see cref="AppSettings.RepairBuildHoles"/>), pushed to the build controller, and invalidates the current build
+    /// so the next Build Geometry / save / hole check recompiles with it.
+    /// </summary>
+    private void SetRepairBuildHoles(bool on)
+    {
+        _settings.RepairBuildHoles = on;
+        if (_buildController is { } bc)
+        {
+            bc.RepairBuildHoles = on;
+            bc.InvalidateGeometry();
+        }
+
+        Persist();
     }
 
     private static MenuItem ToggleCmd(string header, bool initial, Action<bool> set)

@@ -3,7 +3,7 @@ using System;
 namespace Ged.Core.Scripting;
 
 /// <summary>
-/// A confirmation gate for destructive operations (plan §5.10). Interactive callers show a
+/// A confirmation gate for destructive operations. Interactive callers show a
 /// dialog; batch callers with a <c>--@allow-destructive</c> header auto-approve; dry-run
 /// denies unconditionally. The facade calls this before any delete / overwrite-save /
 /// package / playtest.
@@ -33,7 +33,7 @@ public readonly record struct ScriptProgress(string Stage, int Current, int Tota
     public double Fraction => Total > 0 ? Math.Clamp((double)Current / Total, 0, 1) : -1;
 }
 
-/// <summary>A sink for operation progress (the App wires this to its progress overlay; §5.5).</summary>
+/// <summary>A sink for operation progress (the App wires this to its progress overlay).</summary>
 public interface IScriptProgressSink
 {
     void Report(ScriptProgress progress);

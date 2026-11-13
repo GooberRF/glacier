@@ -1,7 +1,7 @@
 namespace Ged.Core.Scripting;
 
 /// <summary>
-/// The versioned, additive-only script API surface contract (plan §5.8). Scripts pin the
+/// The versioned, additive-only script API surface contract. Scripts pin the
 /// major version they were authored against — either with a <c>--@api N</c> header or a
 /// runtime <c>ged.require_api(N)</c> call — and the runner refuses a higher-major request on
 /// an older build with a clear message. Within a major version the surface is additive-only;
@@ -10,8 +10,12 @@ namespace Ged.Core.Scripting;
 /// </summary>
 public static class ScriptApiV1
 {
-    /// <summary>The current API major version advertised as <c>ged.api_version</c>.</summary>
-    public const int Version = 1;
+    /// <summary>
+    /// The current API major version advertised as <c>ged.api_version</c>. Version 2 is a strict
+    /// superset of version 1 (the frozen v1 surface snapshot is test-asserted to be a subset), so
+    /// <c>--@api 1</c> and header-less scripts run unchanged.
+    /// </summary>
+    public const int Version = 2;
 
     /// <summary>The top-level Lua globals the engine binds. Pinned by the API-surface test.</summary>
     public static readonly IReadOnlyList<string> Globals = new[]
@@ -24,6 +28,11 @@ public static class ScriptApiV1
         "lint",       // run the linter + contribute findings
         "log",        // info / warn / error
         "rng",        // seeded, deterministic RNG
+        "catalog",    // placeable kinds, classes, fields, textures (API v2)
+        "prefab",     // prefab library list + place (API v2)
+        "geo",        // geometry tools: shape checks and edits (API v2)
+        "spatial",    // spatial queries and design measurements (API v2)
+        "design",     // the self-review grader (API v2)
         "print",      // Lua print → script log output
     };
 }

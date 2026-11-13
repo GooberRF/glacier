@@ -11,10 +11,10 @@ namespace Ged.Core.Tests;
 
 /// <summary>
 /// The FeatureGate compatibility analysis (kept as infrastructure — it will gate
-/// future &gt;305 versions). GED always saves Alpine v305, so this never blocks a
+/// future &gt;306 versions). GED always saves Alpine v306, so this never blocks a
 /// save; it reports whether a level's Alpine-only features would also run on the
 /// stock RF (v200) reference engine. Building a level with Alpine features itemizes
-/// them; stripping them clears the report; and every save produces a byte-stable v305
+/// them; stripping them clears the report; and every save produces a byte-stable v306
 /// file.
 /// </summary>
 public class FeatureGateTests
@@ -23,7 +23,7 @@ public class FeatureGateTests
     private static EditorDocument BuildAlpineLevel()
     {
         var rfl = new RflFile();
-        rfl.Header.Version = SaveTargets.AlpineVersion; // v305
+        rfl.Header.Version = SaveTargets.AlpineVersion; // v306
         rfl.Header.LevelName = "gate.rfl";
         rfl.Sections.Add(new RflSection((uint)SectionType.End, System.Array.Empty<byte>()));
         var doc = new EditorDocument(rfl);
@@ -100,7 +100,7 @@ public class FeatureGateTests
         // With the Alpine-only features gone, the stock compatibility check is clear.
         Assert.False(doc.EvaluateSaveTarget(SaveTarget.StockRf).Blocked);
 
-        // The level still saves as Alpine v305 (GED never writes stock), byte-stably.
+        // The level still saves as Alpine v306 (GED never writes stock), byte-stably.
         byte[] saved = SaveAlpine(doc);
         var reloaded = RflFile.Load(saved);
         Assert.Equal(RflFile.AlpineSaveVersion, reloaded.Header.Version);
@@ -108,7 +108,7 @@ public class FeatureGateTests
     }
 
     [Fact]
-    public void V305_Save_Is_Byte_Stable()
+    public void V306_Save_Is_Byte_Stable()
     {
         EditorDocument doc = BuildAlpineLevel();
         byte[] alpine = SaveAlpine(doc);
@@ -129,7 +129,7 @@ public class FeatureGateTests
 
     private static byte[] SaveAlpine(EditorDocument doc)
     {
-        doc.Rfl.UpgradeToAlpine(); // GED writes Alpine v305 always
+        doc.Rfl.UpgradeToAlpine(); // GED writes Alpine v306 always
         return doc.Rfl.Save();
     }
 }

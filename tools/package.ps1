@@ -1,8 +1,10 @@
 <#
 .SYNOPSIS
-    Builds a self-contained, SINGLE-FILE Release publish of Glacier and packages it with
-    LICENSE, licensing-info.txt, the offline help reference (docs\help.html) and the bundled
-    scripts library for distribution. Supports win-x64 (zip) and linux-x64 (tar.gz + AppImage).
+    Builds a self-contained, SINGLE-FILE Release publish of Glacier (plus the glacier-cli
+    command-line tools beside it) and packages it with LICENSE, licensing-info.txt, the offline
+    help reference (docs\help.html), the AI-agent docs (docs\ai, staged as ai\) and the bundled
+    scripts library for distribution. Supports
+    win-x64 (zip) and linux-x64 (tar.gz + AppImage).
 
 .DESCRIPTION
     Publishes src/Ged.App as a self-contained single-file app (native libraries embedded
@@ -42,6 +44,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $OutputDir) { $OutputDir = Join-Path $repoRoot 'dist' }
 
 $app = Join-Path $repoRoot 'src\Ged.App\Ged.App.csproj'
+# The command-line tools (glacier-cli) ship beside the Glacier binary; they read the same <Version>.
+$cli = Join-Path $repoRoot 'src\Ged.Cli\Ged.Cli.csproj'
 
 # Read the shipping version from the csproj (RID-independent: a linux ELF has no
 # Win32 VersionInfo to read back).
@@ -162,6 +166,28 @@ function Publish-Target([string]$rid) {
         -o $publishDir
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed ($rid) with exit code $LASTEXITCODE" }
 
+    # glacier-cli: published the same way (self-contained, single-file) into a scratch folder, then
+    # only its binary is copied next to Glacier — the shared Content files (LICENSE, licensing-info.txt,
+    # scripts\) are already in the publish folder from the app.
+    $cliBinaryName = if ($rid -like 'win*') { 'glacier-cli.exe' } else { 'glacier-cli' }
+    $cliPublishDir = Join-Path ([System.IO.Path]::GetTempPath()) ("glacier-cli-publish-" + [Guid]::NewGuid().ToString('N'))
+    try {
+        Write-Host "Publishing $cli (Release, self-contained, single-file, $rid)..." -ForegroundColor Cyan
+        & dotnet publish $cli `
+            -c Release `
+            -r $rid `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -o $cliPublishDir
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish (glacier-cli) failed ($rid) with exit code $LASTEXITCODE" }
+        $cliBinary = Join-Path $cliPublishDir $cliBinaryName
+        if (-not (Test-Path $cliBinary)) { throw "published glacier-cli binary not found: $cliBinary" }
+        Copy-Item $cliBinary -Destination $publishDir -Force
+    }
+    finally { Remove-Item $cliPublishDir -Recurse -Force -ErrorAction SilentlyContinue }
+
     # Debug symbols are not part of the user distribution.
     Get-ChildItem $publishDir -Filter '*.pdb' -Recurse | Remove-Item -Force
 
@@ -175,8 +201,26 @@ function Publish-Target([string]$rid) {
         else { Write-Warning "missing doc: $doc" }
     }
 
+    # The AI-agent documentation ships as ai\ beside the executables: the agent guide, its README,
+    # and the Claude Code skill folder, which carries its own copy of the guide so the skill works
+    # wherever the user installs it. (docs\changelog.md is never part of the package.)
+    $aiSrc = Join-Path $repoRoot 'docs\ai'
+    $aiDst = Join-Path $publishDir 'ai'
+    $skillDst = Join-Path $aiDst 'claude-skill'
+    New-Item -ItemType Directory -Path $skillDst -Force | Out-Null
+    foreach ($f in @('AGENT-GUIDE.md', 'README.md')) {
+        $src = Join-Path $aiSrc $f
+        if (-not (Test-Path $src)) { throw "missing AI doc: docs\ai\$f" }
+        Copy-Item $src -Destination $aiDst -Force
+    }
+    $skill = Join-Path $aiSrc 'claude-skill\SKILL.md'
+    if (-not (Test-Path $skill)) { throw "missing AI doc: docs\ai\claude-skill\SKILL.md" }
+    Copy-Item $skill -Destination $skillDst -Force
+    Copy-Item (Join-Path $aiSrc 'AGENT-GUIDE.md') -Destination $skillDst -Force
+
     $binary = Join-Path $publishDir $binaryName
     if (-not (Test-Path $binary)) { throw "published binary not found: $binary" }
+    if (-not (Test-Path (Join-Path $publishDir $cliBinaryName))) { throw "glacier-cli missing from the package: $cliBinaryName" }
 
     if ($rid -like 'win*') {
         $archive = Join-Path $OutputDir "Glacier-$version-$rid.zip"

@@ -37,7 +37,7 @@ namespace Ged.Core.IO.Rfl;
 /// The middle (post-geometry) region drifts slightly by level/version in the
 /// corpus (e.g. the relative position of <c>eax_effects</c> vs
 /// <c>climbing_regions</c>); the table encodes the v304/v305 Alpine spine
-/// (dmabrupt) since GED always saves v305. Because the table only positions NEW
+/// (dmabrupt), extended with the Alpine 1.5 (v306) chunks in Alpine RED's write order. Because the table only positions NEW
 /// sections and never reorders existing ones, that residual drift is immaterial.
 /// </para>
 /// </summary>
@@ -62,6 +62,15 @@ public static class RflSectionOrder
         (uint)SectionType.AlpineNoteObjects,      // 0x0AFBAE02
         (uint)SectionType.AlpineCoronaObjects,    // 0x0AFBAE03
         (uint)SectionType.AlpineBagObjects,       // 0x0AFBAE04
+        (uint)SectionType.AlpineWeatherRegions,   // 0x0AFBAE06  (Alpine 1.5 write order, editor_patch/level.cpp:1212-1255)
+        (uint)SectionType.AlpineVehicleFactories, // 0x0AFBAE07
+        (uint)SectionType.AlpineProjectionCameras, // 0x0AFBAE08
+        (uint)SectionType.AlpineRopeEmitters,     // 0x0AFBAE0A
+        (uint)SectionType.AlpineTerrain,          // 0x0AFBAE0B
+        (uint)SectionType.AlpineDirectionalLights, // 0x0AFBAE0C
+        (uint)SectionType.AlpineWaypointHelpers,  // 0x0AFBAE0D
+        (uint)SectionType.AlpineMoverPaths,       // 0x0AFBAE0E
+        (uint)SectionType.AlpineLiquidEmission,   // 0x0AFBAE0F
         (uint)SectionType.LevelProperties,        // 0x900
         (uint)SectionType.Lightmaps,              // 0x1200 <-- BEFORE static_geometry (mandatory; see remarks)
         (uint)SectionType.StaticGeometry,         // 0x100
@@ -86,6 +95,8 @@ public static class RflSectionOrder
         (uint)SectionType.EaxEffects,             // 0x8000 (v180 only; absent in Alpine)
         (uint)SectionType.Cutscenes,              // 0x4000
         (uint)SectionType.Movers,                 // 0x2000
+        (uint)SectionType.AlpineLightmaps,        // 0x0AFBAE09: the "after movers" slot, directly before 0x3000
+                                                  // (editor_patch/alpine_lightmaps.cpp:2045-2060; corpus order)
         (uint)SectionType.MovingGroups,           // 0x3000
         (uint)SectionType.PlayerStart,            // 0x70000
         (uint)SectionType.WaypointLists,          // 0x10000

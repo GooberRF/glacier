@@ -39,8 +39,10 @@ public sealed class LevelObject
         Action<Vec3> setPos,
         Func<bool> getHidden,
         Action<bool> setHidden,
-        Func<string> getClass)
+        Func<string> getClass,
+        bool isReadOnly = false)
     {
+        IsReadOnly = isReadOnly;
         Kind = kind;
         Section = section;
         Model = model;
@@ -57,6 +59,13 @@ public sealed class LevelObject
     }
 
     public LevelObjectKind Kind { get; }
+
+    /// <summary>
+    /// True for an object Glacier lists and inspects but does not edit (the Alpine Faction 1.5 objects): its
+    /// UID, name and position setters do nothing and it cannot be deleted or copied, so its chunk is written
+    /// back exactly as loaded.
+    /// </summary>
+    public bool IsReadOnly { get; }
 
     /// <summary>The RFL section that owns this object (marked dirty when it changes).</summary>
     public RflSection Section { get; }

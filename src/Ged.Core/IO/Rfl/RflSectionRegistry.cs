@@ -19,7 +19,7 @@ public static class RflSectionRegistry
         [(uint)SectionType.EditorOnlyLights] = LightsSection.ParseEditorOnly,
         [(uint)SectionType.CutsceneCameras] = CutsceneCamerasSection.Parse,
         [(uint)SectionType.AmbientSounds] = AmbientSoundsSection.Parse,
-        [(uint)SectionType.Events] = EventsSection.Parse,
+        [(uint)SectionType.Events] = EventsSection.ParseSection,
         [(uint)SectionType.MpRespawnPoints] = MpRespawnPointsSection.Parse,
         [(uint)SectionType.LevelProperties] = LevelPropertiesSection.Parse,
         [(uint)SectionType.ParticleEmitters] = ParticleEmittersSection.Parse,
@@ -57,6 +57,16 @@ public static class RflSectionRegistry
         [(uint)SectionType.AlpineNoteObjects] = AlpineNoteObjectsSection.Parse,
         [(uint)SectionType.AlpineCoronaObjects] = AlpineCoronaObjectsSection.Parse,
         [(uint)SectionType.AlpineBagObjects] = AlpineBagObjectsSection.Parse,
+        [(uint)SectionType.AlpineWeatherRegions] = AlpineWeatherRegionsSection.Parse,
+        [(uint)SectionType.AlpineVehicleFactories] = AlpineVehicleFactoriesSection.Parse,
+        [(uint)SectionType.AlpineProjectionCameras] = AlpineProjectionCamerasSection.Parse,
+        [(uint)SectionType.AlpineLightmaps] = AlpineLightmapsSection.Parse,
+        [(uint)SectionType.AlpineRopeEmitters] = AlpineRopeEmittersSection.Parse,
+        [(uint)SectionType.AlpineTerrain] = AlpineTerrainSection.Parse,
+        [(uint)SectionType.AlpineDirectionalLights] = AlpineDirectionalLightsSection.Parse,
+        [(uint)SectionType.AlpineWaypointHelpers] = AlpineWaypointHelpersSection.Parse,
+        [(uint)SectionType.AlpineMoverPaths] = AlpineMoverPathsSection.Parse,
+        [(uint)SectionType.AlpineLiquidEmission] = AlpineLiquidEmissionSection.Parse,
         [(uint)SectionType.DashLevelProperties] = DashLevelPropertiesSection.Parse,
         [(uint)SectionType.GedPrefabInstances] = GedPrefabInstancesSection.Parse,
         [(uint)SectionType.GedObjectMetadata] = GedObjectMetadataSection.Parse,
@@ -77,7 +87,18 @@ public static class RflSectionRegistry
         }
 
         var reader = new RfReader(section.RawBytes);
-        content = parser(reader, context);
+        try
+        {
+            content = parser(reader, context);
+        }
+        catch (EndOfStreamException ex)
+        {
+            throw new RflFormatException(
+                $"Section 0x{section.TypeId:X8} ({SectionName(section.TypeId)}, {section.RawBytes.Length} bytes) " +
+                $"ends before its records do: {ex.Message}",
+                ex);
+        }
+
         if (reader.Position != section.RawBytes.Length)
         {
             throw new RflFormatException(
@@ -87,4 +108,7 @@ public static class RflSectionRegistry
 
         return true;
     }
+
+    private static string SectionName(uint typeId) =>
+        Enum.IsDefined(typeof(SectionType), typeId) ? ((SectionType)typeId).ToString() : "unknown";
 }

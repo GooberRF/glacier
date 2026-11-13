@@ -106,6 +106,7 @@ internal sealed class WorldBsp
             node._plane = region[pivot].Plane;
             node._planeId = region[pivot].Id;
             node._hasPlane = true;
+            List<CsgSharedSplit.PsVert> donor = region[pivot].Poly;
 
             var front = new List<Face>();
             var back = new List<Face>();
@@ -121,7 +122,9 @@ internal sealed class WorldBsp
                 // the trace-case symptom) with rim holes. RED's boolean gets one surface there (the later op
                 // carves the earlier face wherever the brush contains it); one shared node plane per registry
                 // id is the extraction equivalent.
-                if ((f.Id >= 0 && f.Id == node._planeId) || Coplanar(node._plane, f.Poly))
+                // The pivot that donated the plane is always consumed (a fitted plane can miss a thin facet's own
+                // corners by more than the band; re-routing the donor would re-select it without end).
+                if (ReferenceEquals(f.Poly, donor) || (f.Id >= 0 && f.Id == node._planeId) || Coplanar(node._plane, f.Poly))
                 {
                     continue;
                 }

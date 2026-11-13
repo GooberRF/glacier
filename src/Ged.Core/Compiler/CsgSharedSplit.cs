@@ -209,11 +209,13 @@ internal static class CsgSharedSplit
                     return null;
                 }
 
+                List<PsVert>? donor = null;
                 if (!node._hasPlane)
                 {
                     node._plane = polys[0].Plane;
                     node._planeId = polys[0].Id;
                     node._hasPlane = true;
+                    donor = polys[0].Poly;
                 }
 
                 var front = new List<(CsgPlane, int, List<PsVert>)>();
@@ -221,8 +223,11 @@ internal static class CsgSharedSplit
                 foreach ((CsgPlane pl, int id, List<PsVert> poly) in polys)
                 {
                     // Coplanar with the node plane ⇒ consumed here (does not add structure); avoids
-                    // re-selecting the same plane forever.
-                    if (Coplanar(node._plane, poly))
+                    // re-selecting the same plane forever. The polygon that donated the node plane is
+                    // always consumed: a single-precision fitted plane can miss a thin, far-from-origin
+                    // facet's own corners by more than the on-plane band, and pushing the donor to a
+                    // child would re-select the same plane there without end.
+                    if (ReferenceEquals(poly, donor) || Coplanar(node._plane, poly))
                     {
                         continue;
                     }

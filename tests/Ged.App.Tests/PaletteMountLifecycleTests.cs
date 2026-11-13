@@ -68,6 +68,7 @@ public sealed class PaletteMountLifecycleTests : IDisposable
         "#Items\n" +
         "$Class Name: \"fix_medkit\"\n" +
         "$V3D Filename: \"medkit.v3d\"\n" +
+        "$Count: 25\n" +
         "\n" +
         "$Class Name: \"fix_ammo\"\n" +
         "$V3D Filename: \"ammo.v3d\"\n" +
@@ -191,6 +192,25 @@ public sealed class PaletteMountLifecycleTests : IDisposable
         Assert.Equal(new[] { "fix_ammo", "fix_medkit" }, items); // flat, alpha
     }
 
+    [AvaloniaFact]
+    public void Placing_An_Item_Gives_It_The_Mounted_Tables_Count()
+    {
+        // The palette's placement path: a new item holds its class's items.tbl Count (RED's value),
+        // whether the install was mounted before or after the level was created.
+        using var session = new EditorSession();
+        session.NewLevel();
+        LevelObject before = session.Document!.PlaceObject(LevelObjectKind.Item, default, "fix_medkit")!;
+        Assert.Equal(1, ((Item)before.Model).Count); // nothing mounted yet
+
+        session.MountInstall(_installDir);
+        LevelObject medkit = session.Document!.PlaceObject(LevelObjectKind.Item, default, "fix_medkit")!;
+        LevelObject ammo = session.Document.PlaceObject(LevelObjectKind.Item, default, "fix_ammo")!;
+        Assert.Equal(25, ((Item)medkit.Model).Count);
+        Assert.Equal(1, ((Item)ammo.Model).Count); // no Count in the table
+
+        session.NewLevel();
+        Assert.Equal(25, ((Item)session.Document!.PlaceObject(LevelObjectKind.Item, default, "fix_medkit")!.Model).Count);
+    }
     // ---- The three lifecycle scenarios -----------------------------------------------
 
     [AvaloniaFact]

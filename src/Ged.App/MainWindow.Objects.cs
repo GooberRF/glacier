@@ -667,8 +667,14 @@ public sealed partial class MainWindow
             {
                 Vec3 old = o.Position;
                 Document.EditValue(o.Section, "Staple", old, point, v => o.Position = v);
-                SetModelRotation(o.Model, frame);
-                o.MarkDirty();
+
+                // The re-orientation is part of the same undo step (and, for a mover object, carries its
+                // member brush through the document's mover link) — restored raw on undo.
+                LevelObject target = o;
+                object? oldRot = ObjectRotation.GetRaw(target.Model);
+                Document.Undo.Execute(new RelayCommand("Staple",
+                    () => { SetModelRotation(target.Model, frame); target.MarkDirty(); },
+                    () => { ObjectRotation.SetRaw(target.Model, oldRot); target.MarkDirty(); }));
             }
         }
 

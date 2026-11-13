@@ -497,9 +497,14 @@ public sealed class BrushEditor
         return uid;
     }
 
-    /// <summary>Adds an existing brush (undo-able), creating the section if needed.</summary>
+    /// <summary>
+    /// Adds a new brush (undo-able), creating the section if needed. An air or portal brush whose faces
+    /// wind outward is first stored the way RED stores it (inward, <see cref="BrushOrientation.ApplyCreationConvention"/>).
+    /// </summary>
     public void AddBrush(Brush brush, string description = "Add brush")
     {
+        ArgumentNullException.ThrowIfNull(brush);
+        BrushOrientation.ApplyCreationConvention(brush);
         (BrushesSection section, RflSection host, bool createdSection) = EnsureSection();
         _doc.Undo.Execute(new RelayCommand(description,
             () =>
@@ -527,29 +532,89 @@ public sealed class BrushEditor
     }
 
     /// <summary>
+    /// Adds several brushes as ONE undo command, appended at end-of-time in list order, creating the
+    /// brushes section inside the command when needed (so undo removes it again and restores the bytes
+    /// exactly) and raising a single change notification each way. The selection is not touched.
+    /// </summary>
+    public void AddBrushes(IReadOnlyList<Brush> brushes, string description)
+    {
+        ArgumentNullException.ThrowIfNull(brushes);
+        if (brushes.Count == 0)
+        {
+            return;
+        }
+
+        var added = brushes.ToList();
+        foreach (Brush b in added)
+        {
+            BrushOrientation.ApplyCreationConvention(b);
+        }
+
+        (BrushesSection section, RflSection host, bool createdSection) = EnsureSection();
+        _doc.Undo.Execute(new RelayCommand(description,
+            () =>
+            {
+                if (createdSection && !_doc.Rfl.Sections.Contains(host))
+                {
+                    InsertSection(host);
+                }
+
+                section.Brushes.AddRange(added);
+                host.Dirty = true;
+                Changed();
+            },
+            () =>
+            {
+                foreach (Brush b in added)
+                {
+                    section.Brushes.Remove(b);
+                }
+
+                host.Dirty = true;
+                if (createdSection && section.Brushes.Count == 0)
+                {
+                    _doc.Rfl.Sections.Remove(host);
+                }
+
+                Changed();
+            }));
+    }
+
+    /// <summary>
     /// Carve (stock permanent boolean): subtracts a selected cutter brush from
     /// every other brush it intersects, replacing their geometry as one undo-able
     /// edit. Returns the number of brushes carved.
     /// </summary>
     public int CarveSelected()
     {
+        if (_selectedBrushes.Count == 0)
+        {
+            return 0;
+        }
+
+        return Carve(System.Linq.Enumerable.First(_selectedBrushes), null).Count;
+    }
+
+    /// <summary>
+    /// Carve with an explicit cutter: subtracts brush <paramref name="cutterUid"/> from every
+    /// listed target it intersects (<paramref name="targetUids"/> null ⇒ every other brush),
+    /// replacing their geometry as one undo-able edit. The cutter itself is left in place and the
+    /// selection is not touched. Returns the carved brush UIDs in list (time) order.
+    /// </summary>
+    public IReadOnlyList<int> Carve(int cutterUid, IReadOnlyCollection<int>? targetUids)
+    {
         BrushesSection? section = FindSection();
-        if (section is null || _selectedBrushes.Count == 0)
+        Brush? cutter = section is null ? null : FindBrush(cutterUid);
+        if (section is null || cutter is null)
         {
-            return 0;
+            return Array.Empty<int>();
         }
 
-        int cutterUid = System.Linq.Enumerable.First(_selectedBrushes);
-        Brush? cutter = FindBrush(cutterUid);
-        if (cutter is null)
-        {
-            return 0;
-        }
-
+        HashSet<int>? targets = targetUids is null ? null : new HashSet<int>(targetUids);
         var swaps = new List<(Brush Target, Geometry Old, Geometry Carved)>();
         foreach (Brush b in section.Brushes)
         {
-            if (b.Uid == cutterUid)
+            if (b.Uid == cutterUid || (targets is not null && !targets.Contains(b.Uid)))
             {
                 continue;
             }
@@ -563,7 +628,7 @@ public sealed class BrushEditor
 
         if (swaps.Count == 0)
         {
-            return 0;
+            return Array.Empty<int>();
         }
 
         RflSection host = HostOf(section);
@@ -588,7 +653,7 @@ public sealed class BrushEditor
                 host.Dirty = true;
                 Changed();
             }));
-        return swaps.Count;
+        return swaps.Select(s => s.Target.Uid).ToList();
     }
 
     /// <summary>Deletes brushes by UID (undo-able).</summary>
@@ -621,6 +686,7 @@ public sealed class BrushEditor
         // brush UID and an orphan mover animating a phantom (tester reports 3 & 5).
         var deletedUids = captured.Select(t => t.Brush.Uid).ToList();
         MovingGroupMaintenance.Snapshot? maintenance = null;
+        GedObjectMetadataService.TagDropSnapshot? droppedTags = null;
         _doc.Undo.Execute(new RelayCommand($"Delete {captured.Length} brush(es)",
             () =>
             {
@@ -636,9 +702,19 @@ public sealed class BrushEditor
                 {
                     _doc.RefreshObjects();
                 }
+
+                // A deleted brush's tags go with it (restored on undo), so a later brush or object that
+                // is ever given the same UID cannot inherit them.
+                droppedTags = GedObjectMetadataService.DropTagsOfDeleted(_doc.Rfl, deletedUids, _doc.IsUidInUse);
             },
             () =>
             {
+                if (droppedTags is { } tags)
+                {
+                    GedObjectMetadataService.RestoreDroppedTags(_doc.Rfl, tags);
+                    droppedTags = null;
+                }
+
                 bool hadMaintenance = maintenance is not null;
                 if (maintenance is { } snap)
                 {
@@ -809,6 +885,51 @@ public sealed class BrushEditor
 
     public bool IsBrushHidden(int uid) => _hiddenBrushes.Contains(uid);
 
+    /// <summary>The brush session state that lives outside undo: hidden brushes and every brush sub-selection.</summary>
+    internal sealed record SessionState(int[] Hidden, int[] Brushes, (int, int)[] Faces, (int, int)[] Vertices, (int, int, int)[] Edges);
+
+    /// <summary>Captures the hidden set and the brush/face/vertex/edge selections (see <see cref="RestoreSessionState"/>).</summary>
+    internal SessionState CaptureSessionState() => new(
+        _hiddenBrushes.ToArray(),
+        _selectedBrushes.ToArray(),
+        _selectedFaces.Select(f => (f.Brush, f.Face)).ToArray(),
+        _selectedVertices.Select(v => (v.Brush, v.Vertex)).ToArray(),
+        _selectedEdges.Select(e => (e.Brush, e.V0, e.V1)).ToArray());
+
+    /// <summary>
+    /// Restores a <see cref="CaptureSessionState"/> snapshot (used when a script run is rolled back or
+    /// was a dry run: hiding and selecting are not undoable, so the rollback restores them explicitly).
+    /// Raises the visibility / selection events only when something actually changes.
+    /// </summary>
+    internal void RestoreSessionState(SessionState state)
+    {
+        if (!_hiddenBrushes.SetEquals(state.Hidden))
+        {
+            _hiddenBrushes.Clear();
+            _hiddenBrushes.UnionWith(state.Hidden);
+            VisibilityChanged?.Invoke();
+        }
+
+        bool same = _selectedBrushes.SetEquals(state.Brushes)
+            && _selectedFaces.SetEquals(state.Faces.Select(f => (f.Item1, f.Item2)))
+            && _selectedVertices.SetEquals(state.Vertices.Select(v => (v.Item1, v.Item2)))
+            && _selectedEdges.SetEquals(state.Edges.Select(e => (e.Item1, e.Item2, e.Item3)));
+        if (same)
+        {
+            return;
+        }
+
+        _selectedBrushes.Clear();
+        _selectedBrushes.UnionWith(state.Brushes);
+        _selectedFaces.Clear();
+        _selectedFaces.UnionWith(state.Faces.Select(f => (f.Item1, f.Item2)));
+        _selectedVertices.Clear();
+        _selectedVertices.UnionWith(state.Vertices.Select(v => (v.Item1, v.Item2)));
+        _selectedEdges.Clear();
+        _selectedEdges.UnionWith(state.Edges.Select(e => (e.Item1, e.Item2, e.Item3)));
+        SelectionChanged?.Invoke();
+    }
+
     /// <summary>Hides/shows brushes (session state); raises <see cref="VisibilityChanged"/>.</summary>
     public void SetBrushHidden(IReadOnlyCollection<int> uids, bool hidden)
     {
@@ -851,17 +972,52 @@ public sealed class BrushEditor
             return Array.Empty<int>();
         }
 
+        return AppendClones(_clipboard, offset, "Paste");
+    }
+
+    /// <summary>
+    /// Duplicates the listed brushes (deep clones with fresh UIDs, unlocked, offset by
+    /// <paramref name="offset"/>), appended at the end of time in the given order as one undo-able
+    /// command. Does not touch the clipboard or the selection. Unknown UIDs are skipped; returns
+    /// the new UIDs in the same order as their sources.
+    /// </summary>
+    public IReadOnlyList<int> Duplicate(IReadOnlyCollection<int> uids, Vec3 offset)
+    {
+        ArgumentNullException.ThrowIfNull(uids);
+        var sources = new List<Brush>();
+        var seen = new HashSet<int>();
+        foreach (int uid in uids)
+        {
+            if (seen.Add(uid) && FindBrush(uid) is Brush b)
+            {
+                sources.Add(b);
+            }
+        }
+
+        return sources.Count == 0 ? Array.Empty<int>() : AppendClones(sources, offset, "Duplicate");
+    }
+
+    /// <summary>
+    /// Raises the brush-changed notification for an edit that bypassed this editor (e.g. a prefab
+    /// import writing the brushes section directly), so every host's preview geometry rebuilds.
+    /// </summary>
+    public void NotifyExternalBrushChange() => Changed();
+
+    /// <summary>The shared clone-and-append path of <see cref="Paste"/> and <see cref="Duplicate"/>.</summary>
+    private IReadOnlyList<int> AppendClones(IReadOnlyList<Brush> sources, Vec3 offset, string verb)
+    {
         (BrushesSection section, RflSection host, bool createdSection) = EnsureSection();
-        var pasted = _clipboard.Select(b =>
+        var pasted = sources.Select(b =>
         {
             Brush clone = GeometryClone.Deep(b);
             clone.Uid = _doc.AllocateUid();
             clone.Position = clone.Position.Add(offset);
             clone.State = BrushState.Normal;
+            BrushOrientation.RepairAir(clone);
             return clone;
         }).ToList();
 
-        _doc.Undo.Execute(new RelayCommand($"Paste {pasted.Count} brush(es)",
+        _doc.Undo.Execute(new RelayCommand($"{verb} {pasted.Count} brush(es)",
             () =>
             {
                 if (createdSection && !_doc.Rfl.Sections.Contains(host))
@@ -919,7 +1075,21 @@ public sealed class BrushEditor
         int triangulated = 0;
         foreach (Brush b in targets)
         {
-            OpResult r = mutate(b);
+            OpResult r;
+            try
+            {
+                r = mutate(b);
+            }
+            catch
+            {
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    Assign(targets[i], before[i]);
+                }
+
+                throw;
+            }
+
             if (!r)
             {
                 overall = r;
@@ -942,6 +1112,7 @@ public sealed class BrushEditor
             return overall;
         }
 
+        ApplyAirToggles(targets, before);
         var after = targets.Select(GeometryClone.Deep).ToList();
         var snapBefore = before;
         var snapAfter = after;
@@ -949,6 +1120,161 @@ public sealed class BrushEditor
         _doc.Undo.Execute(new RelayCommand(description,
             () => { for (int i = 0; i < live.Count; i++) { Assign(live[i], snapAfter[i]); } host.Dirty = true; Changed(); },
             () => { for (int i = 0; i < live.Count; i++) { Assign(live[i], snapBefore[i]); } host.Dirty = true; Changed(); }));
+        return overall with { FacesTriangulated = triangulated };
+    }
+
+    /// <summary>
+    /// RED's Air/Solid toggle (<see cref="BrushOrientation.ApplyAirToggle"/>): every edited brush whose air
+    /// bit changed has its faces reversed into the orientation RED stores for its new state, inside the
+    /// same undo step as the flag change. Portal / detail toggles leave the faces alone, as RED does.
+    /// </summary>
+    private static void ApplyAirToggles(IReadOnlyList<Brush> targets, IReadOnlyList<Brush> before)
+    {
+        for (int i = 0; i < targets.Count; i++)
+        {
+            BrushOrientation.ApplyAirToggle(targets[i], before[i].Flags);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="EditBrushes"/> for edits that may split a brush: <paramref name="mutate"/> edits each brush
+    /// in place and returns any NEW pieces (built from it, UIDs unassigned) to insert directly after it in
+    /// time order. All-or-nothing: on any failure every brush is restored, no UID is allocated and no undo
+    /// entry is recorded. On success the pieces get fresh UIDs (state Normal) and the whole change is ONE
+    /// undo entry. <paramref name="resultUids"/> lists the edited brushes and their pieces in time order.
+    /// The selection is not touched.
+    /// </summary>
+    public OpResult EditBrushesWithPieces(IReadOnlyCollection<int> uids, string description,
+        Func<Brush, (OpResult Result, IReadOnlyList<Brush> Pieces)> mutate, out IReadOnlyList<int> resultUids)
+    {
+        ArgumentNullException.ThrowIfNull(uids);
+        ArgumentNullException.ThrowIfNull(mutate);
+        resultUids = Array.Empty<int>();
+        BrushesSection? section = FindSection();
+        if (section is null)
+        {
+            return OpResult.Fail("No brushes to edit.");
+        }
+
+        var targets = section.Brushes.Where(b => uids.Contains(b.Uid)).ToList();
+        if (targets.Count == 0)
+        {
+            return OpResult.Fail("No brushes selected.");
+        }
+
+        RflSection host = HostOf(section);
+        var before = targets.Select(GeometryClone.Deep).ToList();
+        var piecesOf = new Dictionary<Brush, IReadOnlyList<Brush>>(ReferenceEqualityComparer.Instance);
+        OpResult overall = OpResult.Ok(description);
+        int triangulated = 0;
+        foreach (Brush b in targets)
+        {
+            OpResult r;
+            IReadOnlyList<Brush> pieces;
+            try
+            {
+                (r, pieces) = mutate(b);
+            }
+            catch
+            {
+                // All-or-nothing even when the edit throws (a script error caught by pcall must not leave half-edited brushes).
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    Assign(targets[i], before[i]);
+                }
+
+                throw;
+            }
+
+            if (!r)
+            {
+                overall = r;
+                break;
+            }
+
+            triangulated += r.FacesTriangulated;
+            if (pieces is { Count: > 0 })
+            {
+                piecesOf[b] = pieces;
+            }
+        }
+
+        if (!overall)
+        {
+            for (int i = 0; i < targets.Count; i++)
+            {
+                Assign(targets[i], before[i]);
+            }
+
+            return overall;
+        }
+
+        foreach (IReadOnlyList<Brush> pieces in piecesOf.Values)
+        {
+            foreach (Brush p in pieces)
+            {
+                p.Uid = _doc.AllocateUid();
+                p.State = BrushState.Normal;
+                BrushOrientation.ApplyCreationConvention(p);
+            }
+        }
+
+        ApplyAirToggles(targets, before);
+        var after = targets.Select(GeometryClone.Deep).ToList();
+        List<Brush> listBefore = section.Brushes.ToList();
+        var listAfter = new List<Brush>(listBefore.Count + piecesOf.Values.Sum(p => p.Count));
+        var order = new List<int>();
+        var targetSet = new HashSet<Brush>(targets, ReferenceEqualityComparer.Instance);
+        foreach (Brush b in listBefore)
+        {
+            listAfter.Add(b);
+            if (!targetSet.Contains(b))
+            {
+                continue;
+            }
+
+            order.Add(b.Uid);
+            if (piecesOf.TryGetValue(b, out IReadOnlyList<Brush>? pieces))
+            {
+                listAfter.AddRange(pieces);
+                order.AddRange(pieces.Select(p => p.Uid));
+            }
+        }
+
+        resultUids = order;
+        var live = targets;
+        bool structural = piecesOf.Count > 0;
+        _doc.Undo.Execute(new RelayCommand(description,
+            () =>
+            {
+                for (int i = 0; i < live.Count; i++)
+                {
+                    Assign(live[i], after[i]);
+                }
+
+                if (structural)
+                {
+                    Replace(section.Brushes, listAfter);
+                }
+
+                host.Dirty = true;
+                Changed();
+            },
+            () =>
+            {
+                for (int i = 0; i < live.Count; i++)
+                {
+                    Assign(live[i], before[i]);
+                }
+
+                if (structural)
+                {
+                    Replace(section.Brushes, listBefore);
+                }
+
+                host.Dirty = true;
+                Changed();
+            }));
         return overall with { FacesTriangulated = triangulated };
     }
 
@@ -1067,6 +1393,7 @@ public sealed class BrushEditor
             }
         }
 
+        ApplyAirToggles(targets, before);
         var after = targets.Select(GeometryClone.Deep).ToList();
         int[] editedUids = targets.Select(b => b.Uid).ToArray();
         _doc.Undo.Execute(new RelayCommand(description,
@@ -1082,19 +1409,38 @@ public sealed class BrushEditor
     /// </summary>
     public OpResult Clip(Vec3 planePoint, Vec3 planeNormal, ClipMode mode, bool flipNormal)
     {
-        BrushesSection? section = FindSection();
-        if (section is null || _selectedBrushes.Count == 0)
+        if (FindSection() is null || _selectedBrushes.Count == 0)
         {
             return OpResult.Fail("Select a brush to clip.");
         }
 
+        return Clip(_selectedBrushes.ToList(), planePoint, planeNormal, mode, flipNormal, out _);
+    }
+
+    /// <summary>
+    /// Clips the listed brushes by a world plane (see <see cref="Clip(Vec3, Vec3, ClipMode, bool)"/>)
+    /// without consulting or changing the selection. <paramref name="pieceUids"/> lists, for each
+    /// clipped brush in list (time) order, its UID then the UID of any new piece.
+    /// </summary>
+    public OpResult Clip(IReadOnlyCollection<int> uids, Vec3 planePoint, Vec3 planeNormal, ClipMode mode, bool flipNormal, out IReadOnlyList<int> pieceUids)
+    {
+        ArgumentNullException.ThrowIfNull(uids);
+        pieceUids = Array.Empty<int>();
+        BrushesSection? section = FindSection();
+        if (section is null || uids.Count == 0)
+        {
+            return OpResult.Fail("No brushes to clip.");
+        }
+
+        var wanted = new HashSet<int>(uids);
         RflSection host = HostOf(section);
         List<Brush> before = section.Brushes.ToList();
         var after = new List<Brush>();
+        var pieces = new List<int>();
         string? failure = null;
         foreach (Brush b in before)
         {
-            if (!_selectedBrushes.Contains(b.Uid))
+            if (!wanted.Contains(b.Uid))
             {
                 after.Add(b);
                 continue;
@@ -1105,14 +1451,17 @@ public sealed class BrushEditor
             {
                 failure = r.Message;
                 after.Add(b);
+                pieces.Add(b.Uid);
                 continue;
             }
 
             for (int i = 0; i < r.Pieces.Count; i++)
             {
+                int uid = i == 0 ? b.Uid : _doc.AllocateUid();
+                pieces.Add(uid);
                 after.Add(new Brush
                 {
-                    Uid = i == 0 ? b.Uid : _doc.AllocateUid(),
+                    Uid = uid,
                     Position = b.Position,
                     Rotation = b.Rotation,
                     Geometry = r.Pieces[i],
@@ -1127,6 +1476,8 @@ public sealed class BrushEditor
         {
             return OpResult.Fail(failure);
         }
+
+        pieceUids = pieces;
 
         _doc.Undo.Execute(new RelayCommand(mode == ClipMode.Split ? "Clip: split" : "Clip: cut",
             () => { Replace(section.Brushes, after); host.Dirty = true; Changed(); },

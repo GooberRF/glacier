@@ -5,8 +5,8 @@ using System.Linq;
 namespace Ged.Core.Tables;
 
 /// <summary>
-/// The one data table covering all 148 event classes (90 stock IDs 0–89 + 58
-/// Alpine IDs 100–157). Every entry carries its game ID, browser category,
+/// The one data table covering all 157 event classes (90 stock IDs 0–89 + 67
+/// Alpine IDs 100–166). Every entry carries its game ID, browser category,
 /// per-slot inspector field configs (encoding the disassembly-confirmed slot
 /// traps), orientation flag, save-target version gate, signal-forwarding flag,
 /// and expected link targets. The event inspector and factory render entirely
@@ -22,7 +22,7 @@ public static class EventSchemaCatalog
     private static readonly Dictionary<int, EventSchema> ByIdMap =
         AllList.GroupBy(e => e.GameId).ToDictionary(g => g.Key, g => g.First());
 
-    /// <summary>All 148 event schemas, stock (0–89) then Alpine (100–157).</summary>
+    /// <summary>All 157 event schemas, stock (0–89) then Alpine (100–166).</summary>
     public static IReadOnlyList<EventSchema> All => AllList;
 
     /// <summary>Placeable event classes (excludes the 3 auto/legacy classes).</summary>
@@ -80,7 +80,7 @@ public static class EventSchemaCatalog
                 ForwardsSignal = forwards,
                 Placeable = placeable,
                 Description = desc,
-                MinVersion = id >= 100 ? 300 : 0,
+                MinVersion = id >= 159 ? 306 : id >= 100 ? 300 : 0,
             });
         }
 
@@ -139,8 +139,9 @@ public static class EventSchemaCatalog
             F(Flt(EventSlot.Float1, "Value (float1):"), Int(EventSlot.Int1, "State (int1):"), Bln(EventSlot.Bool1, "Flag (bool1):")),
             L(EventLinkTarget.Monitor));
         Add("Music_Start", 41, "Level",
-            F(Fil(EventSlot.Str1, "Music/WAV filename (str1):", EventFileKind.Sound), Bln(EventSlot.Bool2, "Loop / no fade (bool2):")),
-            desc: "Uses bool2, NOT bool1.");
+            F(Fil(EventSlot.Str1, "Music/WAV filename (str1):", EventFileKind.Sound), Bln(EventSlot.Bool2, "Loop / no fade (bool2):"),
+              Bln(EventSlot.Bool1, "Looping (bool1, RFL 306+):")),
+            desc: "The stock engine reads bool2; RED's Looping checkbox is bool1, which Alpine Faction honours from RFL 306 (game_patch/object/event.cpp:498-519).");
         Add("Music_Stop", 42, "Level");
         Add("Play_Sound", 0, "Level",
             F(Fil(EventSlot.Str1, "Sound file (str1):", EventFileKind.Sound), Fil(EventSlot.Str2, "Alt sound file (str2):", EventFileKind.Sound),
@@ -152,7 +153,7 @@ public static class EventSchemaCatalog
             orient: true);
         Add("Slay_Object", 1, "Level", links: L(EventLinkTarget.Object));
         Add("Spawn_Object", 23, "Level",
-            F(Txt(EventSlot.Str1, "Object type (str1):"), Txt(EventSlot.Str2, "Class (str2):"),
+            F(Txt(EventSlot.Str1, "Object type (str1):"), new EventFieldSpec(EventSlot.Str2, EventEditor.Text, "Class (str2):") { Key = "spawn_class" },
               Bln(EventSlot.Bool1, "Gravity (bool1):"), Flt(EventSlot.Float1, "Lifetime seconds (float1):")));
         Add("Swap_Textures", 33, "Level",
             F(Int(EventSlot.Int1, "First texture index (int1):"), Int(EventSlot.Int2, "Second texture index (int2):"),
@@ -315,6 +316,23 @@ public static class EventSchemaCatalog
         Add("ATX_Pause", 156, "AF_General", F(Txt(EventSlot.Str1, "ATX handle (str1):")));
         Add("ATX_Set_Frame_Time", 157, "AF_General", F(Txt(EventSlot.Str1, "ATX handle (str1):"), Int(EventSlot.Int1, "Frame time ms (int1):")));
 
+        // Alpine 1.4 (158) and 1.5 (159–166): names and ids game_patch/object/event_alpine.cpp:52-118, editor
+        // labels editor_patch/event.cpp:490-495, 653-677, 758-763, 845-854; behaviour event_alpine.h:2593, 2728-2760,
+        // 3255-3500 and game_patch/multi/payload.cpp (Payload_Handler drives a linked mover).
+        Add("Weather_Region_State", 158, "AF_General", links: L(EventLinkTarget.WeatherRegion),
+            desc: "Turns linked weather regions on or off.");
+        Add("Display_Projection", 159, "AF_General",
+            F(Txt(EventSlot.Str1, "ATX handle (str1):"), Int(EventSlot.Int1, "Render width (int1):"), Int(EventSlot.Int2, "Render height (int2):"),
+              Flt(EventSlot.Float1, "FOV degrees (float1):"), Flt(EventSlot.Float2, "Update interval seconds (float2):")),
+            L(EventLinkTarget.ProjectionCamera),
+            desc: "Renders the linked projection camera's view into the ATX handle (Direct3D 11 only).");
+        Add("Climbing_Region_State", 160, "AF_General", links: L(EventLinkTarget.ClimbRegion),
+            desc: "Enables or disables linked climbing regions.");
+        Add("Rope_State", 162, "AF_General", links: L(EventLinkTarget.RopeEmitter),
+            desc: "Attaches or releases the anchors of linked rope emitters.");
+        Add("Mesh_Set_Scale", 163, "AF_General", F(Flt(EventSlot.Float1, "Scale (float1):")), L(EventLinkTarget.MeshObject),
+            desc: "Scales linked mesh objects (a non-positive scale resets them to 1).");
+
         // ==== ALPINE — AF_Flow ===============================================
         Add("Sequence", 108, "AF_Flow", F(Int(EventSlot.Int1, "Next index to activate (int1):")), L(EventLinkTarget.Event));
         Add("Switch_Random", 103, "AF_Flow", F(Bln(EventSlot.Bool1, "No repeats until all used (bool1):")), L(EventLinkTarget.Event));
@@ -340,9 +358,12 @@ public static class EventSchemaCatalog
             F(Uid(EventSlot.Int1, "UID (trigger/room) to check (int1):"),
               Drop(EventSlot.Int2, "What to check for (int2):", "Player", "Entity that triggered this", "All linked objects", "At least 1 linked object")),
             L(EventLinkTarget.Event));
+        // int1 is a raw NetGameType, which runs to 15 in Alpine 1.5 (game_patch/rf/multi.h:156-172); Alpine RED's
+        // dropdown lists only the first 8 (editor_patch/event.cpp:496-510), Glacier offers every gametype.
         Add("Gametype_Gate", 123, "AF_Flow",
             F(Drop(EventSlot.Int1, "Check for gametype (int1):", "Deathmatch", "Capture the Flag", "Team Deathmatch", "King of the Hill",
-                "Damage Control", "Revolt", "Run", "Escalation")),
+                "Damage Control", "Revolt", "Run", "Escalation", "Bagman", "Team Bagman", "Pit", "Wipeout", "Gun Game", "Salvage",
+                "Scavenger", "Payload")),
             L(EventLinkTarget.Event));
         Add("Owner_Gate", 142, "AF_Flow",
             F(Uid(EventSlot.Int1, "Handler UID (int1):"), Drop(EventSlot.Int2, "Required owner (int2):", "Neutral", "Red", "Blue")),
@@ -374,14 +395,30 @@ public static class EventSchemaCatalog
         Add("When_Picked_Up", 124, "AF_Catalysts", links: L(EventLinkTarget.Item));
         Add("When_Captured", 140, "AF_Catalysts", links: L(EventLinkTarget.Event));
         Add("When_Round_Ends", 144, "AF_Catalysts", links: L(EventLinkTarget.Event));
+        Add("When_Destroyed", 161, "AF_Catalysts", F(Bln(EventSlot.Bool1, "Activate when any dead (bool1):")),
+            L(EventLinkTarget.DetailBrush, EventLinkTarget.Mover, EventLinkTarget.Trigger, EventLinkTarget.Event),
+            desc: "Fires when its linked destructible detail brushes are destroyed (any one, or all); activates its linked movers, triggers and events.");
+        Add("When_Setup_Ends", 166, "AF_Catalysts", links: L(EventLinkTarget.Event),
+            desc: "Fires its links once the Payload cart's setup time is over.");
 
         // ==== ALPINE — AF_Gameplay ===========================================
         Add("Capture_Point_Handler", 137, "AF_Gameplay",
-            F(Txt(EventSlot.Str1, "Name (str1):"), Flt(EventSlot.Float1, "Outline offset (float1):"), Flt(EventSlot.Float2, "Cap rate multiplier (float2):"),
+            F(new EventFieldSpec(EventSlot.Str1, EventEditor.Text, "Name (str1):") { Key = "point_name" }, Flt(EventSlot.Float1, "Outline offset (float1):"), Flt(EventSlot.Float2, "Cap rate multiplier (float2):"),
               Int(EventSlot.Int1, "Stage (used in REV) (int1):"),
               Drop(EventSlot.Int2, "Position (used in ESC) (int2):", "Basic/Center", "Red base", "Blue base", "Red forward", "Blue forward"),
               Bln(EventSlot.Bool1, "Cylindrical trigger (bool1):")));
         Add("Set_Gameplay_Rule", 143, "AF_Gameplay", F(Drop(EventSlot.Int1, "Rule to set (int1):", "Player has headlamp")));
+        Add("Payload_Handler", 164, "AF_Gameplay",
+            F(new EventFieldSpec(EventSlot.Str1, EventEditor.Text, "Name (str1):") { Key = "payload_name" },
+              Drop(EventSlot.Int1, "Attacking team (int1):", "Blue", "Red"), Flt(EventSlot.Float1, "Push radius (float1):"),
+              Int(EventSlot.Int2, "Rollback delay (int2):"), Bln(EventSlot.Bool1, "No healing or ammo (bool1):"),
+              Bln(EventSlot.Bool2, "No finale explosion (bool2):")),
+            L(EventLinkTarget.Mover),
+            desc: "The Payload cart: links the One Way mover the attackers push. Needs RFL 306 and Legacy Movers off (common/include/common/payload.h, game_patch/multi/payload.cpp:228-240).");
+        Add("Payload_Checkpoint", 165, "AF_Gameplay",
+            F(new EventFieldSpec(EventSlot.Str1, EventEditor.Text, "Name (str1):") { Key = "checkpoint_name" },
+              Flt(EventSlot.Float1, "Hold seconds (float1):"), Int(EventSlot.Int1, "Time bonus seconds (int1):")),
+            desc: "A Payload checkpoint, named by a cart keyframe.");
 
         return e;
     }

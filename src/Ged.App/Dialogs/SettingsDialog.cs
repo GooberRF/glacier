@@ -94,6 +94,13 @@ internal sealed class SettingsDialog : Window
         panel.Children.Add(TextRow("Playtest extra args", _settings.PlaytestExtraArgs, v => _settings.PlaytestExtraArgs = v.Trim()));
         panel.Children.Add(TextRow("Playtest launch template (blank = direct; e.g. wine {exe} {args})", _settings.PlaytestLaunchTemplate, v => _settings.PlaytestLaunchTemplate = v.Trim()));
         panel.Children.Add(TextRow("Prefab directory (blank = default)", _settings.PrefabDirectory, v => _settings.PrefabDirectory = v.Trim()));
+        panel.Children.Add(CheckRow("Allow command-line tools and AI agents to control the open level", _settings.EnableAutomationBridge,
+            v => { _settings.EnableAutomationBridge = v; _onApply(); }));
+        Control destructive = CheckRow("Allow destructive AI actions (the MCP server also needs --allow-destructive)", _settings.AllowDestructiveAutomation,
+            v => _settings.AllowDestructiveAutomation = v);
+        ToolTip.SetTip(destructive, "Lets an AI agent connected with glacier-cli mcp discard unsaved changes, overwrite other existing files, " +
+            "and run scripts that delete, save or package. Every AI change is still one undo step.");
+        panel.Children.Add(destructive);
         return Scroll(panel);
     }
 

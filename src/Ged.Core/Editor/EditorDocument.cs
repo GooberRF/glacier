@@ -46,7 +46,15 @@ public sealed class EditorDocument
         Rfl.RepairLightmapOrder();
 
         Undo.Changed += () => DirtyChanged?.Invoke();
+
+        // A whole-mover Object-mode transform (any path: gizmo, nudge, scripts, automation) carries the
+        // mover's member brush along with its movers-section copy in the same undo step.
+        Undo.CommandRunner = new Editing.MoverObjectTransformLink(this).Run;
         RefreshObjects();
+
+        // Each mover's copy was taken before the document was opened: snapshot its member brushes now,
+        // so later edits to them (and only those) are recognised as leaving the copy stale.
+        MoverCopies.TrackUntracked(Rfl);
 
         // [ALPINE] Populate each brush's editor-visible geoable state (BrushFlags.Geoable) from the
         // alpine_level_properties geoable table, so a brush that is geoable in the file shows checked
@@ -79,6 +87,22 @@ public sealed class EditorDocument
 
     public UndoStack Undo { get; } = new();
 
+    /// <summary>
+    /// Which mover member brushes changed since their <c>movers</c>-section copy was taken — the one
+    /// record the editor, scripts and the automation hosts share to decide which mover copies a save or
+    /// build must refresh (see <see cref="SyncStaleMoverCopies"/>).
+    /// </summary>
+    public MoverCopyTracker MoverCopies { get; } = new();
+
+    /// <summary>
+    /// Refreshes the <c>movers</c>-section copy of every mover whose member brushes were edited after the
+    /// copy was taken (<see cref="MoverService.SyncStaleCopies"/>), folded into the latest undo step.
+    /// Untouched movers are left exactly as they are. Saves call this first; builds and the other
+    /// writers (playtest, packaging, autosave) call it before they read the copies. Returns the number
+    /// of movers refreshed.
+    /// </summary>
+    public int SyncStaleMoverCopies() => new MoverService(this).SyncStaleCopies().Count;
+
     /// <summary>All level objects (movers, point objects, regions, player start).</summary>
     public IReadOnlyList<LevelObject> Objects => _objects;
 
@@ -110,14 +134,29 @@ public sealed class EditorDocument
         Rfl.ParseAllKnownSections();
         _objects = LevelObjectEnumerator.Enumerate(Rfl, _sessionHidden);
         _byUid = new Dictionary<int, LevelObject>();
-        int max = 0;
         foreach (LevelObject o in _objects)
         {
             _byUid[o.Uid] = o;
+        }
+
+        _nextUid = Math.Max(_nextUid, MaxUsedUid() + 1);
+        _selection.RemoveWhere(o => !_byUid.TryGetValue(o.Uid, out LevelObject? cur) || !ReferenceEquals(cur, o));
+        ObjectsChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// The highest UID in use: level objects, brushes (not projected as objects but they still consume
+    /// UIDs), and every UID that carries GED object metadata (tags, light cookies). Metadata counts
+    /// because a reused UID would silently inherit the metadata of whatever used to own it.
+    /// </summary>
+    private int MaxUsedUid()
+    {
+        int max = 0;
+        foreach (LevelObject o in _objects)
+        {
             max = Math.Max(max, o.Uid);
         }
 
-        // Brushes are not projected as objects but still consume UIDs.
         foreach (RflSection section in Rfl.Sections)
         {
             if (section.Content is BrushesSection bs)
@@ -127,12 +166,45 @@ public sealed class EditorDocument
                     max = Math.Max(max, b.Uid);
                 }
             }
+            else if (section.Content is GedObjectMetadataSection meta)
+            {
+                foreach (GedObjectMetadataRecord rec in meta.Entries)
+                {
+                    max = Math.Max(max, rec.Uid);
+                }
+            }
         }
 
-        _nextUid = Math.Max(_nextUid, max + 1);
-        _selection.RemoveWhere(o => !_byUid.TryGetValue(o.Uid, out LevelObject? cur) || !ReferenceEquals(cur, o));
-        ObjectsChanged?.Invoke();
+        return max;
     }
+
+    /// <summary>True when <paramref name="uid"/> belongs to a level object or a brush.</summary>
+    internal bool IsUidInUse(int uid)
+    {
+        if (_byUid.ContainsKey(uid))
+        {
+            return true;
+        }
+
+        foreach (RflSection section in Rfl.Sections)
+        {
+            if (section.Content is BrushesSection bs && bs.Brushes.Any(b => b.Uid == uid))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The next UID <see cref="AllocateUid"/> will consider (a watermark a rolled-back script run restores).</summary>
+    internal int UidWatermark => _nextUid;
+
+    /// <summary>
+    /// Returns UIDs consumed by work that was rolled back (a dry run or a failed script run), so a later
+    /// run allocates the same UIDs a fresh run would. Never lowers the watermark below a UID still in use.
+    /// </summary>
+    internal void RestoreUidWatermark(int watermark) => _nextUid = Math.Max(watermark, MaxUsedUid() + 1);
 
     public LevelObject? FindByUid(int uid) => _byUid.GetValueOrDefault(uid);
 
@@ -161,6 +233,23 @@ public sealed class EditorDocument
         }
 
         _selection.Clear();
+        SelectionChanged?.Invoke();
+    }
+
+    /// <summary>The UIDs of the selected objects (a rolled-back script run restores them with <see cref="RestoreSelection"/>).</summary>
+    internal int[] CaptureSelection() => _selection.Select(o => o.Uid).ToArray();
+
+    /// <summary>Re-selects exactly the objects in <paramref name="uids"/> that exist; raises SelectionChanged only on a change.</summary>
+    internal void RestoreSelection(IReadOnlyCollection<int> uids)
+    {
+        var wanted = uids.Select(FindByUid).OfType<LevelObject>().ToHashSet();
+        if (_selection.SetEquals(wanted))
+        {
+            return;
+        }
+
+        _selection.Clear();
+        _selection.UnionWith(wanted);
         SelectionChanged?.Invoke();
     }
 
@@ -578,6 +667,7 @@ public sealed class EditorDocument
         SelectionChanged?.Invoke();
 
         Editing.MovingGroupMaintenance.Snapshot? maintenance = null;
+        GedObjectMetadataService.TagDropSnapshot? droppedTags = null;
         Undo.Execute(new RelayCommand($"{description} {captured.Length} object(s)",
             () =>
             {
@@ -589,9 +679,19 @@ public sealed class EditorDocument
 
                 maintenance = Editing.MovingGroupMaintenance.ApplyMemberDeletion(Rfl, deletedUids);
                 RefreshObjects();
+
+                // A deleted object's tags go with it (restored on undo), so a later object that is
+                // ever given the same UID cannot inherit them.
+                droppedTags = GedObjectMetadataService.DropTagsOfDeleted(Rfl, deletedUids, IsUidInUse);
             },
             () =>
             {
+                if (droppedTags is { } tags)
+                {
+                    GedObjectMetadataService.RestoreDroppedTags(Rfl, tags);
+                    droppedTags = null;
+                }
+
                 if (maintenance is { } snap)
                 {
                     Editing.MovingGroupMaintenance.Revert(Rfl, snap);
@@ -615,22 +715,46 @@ public sealed class EditorDocument
     /// creating its section if the level lacks one. Undo-able as one entry;
     /// returns the resulting <see cref="LevelObject"/> handle.
     /// </summary>
-    public LevelObject? PlaceObject(LevelObjectKind kind, Vec3 pos, string? className = null)
+    public LevelObject? PlaceObject(LevelObjectKind kind, Vec3 pos, string? className = null) =>
+        PlaceObject(kind, pos, className, itemCount: null);
+
+    /// <summary>
+    /// As <see cref="PlaceObject(LevelObjectKind, Vec3, string?)"/>; a new item's count is
+    /// <paramref name="itemCount"/> when given, else <see cref="ItemDefaultCount"/>'s value for its class,
+    /// else the blueprint's 1.
+    /// </summary>
+    public LevelObject? PlaceObject(LevelObjectKind kind, Vec3 pos, string? className, int? itemCount)
     {
         int uid = AllocateUid();
         ObjectBlueprint bp = ObjectFactory.Build(kind, uid, pos, className);
+        if (bp.Model is Item item && (itemCount ?? ItemDefaultCount?.Invoke(item.Header.ClassName)) is int count)
+        {
+            item.Count = count;
+        }
+
         return PlaceBlueprint(bp, $"Place {kind}");
     }
+
+    /// <summary>
+    /// The default count of a newly placed item of a class — the host's <c>items.tbl</c> <c>$Count</c>
+    /// (<see cref="GameCatalogs.ItemCount"/>), the value RED gives a new item: an Assault Rifle pickup
+    /// holds 42 rounds, a Medical Kit 25 health. Null (no install mounted) keeps the blueprint's 1.
+    /// </summary>
+    public Func<string, int?>? ItemDefaultCount { get; set; }
 
     /// <summary>Places a pre-built blueprint (used by the palette and the round-trip harness).</summary>
     public LevelObject? PlaceBlueprint(ObjectBlueprint bp, string? description = null)
     {
         ArgumentNullException.ThrowIfNull(bp);
-        RflSection section = Rfl.GetOrCreateSection(bp.Section, bp.CreateSection);
+
+        // A missing section is created inside the command (and removed again on undo), so undoing the
+        // first placement of a kind leaves the file byte-identical.
+        RflSection section = Rfl.FindOrPrepareSection(bp.Section, bp.CreateSection, out bool created);
         IRflSectionContent content = section.Content!;
         Undo.Execute(new RelayCommand(description ?? $"Place {bp.Kind}",
             () =>
             {
+                AttachSection(section, created);
                 bp.Append(content);
                 section.Dirty = true;
                 RefreshObjects();
@@ -639,6 +763,7 @@ public sealed class EditorDocument
             {
                 bp.Remove(content);
                 section.Dirty = true;
+                DetachSection(section, created);
                 RefreshObjects();
             }));
 
@@ -690,11 +815,12 @@ public sealed class EditorDocument
             ? EventFactory.CreateSample(schema, uid, pos, Rfl.Header.Version)
             : EventFactory.Create(schema, uid, pos, Rfl.Header.Version);
 
-        RflSection section = Rfl.GetOrCreateSection(SectionType.Events, () => new EventsSection());
+        RflSection section = Rfl.FindOrPrepareSection(SectionType.Events, () => new EventsSection(), out bool created);
         var events = (EventsSection)section.Content!;
         Undo.Execute(new RelayCommand($"Place {schema.ClassName}",
             () =>
             {
+                AttachSection(section, created);
                 events.Events.Add(ev);
                 section.Dirty = true;
                 RefreshObjects();
@@ -703,10 +829,29 @@ public sealed class EditorDocument
             {
                 events.Events.Remove(ev);
                 section.Dirty = true;
+                DetachSection(section, created);
                 RefreshObjects();
             }));
 
         return FindByUid(uid);
+    }
+
+    /// <summary>Inserts a section an edit created (inside that edit's command); no-op for an existing one.</summary>
+    private void AttachSection(RflSection section, bool created)
+    {
+        if (created && !Rfl.Sections.Contains(section))
+        {
+            Rfl.InsertSection(section);
+        }
+    }
+
+    /// <summary>Removes a section the undone edit created, once it holds nothing again.</summary>
+    private void DetachSection(RflSection section, bool created)
+    {
+        if (created)
+        {
+            Rfl.Sections.Remove(section);
+        }
     }
 
     // ---- Convert clutter/entity → Mesh object (Alpine "To Mesh Object") -------
@@ -937,17 +1082,36 @@ public sealed class EditorDocument
     // ---- Save -----------------------------------------------------------------
 
     /// <summary>
-    /// Serializes the document to <paramref name="path"/> as an Alpine v305 file
-    /// (GED's format policy — <see cref="RflFile.UpgradeToAlpine"/>). A real save
-    /// updates the timestamp; a loaded pre-305 level is upgraded in place so the
-    /// on-disk file, and the in-memory document from here on, are v305.
+    /// True when the level cannot be saved: it was written by a newer Alpine Faction than Glacier
+    /// knows (RFL version above 306). It is open read-only; every save path refuses it.
     /// </summary>
+    public bool IsSaveBlocked => Rfl.IsSaveBlocked;
+
+    /// <summary>The user-facing reason saving is refused, or null when the level can be saved.</summary>
+    public string? SaveBlockedReason => Rfl.SaveBlockedReason;
+
+    /// <summary>
+    /// The save-log lines the last <see cref="Save"/> / <see cref="SaveAs"/> produced (the v306 upgrade's
+    /// fog-near-clip reset and Looping notice, a pre-release props rewrite); empty for most saves.
+    /// </summary>
+    public IReadOnlyList<string> LastSaveNotes { get; private set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Serializes the document to <paramref name="path"/> as an Alpine v306 file
+    /// (GED's format policy — <see cref="RflFile.UpgradeToAlpine"/>). A real save
+    /// updates the timestamp; a loaded pre-306 level is upgraded in place so the
+    /// on-disk file, and the in-memory document from here on, are v306.
+    /// </summary>
+    /// <exception cref="LevelSaveBlockedException">The level is newer than Glacier writes (<see cref="IsSaveBlocked"/>).</exception>
     public void Save(string path, bool updateTimestamp = true)
     {
+        ThrowIfSaveBlocked();
+        string? orientationNote = RepairBrushOrientation();
+        SyncStaleMoverCopies();
         Editing.AlpineGeoableState.ReconcileTableFromBrushFlags(Rfl);
         Editing.LevelInfoReconciler.ReconcileHasMovers(Rfl);
         bool upgraded = Rfl.Header.Version != RflFile.AlpineSaveVersion;
-        Rfl.UpgradeToAlpine();
+        LastSaveNotes = WithNote(Rfl.UpgradeToAlpine(), orientationNote);
         Rfl.Save(path, updateTimestamp);
         Path = path;
         if (upgraded)
@@ -960,7 +1124,12 @@ public sealed class EditorDocument
         MarkSaved();
     }
 
-    /// <summary>Serializes to bytes (used by autosave / tests).</summary>
+    /// <summary>
+    /// Serializes to bytes (used by autosave / tests). Pure: it does NOT refresh stale mover copies
+    /// (a caller writing a file the game or a later session will read calls
+    /// <see cref="SyncStaleMoverCopies"/> first), so it stays usable as a state fingerprint and from
+    /// the crash path.
+    /// </summary>
     public byte[] SaveToBytes(bool updateTimestamp = false)
     {
         Editing.AlpineGeoableState.ReconcileTableFromBrushFlags(Rfl);
@@ -970,29 +1139,56 @@ public sealed class EditorDocument
 
     /// <summary>
     /// Compatibility analysis for the given target (not a save gate — GED always
-    /// saves Alpine v305). Alpine always passes; the stock target enumerates the
+    /// saves Alpine v306). Alpine always passes; the stock target enumerates the
     /// Alpine-only features that would not survive on stock RF. Retained as
-    /// infrastructure (scripting + reserved for future &gt;305 version gating); the
-    /// Level Properties dialog no longer surfaces it.
+    /// infrastructure for scripting; the Level Properties dialog no longer surfaces it.
     /// </summary>
     public Editing.FeatureGateReport EvaluateSaveTarget(Editing.SaveTarget target) =>
         Editing.FeatureGate.Evaluate(Rfl, target);
 
     /// <summary>
-    /// Saves the document to a new <paramref name="path"/> as an Alpine v305 file.
-    /// Identical policy to <see cref="Save(string, bool)"/> — GED writes v305 always
-    /// (<see cref="RflFile.UpgradeToAlpine"/>); a loaded pre-305 level is upgraded in
-    /// place and the in-memory document becomes v305.
+    /// Saves the document to a new <paramref name="path"/> as an Alpine v306 file.
+    /// Identical policy to <see cref="Save(string, bool)"/> — GED writes v306 always
+    /// (<see cref="RflFile.UpgradeToAlpine"/>); a loaded pre-306 level is upgraded in
+    /// place and the in-memory document becomes v306.
     /// </summary>
+    /// <exception cref="LevelSaveBlockedException">The level is newer than Glacier writes (<see cref="IsSaveBlocked"/>).</exception>
     public void SaveAs(string path, bool updateTimestamp = true)
     {
+        ThrowIfSaveBlocked();
+        string? orientationNote = RepairBrushOrientation();
+        SyncStaleMoverCopies();
         Editing.AlpineGeoableState.ReconcileTableFromBrushFlags(Rfl);
         Editing.LevelInfoReconciler.ReconcileHasMovers(Rfl);
-        Rfl.UpgradeToAlpine();
+        LastSaveNotes = WithNote(Rfl.UpgradeToAlpine(), orientationNote);
         Rfl.Save(path, updateTimestamp);
         Path = path;
         RefreshObjects();
         MarkSaved();
+    }
+
+    /// <summary>
+    /// The save safety net (<see cref="Editing.BrushOrientation.RepairLevel"/>): an air brush stored with its
+    /// faces wound outward — written by an older Glacier or another tool; RED never stores one and would
+    /// rebuild it inside-out — is re-stored inward before the write. Runs before the mover-copy sync so a
+    /// repaired mover member's copy is refreshed too. RED-made levels are never changed (byte-identical
+    /// saves). Returns the save-log line, or null when nothing needed repair.
+    /// </summary>
+    private string? RepairBrushOrientation()
+    {
+        IReadOnlyList<int> repaired = Editing.BrushOrientation.RepairLevel(Rfl);
+        return Editing.BrushOrientation.RepairNote(repaired);
+    }
+
+    private static IReadOnlyList<string> WithNote(IReadOnlyList<string> notes, string? note) =>
+        note is null ? notes : new List<string>(notes) { note };
+
+    private void ThrowIfSaveBlocked()
+    {
+        if (SaveBlockedReason is { } reason)
+        {
+            throw new LevelSaveBlockedException(reason);
+        }
     }
 
     /// <summary>Records the current undo position as the clean baseline.</summary>

@@ -1,0 +1,383 @@
+{
+  "schema": "glacier.fingerprint/1",
+  "extractorVersion": 2,
+  "status": "ok",
+  "identity": {
+    "reliability": "high",
+    "sha256": "588072741ffba34b4cfda40c82f41eca59ce7402405e57b6ae99786e5f3256ba",
+    "size": 52610,
+    "rflVersion": 306,
+    "timestamp": 0,
+    "name": "",
+    "headerName": "untitled.rfl",
+    "fileName": "box-room.rfl",
+    "author": {
+      "raw": "",
+      "canonical": ""
+    },
+    "multiplayer": false,
+    "gametype": {
+      "value": "sp",
+      "source": "levelinfo",
+      "conflict": false
+    },
+    "teamSpawns": false,
+    "origin": null,
+    "editor": "glacier",
+    "alpine": true,
+    "playerClass": "S",
+    "class": null
+  },
+  "counts": {
+    "reliability": "high",
+    "objects": {
+      "light": 1,
+      "mpRespawnPoint": 1,
+      "playerStart": 1
+    },
+    "classes": {
+      "entity": {},
+      "item": {},
+      "clutter": {},
+      "event": {}
+    },
+    "geometry": {
+      "faces": 6,
+      "vertices": 8,
+      "rooms": 1,
+      "mainRooms": 1,
+      "subrooms": 0,
+      "portals": 0,
+      "surfaces": 6,
+      "lightmapPages": 1
+    },
+    "brushes": 1,
+    "levelProperties": {
+      "geomodTexture": "rock02.tga",
+      "hardness": 50
+    },
+    "alpineProperties": true,
+    "dashProperties": false,
+    "glacierMetadata": true
+  },
+  "space": {
+    "reliability": "high",
+    "pitch": 0.5,
+    "samples": 576,
+    "valid_samples": 576,
+    "floor_area": 144,
+    "headroom": {
+      "n": 576,
+      "min": 4,
+      "p5": 4,
+      "p25": 4,
+      "p50": 4,
+      "p75": 4,
+      "p95": 4,
+      "max": 4
+    },
+    "open_sky_fraction": 0,
+    "clear_width": {
+      "n": 576,
+      "min": 12,
+      "p5": 12,
+      "p25": 12,
+      "p50": 12,
+      "p75": 12,
+      "p95": 12,
+      "max": 12
+    }
+  },
+  "vertical": {
+    "reliability": "high",
+    "span": 0,
+    "layers": 1,
+    "layers_reliability": "medium"
+  },
+  "corridor": {
+    "reliability": "medium",
+    "width": null,
+    "height": null,
+    "fraction": 0
+  },
+  "opening": {
+    "reliability": "medium",
+    "count": 0,
+    "width": null,
+    "height": null,
+    "depth": null,
+    "portal_agreement": {
+      "pairs": 0,
+      "abs_width_diff": null
+    },
+    "notes": [
+      "Blind spots: openings wider than 6 m; doorways whose mover door is excluded from the static geometry read as open; openings at a level change (stair doorways).",
+      "Single-sample openings are dropped at the base pitch; walls thinner than one lattice step may hide a doorway."
+    ]
+  },
+  "portal": {
+    "reliability": "high",
+    "count": 0,
+    "vertical_count": 0,
+    "horizontal_count": 0,
+    "width": null,
+    "height": null
+  },
+  "stair": {
+    "reliability": "medium",
+    "count": 0,
+    "riser": null,
+    "tread": null,
+    "steps": null,
+    "notes": [
+      "Treads under an invisible collision ramp still count; spiral stairs (direction test) and terraces with treads deeper than 2 m are not counted."
+    ]
+  },
+  "room": null,
+  "topology": {
+    "reliability": "high",
+    "rooms": 1,
+    "portals": 0,
+    "components": 1,
+    "degree": {
+      "n": 1,
+      "min": 0,
+      "p5": 0,
+      "p25": 0,
+      "p50": 0,
+      "p75": 0,
+      "p95": 0,
+      "max": 0
+    },
+    "dead_ends": 0,
+    "loops": 0,
+    "diameter": 0,
+    "portalised": false,
+    "notes": [
+      "Describes the portal graph, not the playable layout."
+    ]
+  },
+  "textures": {
+    "reliability": "high",
+    "count": 3,
+    "palette": [
+      {
+        "name": "cem_bunker04.tga",
+        "area_fraction": 0.4
+      },
+      {
+        "name": "cem_cementflr01.tga",
+        "area_fraction": 0.3
+      },
+      {
+        "name": "cem_dark_floor01.tga",
+        "area_fraction": 0.3
+      }
+    ],
+    "roles": {
+      "floor": {
+        "area_fraction": 0.3,
+        "top": [
+          {
+            "name": "cem_dark_floor01.tga",
+            "area_fraction": 1
+          }
+        ]
+      },
+      "wall": {
+        "area_fraction": 0.4,
+        "top": [
+          {
+            "name": "cem_bunker04.tga",
+            "area_fraction": 1
+          }
+        ]
+      },
+      "ceiling": {
+        "area_fraction": 0.3,
+        "top": [
+          {
+            "name": "cem_cementflr01.tga",
+            "area_fraction": 1
+          }
+        ]
+      }
+    },
+    "family": {
+      "cem": 1
+    },
+    "stock_fraction": null
+  },
+  "texel": {
+    "reliability": "high",
+    "tile_metres": {
+      "n": 6,
+      "min": 4,
+      "p5": 4,
+      "p25": 4,
+      "p50": 4,
+      "p75": 4,
+      "p95": 4,
+      "max": 4
+    }
+  },
+  "detail": {
+    "reliability": "high",
+    "area_fraction": 0
+  },
+  "brush": {
+    "reliability": "high",
+    "count": 1,
+    "faces": {
+      "n": 1,
+      "min": 6,
+      "p5": 6,
+      "p25": 6,
+      "p50": 6,
+      "p75": 6,
+      "p95": 6,
+      "max": 6
+    },
+    "air_fraction": 1,
+    "detail_fraction": 0,
+    "portal_count": 0
+  },
+  "lights": {
+    "reliability": "high",
+    "count": 1,
+    "per_100m2": 0.694,
+    "range": {
+      "n": 1,
+      "min": 10,
+      "p5": 10,
+      "p25": 10,
+      "p50": 10,
+      "p75": 10,
+      "p95": 10,
+      "max": 10
+    },
+    "intensity": {
+      "n": 1,
+      "min": 1,
+      "p5": 1,
+      "p25": 1,
+      "p50": 1,
+      "p75": 1,
+      "p95": 1,
+      "max": 1
+    },
+    "type": {
+      "omni": 1,
+      "spot": 0,
+      "tube": 0
+    },
+    "dynamic_fraction": 0,
+    "hue": {
+      "n": 1,
+      "min": 43.636,
+      "p5": 43.636,
+      "p25": 43.636,
+      "p50": 43.636,
+      "p75": 43.636,
+      "p95": 43.636,
+      "max": 43.636
+    },
+    "saturation": {
+      "n": 1,
+      "min": 0.216,
+      "p5": 0.216,
+      "p25": 0.216,
+      "p50": 0.216,
+      "p75": 0.216,
+      "p95": 0.216,
+      "max": 0.216
+    },
+    "value": {
+      "n": 1,
+      "min": 1,
+      "p5": 1,
+      "p25": 1,
+      "p50": 1,
+      "p75": 1,
+      "p95": 1,
+      "max": 1
+    },
+    "warm_fraction": 1,
+    "cool_fraction": 0,
+    "neutral_fraction": 0,
+    "height_above_floor": {
+      "n": 1,
+      "min": 3,
+      "p5": 3,
+      "p25": 3,
+      "p50": 3,
+      "p75": 3,
+      "p95": 3,
+      "max": 3
+    },
+    "ambient": [
+      40,
+      40,
+      40
+    ],
+    "lightmaps_present": true,
+    "fog": {
+      "present": false,
+      "near": 0,
+      "far": 0,
+      "color": [
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "spawns": {
+    "reliability": "high",
+    "count": 1,
+    "red": 1,
+    "blue": 1,
+    "bot": 0,
+    "nn_distance": null,
+    "per_100m2": 0.694,
+    "clear_width": {
+      "n": 1,
+      "min": 12,
+      "p5": 12,
+      "p25": 12,
+      "p50": 12,
+      "p75": 12,
+      "p95": 12,
+      "max": 12
+    },
+    "clear_width_reliability": "medium"
+  },
+  "items": {
+    "reliability": "high",
+    "count": 0,
+    "by_class": {},
+    "category": null,
+    "nn_distance": null,
+    "to_nearest_spawn": null,
+    "height_above_floor": null,
+    "context": null,
+    "notes": [
+      "height_above_floor is medium reliability; context is medium-low (nearest floor sample within 2 m)."
+    ]
+  },
+  "ctf": null,
+  "events": {
+    "reliability": "high",
+    "count": 0,
+    "triggers": 0,
+    "links": 0,
+    "class_histogram": {},
+    "motif_count": 0,
+    "motifs": [],
+    "motifs_truncated": false
+  },
+  "skipped": {
+    "room": "fewer_than_4_rooms",
+    "ctf": "not_ctf"
+  }
+}

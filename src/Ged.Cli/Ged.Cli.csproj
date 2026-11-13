@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- glacier-cli: the console host for Glacier's automation commands (headless on a level file, or
+       sent to the running editor with attach). A separate executable because Glacier itself is a
+       WinExe (no console for human terminal use); both ship side by side in the package. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Ged.Cli</RootNamespace>
+    <AssemblyName>glacier-cli</AssemblyName>
+    <Product>Glacier</Product>
+    <AssemblyTitle>Glacier command-line tools</AssemblyTitle>
+    <ApplicationIcon>..\Ged.App\Assets\AppIcon.ico</ApplicationIcon>
+
+    <!-- The version is NOT declared here: it is read from <Version> in Ged.App.csproj (the single
+         numeric source tools/package.ps1 also reads), so the CLI always reports the same version as
+         the editor it ships with. InformationalVersion gains "+<git short sha>" exactly like the app. -->
+    <Version>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\Ged.App\Ged.App.csproj')), '&lt;Version&gt;([^&lt;]+)&lt;/Version&gt;').Groups[1].Value)</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <!-- Mirrors Ged.App.csproj's SetGitShaInformationalVersion: "1.2.0+<git-short-sha>" when git is available. -->
+  <Target Name="SetGitShaInformationalVersion" BeforeTargets="GetAssemblyVersion;CoreCompile">
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse --short HEAD"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitShortSha" />
+      <Output TaskParameter="ExitCode" PropertyName="GitExitCode" />
+    </Exec>
+    <PropertyGroup Condition="'$(GitExitCode)' == '0' and '$(GitShortSha)' != ''">
+      <InformationalVersion>$(Version)+$(GitShortSha)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ged.Automation\Ged.Automation.csproj" />
+  </ItemGroup>
+
+  <!-- glacier-cli mcp: the official Model Context Protocol C# SDK (Apache-2.0; see licensing-info.txt).
+       The reduced-dependency Core package carries the stdio server transport and the low-level server
+       API; tools are registered programmatically from Ged.Automation's ToolCatalog, so the DI/hosting
+       package is not needed. Referenced ONLY here: Ged.Automation stays package-free. -->
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.Core" Version="2.4.0" />
+  </ItemGroup>
+
+  <!-- MCP resources and prompts (MCP-SERVER-SPEC §8): the agent guide is embedded so glacier://guide is served
+       wherever the executable runs, and the prompt templates are embedded from Mcp/Prompts. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\docs\ai\AGENT-GUIDE.md" LogicalName="Ged.Cli.Mcp.AGENT-GUIDE.md" />
+    <EmbeddedResource Include="Mcp\Prompts\*.md" LogicalName="Ged.Cli.Mcp.Prompts.%(Filename).md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ged.Automation.Tests" />
+  </ItemGroup>
+
+</Project>

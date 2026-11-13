@@ -58,6 +58,7 @@ mkdir -p "$APPDIR/usr/bin" \
 # beside-the-binary layout is intact under the read-only mount.
 cp -a "$PUBLISH"/. "$APPDIR/usr/bin/"
 chmod +x "$APPDIR/usr/bin/Glacier"
+if [ -f "$APPDIR/usr/bin/glacier-cli" ]; then chmod +x "$APPDIR/usr/bin/glacier-cli"; fi
 
 # Desktop entry + icon at the AppDir root (required by appimagetool) and in the FreeDesktop
 # integration locations (used by appimaged / desktop installers).

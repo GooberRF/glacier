@@ -52,6 +52,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Ged.Rendering\Ged.Rendering.csproj" />
     <ProjectReference Include="..\Ged.Scripting\Ged.Scripting.csproj" />
+    <ProjectReference Include="..\Ged.Automation\Ged.Automation.csproj" />
   </ItemGroup>
 
   <!-- Ship the portable scripts library (examples + generated Lua stub) next to the exe so

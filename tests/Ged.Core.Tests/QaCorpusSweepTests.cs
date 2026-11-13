@@ -213,9 +213,9 @@ public sealed class QaCorpusSweepTests : IClassFixture<QaCorpusSweepTests.Corpus
 
                 try
                 {
-                    // (1) open -> save. GED always writes Alpine v305: upgrade + save, assert
-                    // the output is valid v305 and re-saving it is byte-identical (fixpoint).
-                    // A v305 SOURCE additionally re-saves byte-identically to the input.
+                    // (1) open -> save. GED always writes Alpine v306: upgrade + save, assert
+                    // the output is valid v306 and re-saving it is byte-identical (fixpoint).
+                    // A v306 SOURCE additionally re-saves byte-identically to the input.
                     int sourceVersion = RflFile.Load(original).Header.Version;
                     var sw = Stopwatch.StartNew();
                     RflFile file = RflFile.Load(original);
@@ -227,18 +227,18 @@ public sealed class QaCorpusSweepTests : IClassFixture<QaCorpusSweepTests.Corpus
                     RflFile back = RflFile.Load(resaved);
                     if (back.Header.Version != RflFile.AlpineSaveVersion)
                     {
-                        status = "NOT-V305";
-                        failures.Add($"{name}: save did not produce v305 (got {back.Header.Version})");
+                        status = "NOT-V306";
+                        failures.Add($"{name}: save did not produce v306 (got {back.Header.Version})");
                     }
                     else if (!resaved.AsSpan().SequenceEqual(back.Save(updateTimestamp: false)))
                     {
                         status = "FIXPOINT-DIFF";
-                        failures.Add($"{name}: v305 re-save not byte-stable (fixpoint)");
+                        failures.Add($"{name}: v306 re-save not byte-stable (fixpoint)");
                     }
                     else if (sourceVersion == RflFile.AlpineSaveVersion && !original.AsSpan().SequenceEqual(resaved))
                     {
                         status = "ROUNDTRIP-DIFF";
-                        failures.Add($"{name}: v305 source open→save not byte-identical");
+                        failures.Add($"{name}: v306 source open→save not byte-identical");
                     }
 
                     // (2) full recompile + lighting bake. Compile behaviour is unchanged by the

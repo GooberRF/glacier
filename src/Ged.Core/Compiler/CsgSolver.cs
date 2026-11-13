@@ -471,6 +471,17 @@ public sealed class CsgSolver
         set => _edgeMergeTol = value;
     }
 
+    /// <summary>
+    /// Alpine RED's coplanar seam tolerance (build repair pass B, <c>editor_patch/build_repair.cpp:1525-1541</c>,
+    /// injected at RED <c>0x0048e474</c> inside the ray-hit evaluator <c>FUN_0048e2c0</c>, immediately before its
+    /// point-in-face call <c>FUN_0048c9e0</c>): during a build, a COPLANAR candidate face also claims a sample point
+    /// lying within 1e-4 of one of its edges that strict point-in-face rejects, so where coplanar faces meet a float
+    /// step apart one of them still claims the sample and a buried face is not kept. Glacier's counterpart of that
+    /// containment is the coincident-face lookup of the fold (<see cref="CoveringFace"/> / <see cref="CoveredByAnyWorld"/>).
+    /// Set from <see cref="CompileOptions.AlpineRepair"/>.
+    /// </summary>
+    public bool CoplanarSeamTolerance { get; set; }
+
     /// <summary>REGION-WISE coincident-face resolution (flagship 23B). See
     /// <see cref="CompileOptions.RegionWiseCoincidence"/>. Default ON.</summary>
     public bool RegionWiseCoincidence
@@ -575,6 +586,7 @@ public sealed class CsgSolver
     // shared-plane splitting so adjacent/coincident faces cut along identical lines.
     private readonly PlaneRegistry _registry = new();
     private readonly List<int[]> _facePlaneId = new();       // per brush → per face → plane id
+    private Dictionary<int, int>? _planeFirstTime;            // plane id → earliest owning brush time (FragmentProbeEps)
     private readonly List<int[][][]> _vertexPlanes = new();  // per brush → per face → per vertex → plane-set
 
     // Per brush → its solid BSP volume (RED's phase-0 brush volume, node planes from its own face
@@ -621,9 +633,35 @@ public sealed class CsgSolver
     /// Adds a brush's world faces as one CSG operand (time index = call order).
     /// Air brushes union open space, solids subtract it.
     /// </summary>
-    public void AddBrush(bool isAir, List<CsgFace> worldFaces)
+    public void AddBrush(bool isAir, List<CsgFace> worldFaces) => AddBrush(isAir, worldFaces, false, 0);
+
+    /// <summary>
+    /// Adds an air PORTAL brush as RED applies it (boolean mode 4, "Chopping portal"): the brush opens its volume
+    /// like any air operand, but every boundary face it would remove — a face inside it, or a wall whose solid
+    /// back it opens — stays in place as a portal face (<see cref="CsgFace.ChopPortal"/>, attributed to
+    /// <paramref name="portalBrushUid"/>). Only the accumulated folds honour it (<see cref="SupportsPortalChop"/>);
+    /// call it after every ordinary brush, as RED runs its portal list after its brush list.
+    /// </summary>
+    public void AddPortalChop(List<CsgFace> worldFaces, int portalBrushUid) => AddBrush(true, worldFaces, true, portalBrushUid);
+
+    /// <summary>True when <see cref="Solve"/> will run a fold that applies <see cref="AddPortalChop"/> brushes as portal chops.</summary>
+    public bool SupportsPortalChop =>
+        !_fusedPartition && !_useLeafExtraction && !_useWorldBsp && (_sharedBsp || _globalPartition || _incremental);
+
+    private readonly List<bool> _portalChop = new();
+    private readonly List<int> _chopUid = new();
+    private int _firstPortalChop = int.MaxValue;
+
+    private void AddBrush(bool isAir, List<CsgFace> worldFaces, bool portalChop, int portalBrushUid)
     {
+        _portalChop.Add(portalChop);
+        _chopUid.Add(portalBrushUid);
         int ti = _volumes.Count;
+        if (portalChop && _firstPortalChop == int.MaxValue)
+        {
+            _firstPortalChop = ti;
+        }
+
         _volumes.Add(BrushVolume.From(ti, isAir, worldFaces));
         foreach (CsgFace f in worldFaces)
         {
@@ -1347,8 +1385,18 @@ public sealed class CsgSolver
 
         public Vec3 Max { get; private set; }
 
+        /// <summary>
+        /// Solver index of the portal brush whose chop turned this fragment into a portal face (RED's boolean
+        /// mode 4), or -1 for an ordinary boundary face. A portal face is inert to every later operand.
+        /// </summary>
+        public int ChopBrush { get; private init; } = -1;
+
         /// <summary>A fragment of this face after a later-brush split — same attributes/plane, new polygon.</summary>
-        public WFace With(List<CsgSharedSplit.PsVert> poly) => new(poly, FacePlaneId, Plane, Src);
+        public WFace With(List<CsgSharedSplit.PsVert> poly) => new(poly, FacePlaneId, Plane, Src) { ChopBrush = ChopBrush };
+
+        /// <summary>The fragment a portal chop keeps in place as a portal face instead of dissolving it.</summary>
+        public WFace AsChopMembrane(List<CsgSharedSplit.PsVert> poly, int chopBrush) =>
+            new(poly, FacePlaneId, Plane, Src) { ChopBrush = chopBrush };
 
         public CsgFace ToCsgFace()
         {
@@ -1364,6 +1412,20 @@ public sealed class CsgSolver
             f.IsPortal = false;
             f.RoomIndex = -1;
             f.PortalIndexPlus2 = 0;
+            return f;
+        }
+
+        /// <summary>The portal face a chop left in place: untextured, attributed to the portal brush.</summary>
+        public CsgFace ToChopMembrane(int portalBrushUid)
+        {
+            CsgFace f = ToCsgFace();
+            f.IsPortal = true;
+            f.ChopPortal = true;
+            f.SourceBrushUid = portalBrushUid;
+            f.Texture = string.Empty;
+            f.Flags = 0;
+            f.SmoothingGroups = 0;
+            f.Scroll = null;
             return f;
         }
 
@@ -1436,6 +1498,7 @@ public sealed class CsgSolver
         {
             BrushVolume bvol = _volumes[b];
             bool bIsAir = bvol.IsAir;
+            bool bChop = _portalChop[b]; // RED mode 4: this air operand keeps what it would dissolve as portal faces
 
             // Brush b's authored faces by registry plane id — the coincidence lookup for the survival table
             // (RED resolves coincident/coplanar pairs BEFORE the spanning-face phase; here that is fold step (c)).
@@ -1455,7 +1518,7 @@ public sealed class CsgSolver
             var next = new List<WFace>(world.Count);
             foreach (WFace w in world)
             {
-                if (!AabbOverlapWide(w.Min, w.Max, bvol.Min, bvol.Max))
+                if (w.ChopBrush >= 0 || !AabbOverlapWide(w.Min, w.Max, bvol.Min, bvol.Max))
                 {
                     next.Add(w); // b nowhere near this face — carried verbatim
                     continue;
@@ -1522,7 +1585,7 @@ public sealed class CsgSolver
                             int bSide = bFront ? +1 : -1;
                             int cls34 = wSide == bSide ? 3 : 4;
                             int mode = bIsAir ? 3 : 1;
-                            dissolve = TableAction(1, mode, cls34) < TableAction(0, mode, cls34);
+                            dissolve = !bChop && TableAction(1, mode, cls34) < TableAction(0, mode, cls34);
                             covTable = dissolve; // region-wise applies to this texture-claim dissolve
                         }
                     }
@@ -1539,11 +1602,15 @@ public sealed class CsgSolver
                         // Fallback operand (no in/out classification): the volume probe.
                         // AIR b opens the solid behind → open|open; SOLID b fills the open in front → solid|solid.
                         dissolve = bIsAir
-                            ? IncContains(b, c.Sub(n.Scale(_incEps)))
-                            : IncContains(b, c.Add(n.Scale(_incEps)));
+                            ? IncContains(b, c.Sub(n.Scale(FragmentProbeEps(frag, w.FacePlaneId, c, n, b + 1))))
+                            : IncContains(b, c.Add(n.Scale(FragmentProbeEps(frag, w.FacePlaneId, c, n, b + 1))));
                     }
 
-                    if (dissolve)
+                    if (dissolve && bChop)
+                    {
+                        next.Add(w.AsChopMembrane(frag, b));
+                    }
+                    else if (dissolve)
                     {
                         _incDissolved++;
 
@@ -1603,7 +1670,7 @@ public sealed class CsgSolver
         {
             if (w.Poly.Count >= 3)
             {
-                result.Add(w.ToCsgFace());
+                result.Add(w.ChopBrush >= 0 ? w.ToChopMembrane(_chopUid[w.ChopBrush]) : w.ToCsgFace());
             }
         }
 
@@ -1671,6 +1738,7 @@ public sealed class CsgSolver
         {
             BrushVolume bvol = _volumes[b];
             bool bIsAir = bvol.IsAir;
+            bool bChop = _portalChop[b]; // RED mode 4: this air operand keeps what it would dissolve as portal faces
             Dictionary<int, List<CsgFace>> bFacesByPlane = BrushFacesByPlane(b);
             var worldOnBPlanes = new Dictionary<int, List<WFace>>();
             _capCut = null;
@@ -1680,7 +1748,7 @@ public sealed class CsgSolver
             var next = new List<WFace>(world.Count);
             foreach (WFace w in world)
             {
-                if (!AabbOverlapWide(w.Min, w.Max, bvol.Min, bvol.Max))
+                if (w.ChopBrush >= 0 || !AabbOverlapWide(w.Min, w.Max, bvol.Min, bvol.Max))
                 {
                     next.Add(w);
                     continue;
@@ -1724,7 +1792,7 @@ public sealed class CsgSolver
                                 int bSide = bFront ? +1 : -1;
                                 int cls34 = wSide == bSide ? 3 : 4;
                                 int mode = bIsAir ? 3 : 1;
-                                dissolve = TableAction(1, mode, cls34) < TableAction(0, mode, cls34);
+                                dissolve = !bChop && TableAction(1, mode, cls34) < TableAction(0, mode, cls34);
                             }
                         }
                         else if (cls == 0)
@@ -1738,11 +1806,15 @@ public sealed class CsgSolver
                         else
                         {
                             dissolve = bIsAir
-                                ? IncContains(b, c.Sub(n.Scale(_incEps)))
-                                : IncContains(b, c.Add(n.Scale(_incEps)));
+                                ? IncContains(b, c.Sub(n.Scale(FragmentProbeEps(frag, w.FacePlaneId, c, n, b + 1))))
+                                : IncContains(b, c.Add(n.Scale(FragmentProbeEps(frag, w.FacePlaneId, c, n, b + 1))));
                         }
 
-                        if (dissolve)
+                        if (dissolve && bChop)
+                        {
+                            next.Add(w.AsChopMembrane(frag, b));
+                        }
+                        else if (dissolve)
                         {
                             _incDissolved++;
                         }
@@ -1788,7 +1860,7 @@ public sealed class CsgSolver
         {
             if (w.Poly.Count >= 3)
             {
-                result.Add(w.ToCsgFace());
+                result.Add(w.ChopBrush >= 0 ? w.ToChopMembrane(_chopUid[w.ChopBrush]) : w.ToCsgFace());
             }
         }
 
@@ -1861,8 +1933,9 @@ public sealed class CsgSolver
                 }
 
                 Vec3 c = PolyCentroid(frag);
-                Vec3 pf = c.Add(n.Scale(_incEps));
-                Vec3 pk = c.Sub(n.Scale(_incEps));
+                float probe = FragmentProbeEps(frag, facePlane, c, n, b); // classified against brushes before b
+                Vec3 pf = c.Add(n.Scale(probe));
+                Vec3 pk = c.Sub(n.Scale(probe));
 
                 sbyte outward = _faceOut[b][fi];
                 bool frontOpen;
@@ -1966,6 +2039,7 @@ public sealed class CsgSolver
         {
             BrushVolume bvol = _volumes[b];
             bool bIsAir = bvol.IsAir;
+            bool bChop = _portalChop[b]; // RED mode 4: this air operand keeps what it would dissolve as portal faces
             Dictionary<int, List<CsgFace>> bFacesByPlane = BrushFacesByPlane(b);
             var worldOnBPlanes = new Dictionary<int, List<WFace>>();
             _capCut = null;
@@ -1977,7 +2051,7 @@ public sealed class CsgSolver
             var next = new List<WFace>(world.Count);
             foreach (WFace w in world)
             {
-                if (!AabbOverlapWide(w.Min, w.Max, bvol.Min, bvol.Max))
+                if (w.ChopBrush >= 0 || !AabbOverlapWide(w.Min, w.Max, bvol.Min, bvol.Max))
                 {
                     next.Add(w);
                     continue;
@@ -2026,7 +2100,7 @@ public sealed class CsgSolver
                                 int bSide = bFront ? +1 : -1;
                                 int cls34 = wSide == bSide ? 3 : 4;
                                 int mode = bIsAir ? 3 : 1;
-                                dissolve = TableAction(1, mode, cls34) < TableAction(0, mode, cls34);
+                                dissolve = !bChop && TableAction(1, mode, cls34) < TableAction(0, mode, cls34);
                                 covTable = dissolve;
                             }
                         }
@@ -2041,11 +2115,15 @@ public sealed class CsgSolver
                         else
                         {
                             dissolve = bIsAir
-                                ? IncContains(b, c.Sub(n.Scale(_incEps)))
-                                : IncContains(b, c.Add(n.Scale(_incEps)));
+                                ? IncContains(b, c.Sub(n.Scale(FragmentProbeEps(frag, w.FacePlaneId, c, n, b + 1))))
+                                : IncContains(b, c.Add(n.Scale(FragmentProbeEps(frag, w.FacePlaneId, c, n, b + 1))));
                         }
 
-                        if (dissolve)
+                        if (dissolve && bChop)
+                        {
+                            next.Add(w.AsChopMembrane(frag, b));
+                        }
+                        else if (dissolve)
                         {
                             _incDissolved++;
                             if (_regionWise && covTable && coincidentKin is not null)
@@ -2111,7 +2189,7 @@ public sealed class CsgSolver
         {
             if (w.Poly.Count >= 3)
             {
-                result.Add(w.ToCsgFace());
+                result.Add(w.ChopBrush >= 0 ? w.ToChopMembrane(_chopUid[w.ChopBrush]) : w.ToCsgFace());
             }
         }
 
@@ -2546,8 +2624,12 @@ public sealed class CsgSolver
         return map;
     }
 
-    /// <summary>The first coplanar face containing point <paramref name="c"/> (2D even-odd), or null.</summary>
-    private static CsgFace? CoveringFace(List<CsgFace> kin, Vec3 c)
+    /// <summary>
+    /// The first coplanar face containing point <paramref name="c"/> (2D even-odd), or null. With
+    /// <see cref="CoplanarSeamTolerance"/>, a face that strictly misses the point but has it within 1e-4 of an edge
+    /// claims it when no face contains it outright.
+    /// </summary>
+    internal CsgFace? CoveringFace(List<CsgFace> kin, Vec3 c)
     {
         foreach (CsgFace f in kin)
         {
@@ -2557,15 +2639,65 @@ public sealed class CsgSolver
             }
         }
 
+        if (CoplanarSeamTolerance)
+        {
+            foreach (CsgFace f in kin)
+            {
+                if (NearEdge(f.Vertices.Count, i => f.Vertices[i].Position, c))
+                {
+                    return f;
+                }
+            }
+        }
+
         return null;
     }
 
-    /// <summary>True when any surviving world face fragment contains point <paramref name="c"/> (2D even-odd).</summary>
-    private static bool CoveredByAnyWorld(List<WFace> kin, Vec3 c)
+    /// <summary>True when any surviving world face fragment contains point <paramref name="c"/> (2D even-odd), or —
+    /// with <see cref="CoplanarSeamTolerance"/> — has it within 1e-4 of an edge.</summary>
+    private bool CoveredByAnyWorld(List<WFace> kin, Vec3 c)
     {
         foreach (WFace w in kin)
         {
             if (PsPolyContains(w.Poly, w.Plane.Normal, c))
+            {
+                return true;
+            }
+        }
+
+        if (CoplanarSeamTolerance)
+        {
+            foreach (WFace w in kin)
+            {
+                if (NearEdge(w.Poly.Count, i => w.Poly[i].Pos, c))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Alpine's seam tolerance (<c>build_repair.cpp:1421-1432</c>, RED's 1e-4 <c>0x00554714</c>).</summary>
+    private const double SeamEdgeTolerance = 1e-4;
+
+    /// <summary>
+    /// True when <paramref name="point"/> lies within 1e-4 of any edge of the polygon (closest point on each
+    /// segment, double math) — Alpine's <c>near_edge</c>.
+    /// </summary>
+    private static bool NearEdge(int count, Func<int, Vec3> corner, Vec3 point)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            Vec3 a = corner(i);
+            Vec3 b = corner((i + 1) % count);
+            double abx = (double)b.X - a.X, aby = (double)b.Y - a.Y, abz = (double)b.Z - a.Z;
+            double apx = (double)point.X - a.X, apy = (double)point.Y - a.Y, apz = (double)point.Z - a.Z;
+            double len2 = (abx * abx) + (aby * aby) + (abz * abz);
+            double t = len2 > 0.0 ? Math.Clamp(((apx * abx) + (apy * aby) + (apz * abz)) / len2, 0.0, 1.0) : 0.0;
+            double dx = apx - (abx * t), dy = apy - (aby * t), dz = apz - (abz * t);
+            if (Math.Sqrt((dx * dx) + (dy * dy) + (dz * dz)) <= SeamEdgeTolerance)
             {
                 return true;
             }
@@ -2640,8 +2772,9 @@ public sealed class CsgSolver
                 }
 
                 Vec3 c = PolyCentroid(frag);
-                Vec3 pf = c.Add(n.Scale(_incEps));
-                Vec3 pk = c.Sub(n.Scale(_incEps));
+                float probe = FragmentProbeEps(frag, facePlane, c, n, b); // classified against brushes before b
+                Vec3 pf = c.Add(n.Scale(probe));
+                Vec3 pk = c.Sub(n.Scale(probe));
 
                 // The fragment lies ON brush b's boundary, so the state on its interior side IS b's kind —
                 // no probe against b's own volume (which is fragile within the authored surface's tilt
@@ -3946,19 +4079,37 @@ public sealed class CsgSolver
         }
     }
 
+    /// <summary>
+    /// Slack each brush's AABB is grown by when it is registered in the broad-phase grid — the coincidence
+    /// scale of <see cref="AabbOverlapWide"/>. Every consumer of the grid filters its candidates by an
+    /// overlap/containment test that accepts a few millimetres of slack (the 2e-3 registry plane fold, the
+    /// 4e-3 wide AABB gate, the on-plane containment band), so the grid itself must not be tighter than those
+    /// tests. Without the slack, a query that lies flat on a cell boundary (a y=0 floor: a multiple of
+    /// <see cref="GridCell"/>) a few micrometres on the far side — rotated-brush transform noise, or a corner
+    /// snapped to a registry plane interned from such a brush — floors into the neighbouring cell and never
+    /// sees the brush whose AABB starts exactly on the boundary, so that brush silently drops out of the cap
+    /// clip and the coplanar-duplicate gate (both copies of a shared floor were emitted → open edges).
+    /// </summary>
+    private const float GridSlack = 4e-3f;
+
     private void BuildGrid()
     {
+        var slack = new Vec3(GridSlack, GridSlack, GridSlack);
         for (int i = 0; i < _volumes.Count; i++)
         {
             BrushVolume v = _volumes[i];
-            (int x0, int y0, int z0) = Cell(v.Min);
-            (int x1, int y1, int z1) = Cell(v.Max);
-            long span = (long)(x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1);
+            (int ux0, int uy0, int uz0) = Cell(v.Min);
+            (int ux1, int uy1, int uz1) = Cell(v.Max);
+            long span = (long)(ux1 - ux0 + 1) * (uy1 - uy0 + 1) * (uz1 - uz0 + 1);
             if (span > 64)
             {
                 _large.Add(i);
                 continue;
             }
+
+            // Oversize classification stays on the unpadded extent; registration covers the padded one.
+            (int x0, int y0, int z0) = Cell(v.Min.Sub(slack));
+            (int x1, int y1, int z1) = Cell(v.Max.Add(slack));
 
             for (int cx = x0; cx <= x1; cx++)
             {
@@ -3988,7 +4139,15 @@ public sealed class CsgSolver
     /// fragments that float inside open space — points just off BOTH sides of the
     /// fragment are open. Call after <see cref="Solve"/> (the grid must exist).
     /// </summary>
-    public List<CsgFace> ClipToOpen(CsgFace face)
+    public List<CsgFace> ClipToOpen(CsgFace face) => ClipToOpen(face, int.MaxValue);
+
+    /// <summary>
+    /// <see cref="ClipToOpen(CsgFace)"/> against the space that was open before the first portal chop
+    /// (<see cref="AddPortalChop"/>): a fragment in a volume only a portal brush opened is dropped.
+    /// </summary>
+    public List<CsgFace> ClipToOpenBeforePortalChops(CsgFace face) => ClipToOpen(face, _firstPortalChop);
+
+    private List<CsgFace> ClipToOpen(CsgFace face, int timeCap)
     {
         var mn = new Vec3(float.MaxValue, float.MaxValue, float.MaxValue);
         var mx = new Vec3(float.MinValue, float.MinValue, float.MinValue);
@@ -4024,7 +4183,10 @@ public sealed class CsgSolver
 
             Vec3 c = frag.Centroid();
             Vec3 n = frag.Plane.Normal;
-            if (OpenAt(c.Add(n.Scale(SampleEps))) && OpenAt(c.Sub(n.Scale(SampleEps))))
+            bool open = timeCap == int.MaxValue
+                ? OpenAt(c.Add(n.Scale(SampleEps))) && OpenAt(c.Sub(n.Scale(SampleEps)))
+                : OpenAtBefore(c.Add(n.Scale(SampleEps)), timeCap) && OpenAtBefore(c.Sub(n.Scale(SampleEps)), timeCap);
+            if (open)
             {
                 kept.Add(frag);
             }
@@ -4228,10 +4390,14 @@ public sealed class CsgSolver
             // Snap the ORIGINAL corner to the exact intersection of its three defining planes so two
             // brushes sharing a corner resolve it to the byte-identical point (RED's shared-BSP corner),
             // instead of the float noise of two independent transforms — which at 10²-m coordinates
-            // exceeds the 1e-4 weld and leaves a seam. Only when well-conditioned and sub-mm.
+            // exceeds the 1e-4 weld and leaves a seam. Only when sub-mm AND consistent with every plane
+            // through the corner (SnapKeepsCornerOnItsPlanes): an ill-conditioned triple is not a
+            // reconciliation, it is noise, and the authored corner (RED's own value — RED never moves an
+            // authored corner, FUN_0048e2c0) is kept.
             Vec3 pos = v.Position;
             if (planes.Length >= 3 && _registry.Intersect(planes[0], planes[1], planes[2]) is { } snapped &&
-                snapped.Sub(pos).LengthSquared() < CornerSnap * CornerSnap)
+                snapped.Sub(pos).LengthSquared() < CornerSnap * CornerSnap &&
+                SnapKeepsCornerOnItsPlanes(pos, snapped, planes))
             {
                 pos = snapped;
             }
@@ -4252,6 +4418,97 @@ public sealed class CsgSolver
         }
 
         return poly;
+    }
+
+    /// <summary>
+    /// The corner-snap consistency gate. The snap solves only the corner's three lowest-id planes; when two of
+    /// them are near-parallel (a near-flat fold — organic hull strips, terrain facets) the solve amplifies the
+    /// planes' single-precision representation error by ~1/sin(fold angle) and lands up to <see cref="CornerSnap"/>
+    /// away along the fold — off the corner's OTHER planes, which the authored corner lies on to µm. EdgeStore's
+    /// first-seen corner merge then propagates that off-plane point to every brush sharing the corner, and the
+    /// later classification against the off plane (1e-4 band) cuts sub-mm wedge slivers that leak. The snap is
+    /// accepted only if no plane of the corner's plane-set ends up farther from it than the authored corner was,
+    /// by more than the on-plane band.
+    /// </summary>
+    private bool SnapKeepsCornerOnItsPlanes(Vec3 original, Vec3 snapped, int[] planes)
+    {
+        foreach (int id in planes)
+        {
+            if (_registry.TryGetPlane(id, out CsgPlane q) &&
+                MathF.Abs(q.Distance(snapped)) > MathF.Abs(q.Distance(original)) + Band)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The side-probe offset for a fragment's fold verdict. The fold classifies a fragment's side(s) by probing
+    /// its centroid offset along the face normal (<see cref="_incEps"/>); the verdict is only valid while the
+    /// probe stays in the fragment's own cell — on the same side of every surface of the classifying volume(s)
+    /// that bounds the fragment (the planes in its corners' plane-sets). A thin fragment cut along an OBLIQUE
+    /// surface can lie closer to it than the fixed offset reaches, so the fixed probe crosses that surface and
+    /// reads the neighbouring cell's state. Measured on dm07: a later face's 3 mm wedge between the two planes of
+    /// a concave air brush's 0.06° reflex fold (uid9414/uid9662) has its centroid 0.47 mm from the surviving fold
+    /// face; the 2 mm probe moved 0.83 mm across it and kept a fragment lying inside the earlier air — the junk
+    /// sliver whose edges the sealer then had to pair. On dm04 the mirror case (an earlier world face's thin strip
+    /// against a later brush, uid12/uid13) was dissolved where RED keeps it. RED stamps in/out per BSP cell with no
+    /// offset, so the probe is clamped to half the centroid's clearance, along the probe direction, to each such
+    /// bounding plane — never above the fixed offset, never below twice the on-plane band (the probe must still
+    /// clear a coincident surface). Only planes that are surfaces of the brushes being classified against count
+    /// (first used by a brush with time index &lt; <paramref name="before"/>): crossing any other plane cannot
+    /// change the verdict.
+    /// </summary>
+    private float FragmentProbeEps(List<CsgSharedSplit.PsVert> frag, int facePlane, Vec3 c, Vec3 n, int before)
+    {
+        _planeFirstTime ??= BuildPlaneFirstTime();
+        float eps = _incEps;
+        foreach (CsgSharedSplit.PsVert v in frag)
+        {
+            foreach (int pid in v.Planes)
+            {
+                if (pid == facePlane || !_planeFirstTime.TryGetValue(pid, out int first) || first >= before ||
+                    !_registry.TryGetPlane(pid, out CsgPlane q))
+                {
+                    continue;
+                }
+
+                float k = MathF.Abs(q.Normal.Dot(n));
+                if (k < 1e-6f)
+                {
+                    continue; // perpendicular plane: the probe moves along it, never across
+                }
+
+                float lim = 0.5f * MathF.Abs(q.Distance(c)) / k;
+                if (lim < eps)
+                {
+                    eps = lim;
+                }
+            }
+        }
+
+        return MathF.Max(eps, 2f * Band);
+    }
+
+    /// <summary>Registry plane id → the earliest time index of a brush with a face on it (for <see cref="FragmentProbeEps"/>).</summary>
+    private Dictionary<int, int> BuildPlaneFirstTime()
+    {
+        var map = new Dictionary<int, int>();
+        for (int bi = 0; bi < _facePlaneId.Count; bi++)
+        {
+            int t = _volumes[bi].TimeIndex;
+            foreach (int id in _facePlaneId[bi])
+            {
+                if (id >= 0 && (!map.TryGetValue(id, out int cur) || t < cur))
+                {
+                    map[id] = t;
+                }
+            }
+        }
+
+        return map;
     }
 
     /// <summary>True when the polygon's AABB overlaps the given box (with the on-plane band as slack).</summary>

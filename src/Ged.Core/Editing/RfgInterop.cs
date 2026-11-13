@@ -49,6 +49,10 @@ public static class RfgInterop
         var actions = new List<(IList Dest, object Clone)>();
         var dirtyHosts = new HashSet<RflSection>();
 
+        // Sections the level lacks are prepared DETACHED and inserted by the command (removed again on
+        // undo), so undoing an import leaves the file byte-identical.
+        var createdHosts = new HashSet<RflSection>();
+
         foreach (RfgGroup group in rfg.Groups)
         {
             var remap = new Dictionary<int, int>();
@@ -70,7 +74,7 @@ public static class RfgInterop
             // Pass 2: clone brushes.
             if (group.Brushes.Brushes.Count > 0)
             {
-                RflSection host = doc.Rfl.GetOrCreateSection(SectionType.Brushes, () => new BrushesSection());
+                RflSection host = Prepare(doc, SectionType.Brushes, () => new BrushesSection(), createdHosts);
                 var brushSec = (BrushesSection)host.Content!;
                 foreach (Brush b in group.Brushes.Brushes)
                 {
@@ -83,6 +87,9 @@ public static class RfgInterop
                     }
 
                     clone.State = BrushState.Normal;
+
+                    // A group written by an older Glacier may store an air brush outward; place it the way RED stores it.
+                    BrushOrientation.RepairAir(clone);
                     actions.Add((brushSec.Brushes, clone));
                     newUids.Add(clone.Uid);
                 }
@@ -91,28 +98,28 @@ public static class RfgInterop
             }
 
             // Pass 2: clone objects, type by type.
-            ImportList(doc, group.Lights.Lights, SectionType.Lights, () => new LightsSection(SectionType.Lights), s => ((LightsSection)s).Lights, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.Events.Events, SectionType.Events, () => new EventsSection(), s => ((EventsSection)s).Events, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.Entities.Entities, SectionType.Entities, () => new EntitiesSection(), s => ((EntitiesSection)s).Entities, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.Items.Items, SectionType.Items, () => new ItemsSection(), s => ((ItemsSection)s).Items, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.Clutters.Clutters, SectionType.Clutters, () => new CluttersSection(), s => ((CluttersSection)s).Clutters, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.Triggers.Triggers, SectionType.Triggers, () => new TriggersSection(), s => ((TriggersSection)s).Triggers, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.MpRespawnPoints.Points, SectionType.MpRespawnPoints, () => new MpRespawnPointsSection(), s => ((MpRespawnPointsSection)s).Points, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.AmbientSounds.Sounds, SectionType.AmbientSounds, () => new AmbientSoundsSection(), s => ((AmbientSoundsSection)s).Sounds, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.ParticleEmitters.Emitters, SectionType.ParticleEmitters, () => new ParticleEmittersSection(), s => ((ParticleEmittersSection)s).Emitters, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.BoltEmitters.Emitters, SectionType.BoltEmitters, () => new BoltEmittersSection(), s => ((BoltEmittersSection)s).Emitters, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.Decals.Decals, SectionType.Decals, () => new DecalsSection(), s => ((DecalsSection)s).Decals, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.Targets.Targets, SectionType.Targets, () => new TargetsSection(), s => ((TargetsSection)s).Targets, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.CutsceneCameras.Cameras, SectionType.CutsceneCameras, () => new CutsceneCamerasSection(), s => ((CutsceneCamerasSection)s).Cameras, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.GeoRegions.Regions, SectionType.GeoRegions, () => new GeoRegionsSection(), s => ((GeoRegionsSection)s).Regions, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.GasRegions.Regions, SectionType.GasRegions, () => new GasRegionsSection(), s => ((GasRegionsSection)s).Regions, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.PushRegions.Regions, SectionType.PushRegions, () => new PushRegionsSection(), s => ((PushRegionsSection)s).Regions, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
-            ImportList(doc, group.ClimbingRegions.Regions, SectionType.ClimbingRegions, () => new ClimbingRegionsSection(), s => ((ClimbingRegionsSection)s).Regions, remap, rotation, offset, rotate, actions, newUids, dirtyHosts);
+            ImportList(doc, group.Lights.Lights, SectionType.Lights, () => new LightsSection(SectionType.Lights), s => ((LightsSection)s).Lights, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.Events.Events, SectionType.Events, () => new EventsSection(), s => ((EventsSection)s).Events, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.Entities.Entities, SectionType.Entities, () => new EntitiesSection(), s => ((EntitiesSection)s).Entities, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.Items.Items, SectionType.Items, () => new ItemsSection(), s => ((ItemsSection)s).Items, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.Clutters.Clutters, SectionType.Clutters, () => new CluttersSection(), s => ((CluttersSection)s).Clutters, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.Triggers.Triggers, SectionType.Triggers, () => new TriggersSection(), s => ((TriggersSection)s).Triggers, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.MpRespawnPoints.Points, SectionType.MpRespawnPoints, () => new MpRespawnPointsSection(), s => ((MpRespawnPointsSection)s).Points, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.AmbientSounds.Sounds, SectionType.AmbientSounds, () => new AmbientSoundsSection(), s => ((AmbientSoundsSection)s).Sounds, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.ParticleEmitters.Emitters, SectionType.ParticleEmitters, () => new ParticleEmittersSection(), s => ((ParticleEmittersSection)s).Emitters, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.BoltEmitters.Emitters, SectionType.BoltEmitters, () => new BoltEmittersSection(), s => ((BoltEmittersSection)s).Emitters, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.Decals.Decals, SectionType.Decals, () => new DecalsSection(), s => ((DecalsSection)s).Decals, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.Targets.Targets, SectionType.Targets, () => new TargetsSection(), s => ((TargetsSection)s).Targets, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.CutsceneCameras.Cameras, SectionType.CutsceneCameras, () => new CutsceneCamerasSection(), s => ((CutsceneCamerasSection)s).Cameras, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.GeoRegions.Regions, SectionType.GeoRegions, () => new GeoRegionsSection(), s => ((GeoRegionsSection)s).Regions, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.GasRegions.Regions, SectionType.GasRegions, () => new GasRegionsSection(), s => ((GasRegionsSection)s).Regions, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.PushRegions.Regions, SectionType.PushRegions, () => new PushRegionsSection(), s => ((PushRegionsSection)s).Regions, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
+            ImportList(doc, group.ClimbingRegions.Regions, SectionType.ClimbingRegions, () => new ClimbingRegionsSection(), s => ((ClimbingRegionsSection)s).Regions, remap, rotation, offset, rotate, actions, newUids, dirtyHosts, createdHosts);
 
             // Nav points carry a parallel (empty) connection list.
             if (group.NavPoints.Count > 0)
             {
-                RflSection host = doc.Rfl.GetOrCreateSection(SectionType.NavPoints, () => new NavPointsSection());
+                RflSection host = Prepare(doc, SectionType.NavPoints, () => new NavPointsSection(), createdHosts);
                 var navSec = (NavPointsSection)host.Content!;
                 foreach (NavPoint np in group.NavPoints)
                 {
@@ -164,6 +171,10 @@ public static class RfgInterop
                 foreach (RflSection h in dirtyHosts)
                 {
                     h.Dirty = true;
+                    if (createdHosts.Contains(h))
+                    {
+                        doc.Rfl.Sections.Remove(h);
+                    }
                 }
 
                 doc.RefreshObjects();
@@ -190,7 +201,9 @@ public static class RfgInterop
         var pickedBrushes = brushes?.Brushes.Where(b => wantBrushes.Contains(b.Uid)).ToList() ?? new List<Brush>();
         foreach (Brush b in pickedBrushes)
         {
-            group.Brushes.Brushes.Add(GeometryClone.Deep(b));
+            Brush exported = GeometryClone.Deep(b);
+            BrushOrientation.RepairAir(exported); // RED reads the group's brushes as stored: air faces inward
+            group.Brushes.Brushes.Add(exported);
         }
 
         var wantObjects = objectUids.ToHashSet();
@@ -273,7 +286,7 @@ public static class RfgInterop
     private static void ImportList<T>(
         EditorDocument doc, IReadOnlyList<T> source, SectionType type, Func<IRflSectionContent> make,
         Func<IRflSectionContent, IList> getList, Dictionary<int, int> remap, Mat3 rotation, Vec3 translation,
-        bool rotate, List<(IList Dest, object Clone)> actions, List<int> newUids, HashSet<RflSection> dirtyHosts)
+        bool rotate, List<(IList Dest, object Clone)> actions, List<int> newUids, HashSet<RflSection> dirtyHosts, HashSet<RflSection> createdHosts)
         where T : class
     {
         if (source.Count == 0)
@@ -281,7 +294,7 @@ public static class RfgInterop
             return;
         }
 
-        RflSection host = doc.Rfl.GetOrCreateSection(type, make);
+        RflSection host = Prepare(doc, type, make, createdHosts);
         IList dest = getList(host.Content!);
         foreach (T item in source)
         {
@@ -537,6 +550,26 @@ public static class RfgInterop
                 links[i] = mapped;
             }
         }
+    }
+
+    /// <summary>The level's section of <paramref name="type"/>, or a detached new one recorded in <paramref name="created"/>.</summary>
+    private static RflSection Prepare(EditorDocument doc, SectionType type, Func<IRflSectionContent> make, HashSet<RflSection> created)
+    {
+        foreach (RflSection h in created)
+        {
+            if (h.TypeId == (uint)type)
+            {
+                return h;
+            }
+        }
+
+        RflSection host = doc.Rfl.FindOrPrepareSection(type, make, out bool isNew);
+        if (isNew)
+        {
+            created.Add(host);
+        }
+
+        return host;
     }
 
     private static void EnsurePresent(EditorDocument doc, RflSection host)

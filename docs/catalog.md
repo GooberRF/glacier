@@ -33,11 +33,11 @@ Throughout, features fall into three families: **stock** (Red Faction RED.exe pa
 - **Lossless read/write of every section** with a byte-preserving round-trip guarantee across
   the test corpus: unknown or untouched sections are re-emitted verbatim, and a no-op
   open→save is byte-identical apart from the header timestamp.
-- **Reads every stock RFL version** (`0xB4`–`0xC8`) and every Alpine version (`300`–`305`),
-  and **always saves Alpine v305** — a loaded pre-305 level is upgraded on save, exactly as
-  Alpine RED, which stamps v305 on every save. A v305 source re-saves byte-identically (apart
-  from the header timestamp); a pre-305 source upgrades once and every save after that is
-  byte-stable.
+- **Reads every stock RFL version** (`0xB4`–`0xC8`) and every Alpine version (`300`–`306`),
+  and **always saves Alpine v306** — a loaded pre-306 level is upgraded on save, exactly as
+  Alpine RED, which stamps v306 on every save. A v306 source re-saves byte-identically (apart
+  from the header timestamp); a pre-306 source upgrades once and every save after that is
+  byte-stable. A level from a newer Alpine Faction opens read-only and cannot be saved.
 - **Compatibility check** reports which Alpine-specific features a level uses.
 - **`.rfg` group save/load** with full UID remap and intra-import link repair.
 - **Autosave** (toggle + interval), deferred while a viewport drag is in progress, with a
@@ -114,7 +114,7 @@ Table-accurate previews rendered live in the viewport:
   lights, ambient sounds, triggers, events, regions (geo/gas/climb/push), nav points, cutscene
   cameras, particle and bolt emitters, decals, targets, clutter, entities, items, and the
   Alpine mesh / note / corona / bag objects.
-- **All 90 stock events** (IDs 0–89) and **all 58 Alpine events** (IDs 100–157) with a
+- **All 90 stock events** (IDs 0–89) and **all 67 Alpine events** (IDs 100–166) with a
   data-driven inspector (labels, dropdowns, index-vs-text handling, version gating), including
   directional events with an in-viewport facing arrow.
 - **Links** — K link, break, edit; one-to-many; back-links; navpoint→event links; with

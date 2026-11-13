@@ -303,6 +303,69 @@ internal static class LevelObjectEnumerator
 
                     break;
 
+                case AlpineWeatherRegionsSection s:
+                    foreach (AlpineWeatherRegion w in s.Records)
+                    {
+                        result.Add(ReadOnly(LevelObjectKind.WeatherRegion, section, w, sessionHidden,
+                            w.Uid, () => w.ScriptName, () => w.Position, w.WeatherType == 1 ? "Snow" : "Rain"));
+                    }
+
+                    break;
+
+                case AlpineVehicleFactoriesSection s:
+                    foreach (AlpineVehicleFactory v in s.Records)
+                    {
+                        result.Add(ReadOnly(LevelObjectKind.VehicleFactory, section, v, sessionHidden,
+                            v.Uid, () => v.ScriptName, () => v.Position, v.VehicleClass));
+                    }
+
+                    break;
+
+                case AlpineProjectionCamerasSection s:
+                    foreach (AlpineProjectionCamera c in s.Records)
+                    {
+                        result.Add(ReadOnly(LevelObjectKind.ProjectionCamera, section, c, sessionHidden,
+                            c.Uid, () => c.ScriptName, () => c.Position, "Projection Camera"));
+                    }
+
+                    break;
+
+                case AlpineRopeEmittersSection s:
+                    foreach (AlpineRopeEmitter rope in s.Records)
+                    {
+                        result.Add(ReadOnly(LevelObjectKind.RopeEmitter, section, rope, sessionHidden,
+                            rope.Uid, () => rope.ScriptName, () => rope.Position, rope.IsZipline ? "Zipline" : "Rope"));
+                    }
+
+                    break;
+
+                case AlpineDirectionalLightsSection s:
+                    foreach (AlpineDirectionalLight l in s.Records)
+                    {
+                        result.Add(ReadOnly(LevelObjectKind.DirectionalLight, section, l, sessionHidden,
+                            l.Uid, () => l.ScriptName, () => l.Position, "Directional Light"));
+                    }
+
+                    break;
+
+                case AlpineWaypointHelpersSection s:
+                    foreach (AlpineWaypointHelper h in s.Records)
+                    {
+                        result.Add(ReadOnly(LevelObjectKind.WaypointHelper, section, h, sessionHidden,
+                            h.Uid, () => string.Empty, () => h.Position, "Waypoint Helper"));
+                    }
+
+                    break;
+
+                case AlpineTerrainSection s:
+                    foreach (AlpineTerrain t in s.Terrains)
+                    {
+                        result.Add(ReadOnly(LevelObjectKind.Terrain, section, t, sessionHidden,
+                            t.Uid, () => t.ScriptName, () => t.Origin, "Terrain"));
+                    }
+
+                    break;
+
                 case PlayerStartSection s:
                     result.Add(new LevelObject(LevelObjectKind.PlayerStart, section, s, null,
                         () => 0, _ => { }, () => "Player Start", _ => { },
@@ -316,6 +379,31 @@ internal static class LevelObjectEnumerator
     }
 
     private static byte B(bool value) => value ? (byte)1 : (byte)0;
+
+    /// <summary>
+    /// Wires an Alpine 1.5 object read-only: it lists, selects, hides (session) and inspects, but its UID, name and
+    /// position setters do nothing and it has no owning list (no delete / copy), so the chunk it came from is written
+    /// back exactly as loaded. Placement and editing are a later authoring step.
+    /// </summary>
+    private static LevelObject ReadOnly(
+        LevelObjectKind kind, RflSection section, object model, HashSet<int> sessionHidden,
+        int uid, Func<string> getScript, Func<Vec3> getPos, string className) =>
+        new(kind, section, model, null,
+            () => uid, _ => { }, getScript, _ => { }, getPos, _ => { },
+            () => sessionHidden.Contains(uid),
+            v =>
+            {
+                if (v)
+                {
+                    sessionHidden.Add(uid);
+                }
+                else
+                {
+                    sessionHidden.Remove(uid);
+                }
+            },
+            () => className,
+            isReadOnly: true);
 
     /// <summary>Wires an object that carries a shared <see cref="ObjectHeader"/>.</summary>
     private static LevelObject Header(LevelObjectKind kind, RflSection section, object model, ObjectHeader h, IList list) =>

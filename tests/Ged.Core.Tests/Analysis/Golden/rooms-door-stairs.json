@@ -1,0 +1,390 @@
+{
+  "schema": "glacier.fingerprint/1",
+  "extractorVersion": 2,
+  "status": "ok",
+  "identity": {
+    "reliability": "high",
+    "sha256": "6b56be7af3879d1fdef2634c82c7f4dfa1d232bfc10a229943085af2f6a2bf6b",
+    "size": 75541,
+    "rflVersion": 306,
+    "timestamp": 0,
+    "name": "",
+    "headerName": "untitled.rfl",
+    "fileName": "rooms-door-stairs.rfl",
+    "author": {
+      "raw": "",
+      "canonical": ""
+    },
+    "multiplayer": false,
+    "gametype": {
+      "value": "sp",
+      "source": "levelinfo",
+      "conflict": false
+    },
+    "teamSpawns": false,
+    "origin": null,
+    "editor": "glacier",
+    "alpine": true,
+    "playerClass": null,
+    "class": null
+  },
+  "counts": {
+    "reliability": "high",
+    "objects": {
+      "playerStart": 1
+    },
+    "classes": {
+      "entity": {},
+      "item": {},
+      "clutter": {},
+      "event": {}
+    },
+    "geometry": {
+      "faces": 61,
+      "vertices": 102,
+      "rooms": 2,
+      "mainRooms": 1,
+      "subrooms": 1,
+      "portals": 0,
+      "surfaces": 33,
+      "lightmapPages": 1
+    },
+    "brushes": 12,
+    "levelProperties": {
+      "geomodTexture": "rock02.tga",
+      "hardness": 50
+    },
+    "alpineProperties": true,
+    "dashProperties": false,
+    "glacierMetadata": true
+  },
+  "space": {
+    "reliability": "high",
+    "pitch": 0.5,
+    "samples": 1164,
+    "valid_samples": 1164,
+    "floor_area": 291,
+    "headroom": {
+      "n": 1164,
+      "min": 3,
+      "p5": 5.75,
+      "p25": 6,
+      "p50": 6,
+      "p75": 6,
+      "p95": 6,
+      "max": 6
+    },
+    "open_sky_fraction": 0,
+    "clear_width": {
+      "n": 1164,
+      "min": 2.5,
+      "p5": 3.536,
+      "p25": 6.5,
+      "p50": 10.607,
+      "p75": 12,
+      "p95": 12,
+      "max": 12
+    }
+  },
+  "vertical": {
+    "reliability": "high",
+    "span": 1.592,
+    "layers": 1,
+    "layers_reliability": "medium"
+  },
+  "corridor": {
+    "reliability": "medium",
+    "width": {
+      "n": 107,
+      "min": 2.5,
+      "p5": 2.5,
+      "p25": 2.706,
+      "p50": 4.5,
+      "p75": 6.5,
+      "p95": 7.036,
+      "max": 7.036
+    },
+    "height": {
+      "n": 107,
+      "min": 3,
+      "p5": 3,
+      "p25": 6,
+      "p50": 6,
+      "p75": 6,
+      "p95": 6,
+      "max": 6
+    },
+    "fraction": 0.092
+  },
+  "opening": {
+    "reliability": "medium",
+    "count": 1,
+    "width": {
+      "n": 1,
+      "min": 3,
+      "p5": 3,
+      "p25": 3,
+      "p50": 3,
+      "p75": 3,
+      "p95": 3,
+      "max": 3
+    },
+    "height": {
+      "n": 1,
+      "min": 3,
+      "p5": 3,
+      "p25": 3,
+      "p50": 3,
+      "p75": 3,
+      "p95": 3,
+      "max": 3
+    },
+    "depth": {
+      "n": 1,
+      "min": 1,
+      "p5": 1,
+      "p25": 1,
+      "p50": 1,
+      "p75": 1,
+      "p95": 1,
+      "max": 1
+    },
+    "portal_agreement": {
+      "pairs": 0,
+      "abs_width_diff": null
+    },
+    "notes": [
+      "Blind spots: openings wider than 6 m; doorways whose mover door is excluded from the static geometry read as open; openings at a level change (stair doorways).",
+      "Single-sample openings are dropped at the base pitch; walls thinner than one lattice step may hide a doorway."
+    ]
+  },
+  "portal": {
+    "reliability": "high",
+    "count": 0,
+    "vertical_count": 0,
+    "horizontal_count": 0,
+    "width": null,
+    "height": null
+  },
+  "stair": {
+    "reliability": "medium",
+    "count": 1,
+    "riser": {
+      "n": 1,
+      "min": 0.25,
+      "p5": 0.25,
+      "p25": 0.25,
+      "p50": 0.25,
+      "p75": 0.25,
+      "p95": 0.25,
+      "max": 0.25
+    },
+    "tread": {
+      "n": 1,
+      "min": 0.5,
+      "p5": 0.5,
+      "p25": 0.5,
+      "p50": 0.5,
+      "p75": 0.5,
+      "p95": 0.5,
+      "max": 0.5
+    },
+    "steps": {
+      "n": 1,
+      "min": 8,
+      "p5": 8,
+      "p25": 8,
+      "p50": 8,
+      "p75": 8,
+      "p95": 8,
+      "max": 8
+    },
+    "notes": [
+      "Treads under an invisible collision ramp still count; spiral stairs (direction test) and terraces with treads deeper than 2 m are not counted."
+    ]
+  },
+  "room": null,
+  "topology": {
+    "reliability": "high",
+    "rooms": 1,
+    "portals": 0,
+    "components": 1,
+    "degree": {
+      "n": 1,
+      "min": 0,
+      "p5": 0,
+      "p25": 0,
+      "p50": 0,
+      "p75": 0,
+      "p95": 0,
+      "max": 0
+    },
+    "dead_ends": 0,
+    "loops": 0,
+    "diameter": 0,
+    "portalised": false,
+    "notes": [
+      "Describes the portal graph, not the playable layout."
+    ]
+  },
+  "textures": {
+    "reliability": "high",
+    "count": 3,
+    "palette": [
+      {
+        "name": "cem_bunker04.tga",
+        "area_fraction": 0.501
+      },
+      {
+        "name": "cem_cementflr01.tga",
+        "area_fraction": 0.249
+      },
+      {
+        "name": "cem_dark_floor01.tga",
+        "area_fraction": 0.249
+      }
+    ],
+    "roles": {
+      "floor": {
+        "area_fraction": 0.249,
+        "top": [
+          {
+            "name": "cem_dark_floor01.tga",
+            "area_fraction": 1
+          }
+        ]
+      },
+      "wall": {
+        "area_fraction": 0.501,
+        "top": [
+          {
+            "name": "cem_bunker04.tga",
+            "area_fraction": 1
+          }
+        ]
+      },
+      "ceiling": {
+        "area_fraction": 0.249,
+        "top": [
+          {
+            "name": "cem_cementflr01.tga",
+            "area_fraction": 1
+          }
+        ]
+      }
+    },
+    "family": {
+      "cem": 1
+    },
+    "stock_fraction": null
+  },
+  "texel": {
+    "reliability": "high",
+    "tile_metres": {
+      "n": 56,
+      "min": 4,
+      "p5": 4,
+      "p25": 4,
+      "p50": 4,
+      "p75": 4,
+      "p95": 4,
+      "max": 4
+    }
+  },
+  "detail": {
+    "reliability": "high",
+    "area_fraction": 0
+  },
+  "brush": {
+    "reliability": "high",
+    "count": 12,
+    "faces": {
+      "n": 12,
+      "min": 5,
+      "p5": 5.55,
+      "p25": 6,
+      "p50": 6,
+      "p75": 6,
+      "p95": 6,
+      "max": 6
+    },
+    "air_fraction": 0.25,
+    "detail_fraction": 0.083,
+    "portal_count": 0
+  },
+  "lights": {
+    "reliability": "high",
+    "count": 0,
+    "per_100m2": 0,
+    "range": null,
+    "intensity": null,
+    "type": {
+      "omni": null,
+      "spot": null,
+      "tube": null
+    },
+    "dynamic_fraction": null,
+    "hue": null,
+    "saturation": null,
+    "value": null,
+    "warm_fraction": null,
+    "cool_fraction": null,
+    "neutral_fraction": null,
+    "height_above_floor": null,
+    "ambient": [
+      40,
+      40,
+      40
+    ],
+    "lightmaps_present": true,
+    "fog": {
+      "present": false,
+      "near": 0,
+      "far": 0,
+      "color": [
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "spawns": {
+    "reliability": "high",
+    "count": 0,
+    "red": 0,
+    "blue": 0,
+    "bot": 0,
+    "nn_distance": null,
+    "per_100m2": 0,
+    "clear_width": null,
+    "clear_width_reliability": "medium"
+  },
+  "items": {
+    "reliability": "high",
+    "count": 0,
+    "by_class": {},
+    "category": null,
+    "nn_distance": null,
+    "to_nearest_spawn": null,
+    "height_above_floor": null,
+    "context": null,
+    "notes": [
+      "height_above_floor is medium reliability; context is medium-low (nearest floor sample within 2 m)."
+    ]
+  },
+  "ctf": null,
+  "events": {
+    "reliability": "high",
+    "count": 0,
+    "triggers": 0,
+    "links": 0,
+    "class_histogram": {},
+    "motif_count": 0,
+    "motifs": [],
+    "motifs_truncated": false
+  },
+  "skipped": {
+    "room": "fewer_than_4_rooms",
+    "ctf": "not_ctf"
+  }
+}

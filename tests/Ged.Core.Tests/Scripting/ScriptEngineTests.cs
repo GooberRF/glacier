@@ -9,8 +9,8 @@ namespace Ged.Core.Tests.Scripting;
 
 /// <summary>
 /// End-to-end scripting-engine tests: read/query APIs, the load-bearing undo-integrity + rollback
-/// invariants (plan §5.2), dry-run (§5.7), determinism (§5.7), the sandbox (§5.10), and the error
-/// model (§5.6). Driven through the real MoonSharp host.
+/// invariants, dry-run, determinism, the sandbox, and the error
+/// model. Driven through the real MoonSharp host.
 /// </summary>
 public sealed class ScriptEngineTests
 {
@@ -147,7 +147,7 @@ public sealed class ScriptEngineTests
         Assert.True(io.Success);
         Assert.Equal("nil", io.ReturnValue); // no io module at all
 
-        // The hard sandbox strips the entire os table (also withholds os.time nondeterminism, §5.7).
+        // The hard sandbox strips the entire os table (also withholds os.time nondeterminism).
         (ScriptRunResult os, _) = ScriptTestFixture.Run(doc, "return tostring(os)");
         Assert.True(os.Success);
         Assert.Equal("nil", os.ReturnValue);
@@ -259,7 +259,7 @@ public sealed class ScriptEngineTests
         (ScriptRunResult r, _) = ScriptTestFixture.Run(doc,
             "ged.require_api(1) ged.group('setup', function() level.place('Light', 0,0,0) end) return ged.api_version");
         Assert.True(r.Success, r.Error?.ToDisplayString());
-        Assert.Equal("1", r.ReturnValue);
+        Assert.Equal(ScriptApiV1.Version.ToString(System.Globalization.CultureInfo.InvariantCulture), r.ReturnValue);
         Assert.Equal(2, doc.Objects.Count);
     }
 }

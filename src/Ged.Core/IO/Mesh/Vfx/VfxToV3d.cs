@@ -34,7 +34,7 @@ public static class VfxToV3d
     public static V3dFile Convert(VfxFile vfx)
     {
         ArgumentNullException.ThrowIfNull(vfx);
-        var file = new V3dFile { Signature = V3dSignature.V3m };
+        var file = new V3dFile { Signature = V3dSignature.V3m, VerticesInModelSpace = true };
 
         foreach (VfxMesh mesh in vfx.Meshes)
         {

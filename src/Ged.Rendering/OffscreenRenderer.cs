@@ -12,7 +12,10 @@ namespace Ged.Rendering;
 /// </summary>
 public static class OffscreenRenderer
 {
-    /// <summary>Renders one frame of <paramref name="scene"/> and returns the RGBA pixels.</summary>
+    /// <summary>
+    /// Renders one frame of <paramref name="scene"/> and returns the RGBA pixels.
+    /// <paramref name="clearColor"/> overrides the background (null = the editor grey).
+    /// </summary>
     public static byte[] Render(
         GraphicsDevice gd,
         RenderScene scene,
@@ -23,7 +26,8 @@ public static class OffscreenRenderer
         int height,
         FogSettings? fog = null,
         float time = 0f,
-        bool disableBackfaceCulling = false)
+        bool disableBackfaceCulling = false,
+        System.Numerics.Vector4? clearColor = null)
     {
         ArgumentNullException.ThrowIfNull(gd);
         ArgumentNullException.ThrowIfNull(scene);
@@ -36,6 +40,11 @@ public static class OffscreenRenderer
         if (fog is FogSettings f)
         {
             renderer.Fog = f;
+        }
+
+        if (clearColor is System.Numerics.Vector4 clear)
+        {
+            renderer.ClearColor = clear;
         }
 
         renderer.Time = time;

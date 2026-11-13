@@ -93,6 +93,24 @@ public enum EventLinkTarget
     RespawnPoint,
     Room,
     Monitor,
+
+    /// <summary>A climbing region (Climbing_Region_State).</summary>
+    ClimbRegion,
+
+    /// <summary>An Alpine weather region (Weather_Region_State).</summary>
+    WeatherRegion,
+
+    /// <summary>An Alpine rope emitter (Rope_State).</summary>
+    RopeEmitter,
+
+    /// <summary>An Alpine projection camera (Display_Projection).</summary>
+    ProjectionCamera,
+
+    /// <summary>An Alpine mesh object (Mesh_Set_Scale).</summary>
+    MeshObject,
+
+    /// <summary>A detail brush by UID (When_Destroyed tracks destructible detail brushes; Alpine event.cpp:1674-1678).</summary>
+    DetailBrush,
 }
 
 /// <summary>One type-specific inspector field of an event class.</summary>
@@ -121,6 +139,12 @@ public sealed class EventFieldSpec
 
     /// <summary>The character written to the str slot when a <see cref="EventEditor.FlagChar"/> is on.</summary>
     public string OnChar { get; init; } = "1";
+
+    /// <summary>An explicit script key; null derives it from <see cref="Label"/> (<see cref="InspectorKeys.FromLabel"/>).</summary>
+    public string? Key { get; init; }
+
+    /// <summary>The script-facing key: <see cref="Key"/> when set, else derived from <see cref="Label"/>.</summary>
+    public string EffectiveKey => Key ?? InspectorKeys.FromLabel(Label);
 }
 
 /// <summary>
@@ -142,7 +166,7 @@ public sealed class EventSchema
     /// <summary>The RFL <c>class_name</c> (the catalog key).</summary>
     public string ClassName { get; }
 
-    /// <summary>Authoritative game EventType id (0–89 stock, 100–157 Alpine).</summary>
+    /// <summary>Authoritative game EventType id (0–89 stock, 100–166 Alpine).</summary>
     public int GameId { get; }
 
     /// <summary>Browser tree category (stock section or AF_* for Alpine).</summary>

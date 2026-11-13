@@ -42,9 +42,10 @@ public static class BrushBreakableProps
 
     private static void Edit(EditorDocument doc, int brushUid, string description, Func<byte, byte> apply)
     {
-        RflSection host = doc.Rfl.GetOrCreateSection(
-            SectionType.AlpineLevelProperties, () => new AlpineLevelPropertiesSection { Version = 4 });
-        var alp = (AlpineLevelPropertiesSection)host.Content!;
+        // The section (when absent) is created inside the command, so undoing the first edit on a
+        // stock level removes it again and the file stays byte-identical.
+        AlpinePropertiesEdit edit = AlpinePropertiesEdit.Begin(doc);
+        AlpineLevelPropertiesSection alp = edit.Content;
 
         AlpineBreakableEntry? existing = alp.BreakableEntries.FirstOrDefault(b => b.BrushUid == brushUid);
         bool created = existing is null;
@@ -58,6 +59,7 @@ public static class BrushBreakableProps
         doc.Undo.Execute(new RelayCommand(description,
             () =>
             {
+                edit.Attach();
                 AlpineBreakableEntry? e = alp.BreakableEntries.FirstOrDefault(b => b.BrushUid == brushUid);
                 if (e is null)
                 {
@@ -66,7 +68,6 @@ public static class BrushBreakableProps
                 }
 
                 e.Material = newByte;
-                host.Dirty = true;
             },
             () =>
             {
@@ -83,7 +84,7 @@ public static class BrushBreakableProps
                     }
                 }
 
-                host.Dirty = true;
+                edit.Detach();
             }));
     }
 }

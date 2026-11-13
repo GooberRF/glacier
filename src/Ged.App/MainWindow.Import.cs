@@ -124,13 +124,12 @@ public sealed partial class MainWindow
 
     private void ImportAsMeshObject(ImportedModel model, string sourcePath)
     {
-        string meshName = SanitizeMeshName(Path.GetFileNameWithoutExtension(sourcePath)) + ".v3m";
+        string meshName = MeshObjectImport.SanitizeMeshName(Path.GetFileNameWithoutExtension(sourcePath)) + ".v3m";
         string meshesDir = MeshesOutputDir();
         Directory.CreateDirectory(meshesDir);
         string outPath = Path.Combine(meshesDir, meshName);
 
-        V3dFile v3d = MeshImportPipeline.ToV3dFile(model, meshName);
-        File.WriteAllBytes(outPath, V3dWriter.Write(v3d));
+        File.WriteAllBytes(outPath, MeshObjectImport.BuildV3m(model, meshName));
 
         // Make the new mesh resolvable, then place a Mesh object referencing it.
         ReloadMeshes();
@@ -160,19 +159,6 @@ public sealed partial class MainWindow
         string root = _session.RfInstallDir
             ?? (Document?.Path is { } lp ? Path.GetDirectoryName(lp) : null)
             ?? Environment.CurrentDirectory;
-        return Path.Combine(root, "user_maps", "meshes");
-    }
-
-    private static string SanitizeMeshName(string name)
-    {
-        Span<char> buffer = stackalloc char[name.Length];
-        int n = 0;
-        foreach (char c in name)
-        {
-            buffer[n++] = char.IsLetterOrDigit(c) || c is '_' or '-' ? c : '_';
-        }
-
-        string s = new string(buffer[..n]).Trim('_');
-        return string.IsNullOrEmpty(s) ? "mesh" : s;
+        return MeshObjectImport.MeshesDirectory(root);
     }
 }

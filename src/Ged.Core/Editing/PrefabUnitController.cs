@@ -203,8 +203,8 @@ public sealed class PrefabUnitController
             return true;
         }
 
-        bool ownTx = !_doc.Undo.InTransaction;
-        UndoStack.Transaction? tx = ownTx ? _doc.Undo.BeginTransaction("Transform prefab instance") : null;
+        // Joins an already-open transaction (e.g. a gizmo drag or a script run) as a nested child.
+        UndoStack.Transaction tx = _doc.Undo.BeginTransaction("Transform prefab instance");
         try
         {
             var brushUids = new List<int>();
@@ -253,12 +253,12 @@ public sealed class PrefabUnitController
             // Keep the explicit pose record fresh (all members are in the transformed set).
             _instances.ApplyRigidTransform(rec.MemberUids, rotation, translation, pivot);
 
-            tx?.Commit();
+            tx.Commit();
             return true;
         }
         catch
         {
-            tx?.Rollback();
+            tx.Rollback();
             throw;
         }
     }

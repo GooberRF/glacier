@@ -474,7 +474,6 @@ public sealed class Pass24Diag
         RoomBuilder.CaptureJoins = true;
         try
         {
-            RoomBuilder.ForceAlwaysVote = false;
             CompiledLevel c = GeometryCompiler.Compile(brushes, effects,
                 new CompileOptions { Alpine = rfl.Context.IsAlpine, BuildSurfaces = false, PortalFaceVote = true });
             var det = RoomBuilder.CapturedMembraneDetail;
@@ -755,16 +754,8 @@ public sealed class Pass24Diag
 
     private static Geometry CompileMode(List<Brush> brushes, List<RoomEffect> effects, bool alpine, bool faceVote, bool alwaysVote)
     {
-        RoomBuilder.ForceAlwaysVote = alwaysVote;
-        try
-        {
-            return GeometryCompiler.Compile(brushes, effects,
-                new CompileOptions { Alpine = alpine, BuildSurfaces = false, PortalFaceVote = faceVote }).Geometry;
-        }
-        finally
-        {
-            RoomBuilder.ForceAlwaysVote = false;
-        }
+        return GeometryCompiler.Compile(brushes, effects,
+            new CompileOptions { Alpine = alpine, BuildSurfaces = false, PortalFaceVote = faceVote, ForceAlwaysPortalVote = alwaysVote }).Geometry;
     }
 
     private static float LiquidWindow(Geometry g)

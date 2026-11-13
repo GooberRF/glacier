@@ -195,16 +195,27 @@ public static class BspSolid
                     continue;
                 }
 
+                CsgFace? donor = null;
                 if (!node._hasPlane)
                 {
                     node._plane = polys[0].Plane;
                     node._hasPlane = true;
+                    donor = polys[0];
                 }
 
                 var front = new List<CsgFace>();
                 var back = new List<CsgFace>();
                 foreach (CsgFace p in polys)
                 {
+                    // The polygon that donated the node plane is kept here as coplanar: a fitted plane can miss
+                    // a thin facet's own corners by more than the band, and re-routing it to a child would
+                    // re-select the same plane there without end.
+                    if (ReferenceEquals(p, donor))
+                    {
+                        node._polygons.Add(p);
+                        continue;
+                    }
+
                     SplitPolygon(node._plane, p, node._polygons, node._polygons, front, back);
                 }
 

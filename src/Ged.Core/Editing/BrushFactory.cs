@@ -9,7 +9,10 @@ namespace Ged.Core.Editing;
 /// <summary>
 /// Cookie-cutter primitive generators. Each produces a <see cref="Brush"/> with
 /// local-space geometry centred on the origin: a shared vertex pool, faces with a
-/// per-face texture slot and default planar UVs, and outward-facing plane normals.
+/// per-face texture slot and default planar UVs. The shape generators build their
+/// faces wound outward; <see cref="Create"/> then stores the brush the way RED does
+/// (<see cref="BrushOrientation"/>): an air or portal brush's faces are reversed to
+/// wind inward, a solid brush keeps them outward.
 /// Splits control tessellation. Pure and fully unit-tested — no GPU, VFS or IO
 /// dependency beyond reading an already-parsed mesh for <see cref="FromMesh"/>.
 /// </summary>
@@ -40,7 +43,7 @@ public static class BrushFactory
             ApplyOrientationTextures(g, p.EffectiveFloorTexture, p.EffectiveWallTexture, p.EffectiveCeilingTexture);
         }
 
-        return new Brush
+        var brush = new Brush
         {
             Uid = uid,
             Position = default,
@@ -50,6 +53,12 @@ public static class BrushFactory
             Life = p.Life,
             State = BrushState.Normal,
         };
+
+        // RED stores an air (and a portal) brush with its faces wound inward — its boolean build folds an
+        // air brush's faces in as stored — so reverse them after the orientation textures were assigned by
+        // the outward normal. Corners keep their UVs, so the brush looks exactly the same.
+        BrushOrientation.ApplyCreationConvention(brush);
+        return brush;
     }
 
     // Radial side count from Width Splits (min 3, default 12 when unset).
@@ -268,6 +277,7 @@ public static class BrushFactory
             }
 
             V3dLod lod = sm.Lods[0];
+            Vec3 offset = mesh.ModelOffset(sm); // the mesh's model space, as the game draws it
             foreach (V3dBatch batch in lod.Batches)
             {
                 string tex = sm.ResolveBatchTexture(lod, batch);
@@ -281,9 +291,9 @@ public static class BrushFactory
                         continue;
                     }
 
-                    int v0 = GeometryUtil.AddVertex(g, batch.Positions[tri.I0]);
-                    int v1 = GeometryUtil.AddVertex(g, batch.Positions[tri.I1]);
-                    int v2 = GeometryUtil.AddVertex(g, batch.Positions[tri.I2]);
+                    int v0 = GeometryUtil.AddVertex(g, batch.Positions[tri.I0].Add(offset));
+                    int v1 = GeometryUtil.AddVertex(g, batch.Positions[tri.I1].Add(offset));
+                    int v2 = GeometryUtil.AddVertex(g, batch.Positions[tri.I2].Add(offset));
                     if (v0 == v1 || v1 == v2 || v0 == v2)
                     {
                         continue; // degenerate triangle
@@ -319,8 +329,9 @@ public static class BrushFactory
     private const float HorizontalDot = 0.7f;
 
     /// <summary>
-    /// Assigns each face the floor / wall / ceiling default texture by its outward
-    /// normal (RED convention): a face pointing up is a floor, pointing down is a
+    /// Assigns each face the floor / wall / ceiling default texture by its stored plane
+    /// normal, which the generators wind outward (call it before the brush is stored
+    /// inward): a face pointing up is a floor, pointing down is a
     /// ceiling, and anything nearer vertical is a wall. Rebuilds the texture table
     /// so only the used defaults remain.
     /// </summary>

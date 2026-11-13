@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Ged.Core.IO.Rfl;
 using Ged.Core.IO.Rfl.Sections;
+using Ged.Core.Lighting;
 using Ged.Core.Model;
 
 namespace Ged.Core.Compiler;
@@ -259,6 +260,36 @@ public static class GeometryBuildService
         // compile, so in-game geomod finds no room (geoable dead) and every breakable falls back
         // to Glass instead of its authored material.
         UpdateAlpineRoomLinks(rfl, result);
+
+        // [ALPINE] The level's Alpine lightmap chunk was baked for the geometry just replaced: the next save drops it
+        // (AlpineLightmapSavePolicy, ALPINE-COMPAT-SPEC §9 interim rule).
+        rfl.NoteGlacierLightingChange(result.BakeStats is null
+            ? GlacierLightingChange.Geometry
+            : GlacierLightingChange.Geometry | GlacierLightingChange.Lighting);
+    }
+
+    /// <summary>
+    /// Re-bakes lighting onto the level's existing compiled geometry and stock lightmap pages (Calculate Lighting
+    /// without a rebuild), incrementally inside <paramref name="region"/> when given. Marks the lightmaps for
+    /// re-serialization and records the relight, so the next save drops a stale Alpine lightmap chunk exactly as after
+    /// a rebuild. Returns null when the level has no compiled geometry or no stock lightmaps section (an Alpine
+    /// D3D11-only level stores none): the caller runs a full build with lighting instead, which writes both.
+    /// </summary>
+    public static BakeStats? Relight(
+        RflFile rfl, IReadOnlyList<Light> lights, RfColor? levelAmbient, LightingOptions options, Aabb? region = null)
+    {
+        ArgumentNullException.ThrowIfNull(rfl);
+        rfl.ParseAllKnownSections();
+        if (Find<GeometrySection>(rfl) is not { } geometry
+            || FindSection(rfl, SectionType.Lightmaps) is not { Content: LightmapsSection lightmaps } host)
+        {
+            return null;
+        }
+
+        BakeStats stats = LevelLighting.BakeInto(geometry.Geometry, lightmaps.Lightmaps, lights, levelAmbient, options, region);
+        host.Dirty = true;
+        rfl.NoteGlacierLightingChange(GlacierLightingChange.Lighting);
+        return stats;
     }
 
     /// <summary>
@@ -293,7 +324,7 @@ public static class GeometryBuildService
             }
 
             host = rfl.GetOrCreateSection(
-                SectionType.AlpineLevelProperties, () => new AlpineLevelPropertiesSection { Version = 4 });
+                SectionType.AlpineLevelProperties, () => new AlpineLevelPropertiesSection { Version = AlpineLevelPropertiesSection.CurrentVersion });
             alp = (AlpineLevelPropertiesSection)host.Content!;
         }
 

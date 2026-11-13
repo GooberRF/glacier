@@ -15,7 +15,11 @@ public static class FaceOps
 {
     private const float CoplanarEps = 1e-3f;
 
-    /// <summary>Ctrl+E: extrudes a face along its outward normal, walling the sides.</summary>
+    /// <summary>
+    /// Ctrl+E: extrudes a face out of the brush along its outward normal, walling the sides. The new walls wind
+    /// the way the brush is stored — outward for a solid, inward for an air brush (as RED stores it) — so an air
+    /// brush grows the same way a solid does.
+    /// </summary>
     public static OpResult Extrude(Geometry g, int faceIndex, float distance)
     {
         if (!InRange(g, faceIndex))
@@ -30,7 +34,8 @@ public static class FaceOps
 
         Face f = g.Faces[faceIndex];
         List<Vec3> corners = GeometryUtil.Corners(g, f);
-        Vec3 normal = f.Plane.Normal;
+        bool inward = BrushOrientation.MeasureLocal(g) == BrushWinding.Inward;
+        Vec3 normal = inward ? f.Plane.Normal.Negate() : f.Plane.Normal;
         Vec3 faceCentroid = GeometryUtil.Centroid(corners);
 
         int n = f.Vertices.Count;
@@ -55,6 +60,10 @@ public static class FaceOps
             AddCorners(wall, oldIdx[i], oldIdx[j], newIdx[j], newIdx[i]);
             g.Faces.Add(wall);
             OrientWallOutward(g, wall, faceCentroid, normal);
+            if (inward)
+            {
+                wall.Vertices.Reverse();
+            }
         }
 
         GeometryUtil.RecomputeAllPlanes(g);
@@ -710,7 +719,7 @@ public static class FaceOps
     }
 
     /// <summary>Whether a face binds a real lightmap surface (mirrors Geometry's serializer test).</summary>
-    private static bool FaceHasLightmapUvs(Face f) => (f.SurfaceIndex & 0xFFFF) != 0xFFFF;
+    private static bool FaceHasLightmapUvs(Face f) => Geometry.FaceHasLightmapUvs(f);
 
     private static List<int> MergeAlongSharedEdge(Face a, Face b, int s0, int s1)
     {

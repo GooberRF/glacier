@@ -1,0 +1,991 @@
+[
+  {
+    "name": "session_info",
+    "title": "Session info",
+    "description": "Start here. Reports how this server runs (headless, or attached to the running editor; fixed at startup), its version, the open level (path, unsaved changes, geometry state, counts) or that none is open, the folders tools may write, which safety classes are enabled (set by how the server was started and, attached, the editor settings; no tool can change them), and whether an RF install is mounted. Instant. Attached, busy means the editor is occupied (its own build): retry shortly. Next: open_level or new_level when no level is open, else level_summary.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Session info",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "open_level",
+    "title": "Open level",
+    "description": "Opens a level file (.rfl) as the one document every other tool works on; its folder becomes writable. Fails when the current level has unsaved changes unless the session allows destructive actions: save_level first. Fast (seconds for large levels). Next: level_summary, render_plan.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The level file (.rfl), absolute or relative to the server's working folder."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Open level",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "new_level",
+    "title": "New level",
+    "description": "Replaces the document with a new level from the File > New template (level properties, a Player Start, no geometry). Same unsaved-changes rule as open_level. With out, saves it there at once (a path inside the allowed folders). Instant. Next: run_lua to build geometry with the design kit.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "out": {
+          "type": "string",
+          "description": "Save the new level to this .rfl path (optional)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "New level",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "save_level",
+    "title": "Save level",
+    "description": "Saves the open level, to its own file or to out (inside the allowed folders; overwriting another existing file needs destructive actions). Missing or stale geometry is built (sealed, unlit) first because Red Faction cannot load a level without it; lighting is only baked by build with light. Seconds. Do this last, after check_holes and lint.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "out": {
+          "type": "string",
+          "description": "Save to this .rfl path instead of the level's own file."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Save level",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "undo",
+    "title": "Undo",
+    "description": "Takes back the latest steps, only when every one is an automation run (undo label starting \"AI:\" or \"CLI:\"); it refuses rather than undo the designer's own edits, and names the step in the way. Instant. Use after a run_lua that went wrong; redo restores what you undid.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "integer",
+          "description": "How many steps to undo (default 1).",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Undo",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "redo",
+    "title": "Redo",
+    "description": "Re-applies steps this session took back with undo, in order; refuses when the next redo step was not undone by this session or anything was done since. Instant.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "integer",
+          "description": "How many steps to redo (default 1).",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Redo",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "checkpoint",
+    "title": "Checkpoint",
+    "description": "Records every object's fields and every brush's position, flags, geometry and textures in memory under a name (no level change, no undo step; 16 kept, the oldest dropped). Fast. Take one before an edit you want to review, then call diff_since.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The checkpoint name (1-64 characters; reusing a name replaces it).",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Checkpoint",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "diff_since",
+    "title": "Diff since",
+    "description": "Lists objects and brushes added, removed and changed since a checkpoint, by UID; object changes give each field's before and after value, brush changes name position, rotation, flags, tags, geometry or textures. Fast. Use it to confirm a run_lua changed exactly what you meant.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "checkpoint": {
+          "type": "string",
+          "description": "The checkpoint name."
+        },
+        "max_changes": {
+          "type": "integer",
+          "description": "List at most this many changes (default 100).",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 100
+        },
+        "max_chars": {
+          "type": "integer",
+          "description": "Result size budget in characters (default 24000); longer lists are cut with truncated and a hint.",
+          "minimum": 2000,
+          "maximum": 60000,
+          "default": 24000
+        }
+      },
+      "required": [
+        "checkpoint"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Diff since",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "run_lua",
+    "title": "Run lua",
+    "description": "The way to build and edit: runs Lua against the open level as ONE undo step labelled \"AI: <name>\" (any error rolls it all back). Prefer the design kit (local kit = ged.import(\"kit\")). Units: metres, degrees, seconds; colours 0-255; texture UVs in tile units (1 = one repeat). Axes: left-handed. +X right, +Y up, +Z forward. Globals: ged, level, selection, assets, ops, lint, log, rng, catalog, prefab, geo, spatial, design. Seconds; limit timeout_s. Use dry_run to preview. Returns changes, created UIDs, log, errors with line:column and a hint. Next: build (sealed), check_holes, render_plan.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "The Lua source."
+        },
+        "name": {
+          "type": "string",
+          "description": "Script name for diagnostics, tags and undo label (default mcp-<n>.lua).",
+          "maxLength": 128
+        },
+        "label": {
+          "type": "string",
+          "description": "Short note appended to the undo label.",
+          "maxLength": 60
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Report what would change, then roll it all back.",
+          "default": false
+        },
+        "build": {
+          "type": "string",
+          "description": "After a successful run: none, sealed (compile) or lit (compile and bake lighting).",
+          "enum": [
+            "none",
+            "sealed",
+            "lit"
+          ],
+          "default": "none"
+        },
+        "timeout_s": {
+          "type": "number",
+          "description": "Script time limit in seconds; builds do not count.",
+          "minimum": 1,
+          "maximum": 300,
+          "default": 30
+        },
+        "budget": {
+          "type": "integer",
+          "description": "Max Lua instructions (default 200000000; 0 = none)."
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Run lua",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "level_summary",
+    "title": "Level summary",
+    "description": "Facts about the open level: bounds, brush counts by type, objects by kind with positions and key properties (normal, full), links, spawns, rooms with portal neighbours, tag counts and lint totals. brief is a few hundred tokens; full can be large and falls back to normal when over budget. Fast. Use for facts; render_plan for layout.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "detail": {
+          "type": "string",
+          "description": "brief, normal (default) or full.",
+          "enum": [
+            "brief",
+            "normal",
+            "full"
+          ],
+          "default": "normal"
+        },
+        "max_chars": {
+          "type": "integer",
+          "description": "Result size budget in characters (default 24000); longer lists are cut with truncated and a hint.",
+          "minimum": 2000,
+          "maximum": 60000,
+          "default": 24000
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Level summary",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "inspect",
+    "title": "Inspect",
+    "description": "One object or brush by UID: kind, class, name, position, rotation, every field with type and value (the same fields Lua obj:fields() lists, set with obj:set), links out and in, tags; for a brush its flags, faces, size, bounds and textures. Instant. Find UIDs with query or level_summary.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "integer",
+          "description": "The UID.",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "uid"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Inspect",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "query",
+    "title": "Query",
+    "description": "Lists matching UIDs (sorted, paged) with kind, class, name and position. Objects filter by kind, class and name (globs with * and ?), tag (key or key=value) and region; brushes by tag and region. Instant. Page with offset; inspect a UID for its fields.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "what": {
+          "type": "string",
+          "description": "objects (default) or brushes.",
+          "enum": [
+            "objects",
+            "brushes"
+          ],
+          "default": "objects"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Object kind, e.g. Light, Item, Event, respawn (see list_classes)."
+        },
+        "class": {
+          "type": "string",
+          "description": "Class name or glob, e.g. \"Medikit*\"."
+        },
+        "name": {
+          "type": "string",
+          "description": "Script name or glob."
+        },
+        "tag": {
+          "type": "string",
+          "description": "A tag key, or key=value (e.g. ai.session)."
+        },
+        "region": {
+          "type": "array",
+          "description": "Frame (render) or filter (query) on a world box: minx, miny, minz, maxx, maxy, maxz in metres.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 6,
+          "maxItems": 6
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Page size (default 50).",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 50
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Skip this many matches (default 0).",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_chars": {
+          "type": "integer",
+          "description": "Result size budget in characters (default 24000); longer lists are cut with truncated and a hint.",
+          "minimum": 2000,
+          "maximum": 60000,
+          "default": 24000
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Query",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "render_plan",
+    "title": "Render plan",
+    "description": "Draws a floor plan of one storey: walls, solid hatching, grid, scale, labelled object glyphs, links, legend. Image right is +X, image up is +Z. Returns the PNG and the mapping (worldPerPixel, origin) to turn pixels into metres. Renders a private copy; the level never changes. A few seconds. Render every storey (y) after each change.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "y": {
+          "type": "number",
+          "description": "Floor height of the storey in metres (default: under the Player Start)."
+        },
+        "thickness": {
+          "type": "number",
+          "description": "Keep geometry up to y + thickness (default 2).",
+          "minimum": 0.1,
+          "maximum": 1000
+        },
+        "below": {
+          "type": "number",
+          "description": "Keep geometry down to y - below (default 1).",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "region": {
+          "type": "array",
+          "description": "Frame (render) or filter (query) on a world box: minx, miny, minz, maxx, maxy, maxz in metres.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 6,
+          "maxItems": 6
+        },
+        "room": {
+          "type": "integer",
+          "description": "Frame on compiled room N (see level_summary rooms).",
+          "minimum": 0
+        },
+        "uid": {
+          "type": "integer",
+          "description": "Frame on one object or brush.",
+          "minimum": 0
+        },
+        "overlays": {
+          "type": "string",
+          "description": "Comma list of grid, scale, objects, labels, links, holes (runs a sealed leak check), legend; or none. Default: grid,scale,objects,labels,links,legend."
+        },
+        "mode": {
+          "type": "string",
+          "description": "Shading: lit (lightmaps; falls back to textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough.",
+          "enum": [
+            "lit",
+            "textured",
+            "lightmaps",
+            "rooms",
+            "wireframe",
+            "seethrough"
+          ],
+          "default": "lit"
+        },
+        "size": {
+          "type": "string",
+          "description": "Image size WIDTHxHEIGHT in pixels (default 1024x1024, at most 1568 per side)."
+        },
+        "fresh_build": {
+          "type": "string",
+          "description": "Geometry for the image: auto (a quick preview build on a private copy when the level's geometry is missing or stale), preview, sealed, or none.",
+          "enum": [
+            "auto",
+            "preview",
+            "sealed",
+            "none"
+          ],
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Render plan",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "render_view",
+    "title": "Render view",
+    "description": "Draws the level from a side (top, bottom, front, back, left, right), in iso perspective, or from a camera point looking at a target (view camera with camera and look). Returns the PNG plus the projection to map pixels to the world. Renders a private copy; the level never changes. A few seconds. Use to check heights, stairs and how rooms connect.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "view": {
+          "type": "string",
+          "description": "top, bottom, front, back, left, right, iso, or camera.",
+          "enum": [
+            "top",
+            "bottom",
+            "front",
+            "back",
+            "left",
+            "right",
+            "iso",
+            "camera"
+          ]
+        },
+        "camera": {
+          "type": "array",
+          "description": "view camera: eye position x, y, z.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "look": {
+          "type": "array",
+          "description": "view camera: target point x, y, z.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "fov": {
+          "type": "number",
+          "description": "iso / camera: vertical field of view in degrees (default 60).",
+          "minimum": 10,
+          "maximum": 120
+        },
+        "region": {
+          "type": "array",
+          "description": "Frame (render) or filter (query) on a world box: minx, miny, minz, maxx, maxy, maxz in metres.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 6,
+          "maxItems": 6
+        },
+        "room": {
+          "type": "integer",
+          "description": "Frame on compiled room N (see level_summary rooms).",
+          "minimum": 0
+        },
+        "uid": {
+          "type": "integer",
+          "description": "Frame on one object or brush.",
+          "minimum": 0
+        },
+        "overlays": {
+          "type": "string",
+          "description": "Comma list of grid, scale, objects, labels, links, holes (runs a sealed leak check), legend, icons (editor object icons; off by default in iso/camera); or none. Default: none."
+        },
+        "mode": {
+          "type": "string",
+          "description": "Shading: lit (lightmaps; falls back to textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough.",
+          "enum": [
+            "lit",
+            "textured",
+            "lightmaps",
+            "rooms",
+            "wireframe",
+            "seethrough"
+          ],
+          "default": "lit"
+        },
+        "size": {
+          "type": "string",
+          "description": "Image size WIDTHxHEIGHT in pixels (default 1024x1024, at most 1568 per side)."
+        },
+        "fresh_build": {
+          "type": "string",
+          "description": "Geometry for the image: auto (a quick preview build on a private copy when the level's geometry is missing or stale), preview, sealed, or none.",
+          "enum": [
+            "auto",
+            "preview",
+            "sealed",
+            "none"
+          ],
+          "default": "auto"
+        }
+      },
+      "required": [
+        "view"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Render view",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "build",
+    "title": "Build",
+    "description": "Compiles the level exactly like the editor's Build and applies the result (brushes are not changed). Sealed by default here, because holes must never be measured on a preview. light also bakes lightmaps (slower). Seconds to minutes; reports progress. Next: check_holes, then lint.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sealed": {
+          "type": "boolean",
+          "description": "Full sealed build (default true); false = the fast unsealed preview.",
+          "default": true
+        },
+        "light": {
+          "type": "boolean",
+          "description": "Also bake lighting (always sealed).",
+          "default": false
+        },
+        "shadows": {
+          "type": "boolean",
+          "description": "Cast shadows while baking (default true).",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Build",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "check_holes",
+    "title": "Check holes",
+    "description": "Compiles a sealed build privately (nothing is applied) and lists where the level leaks: the midpoint of each open edge. Watertight is required before handing a level back. Seconds to minutes; reports progress. With leaks: render_plan near the positions (overlays with holes), fix with run_lua, check again.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Check holes",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "lint",
+    "title": "Lint",
+    "description": "Runs the editor's linter on the open level: broken links, missing spawns, budget overruns, leaks, missing assets, each with a severity, message, UID and position. Errors come first; up to 100 findings are listed; info findings of category outOfNorm are corpus-norms design hints, never failures. Fast (skips the leak and norms checks on a preview build). Fix errors before handing back.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "min_severity": {
+          "type": "string",
+          "description": "List only findings at or above: info (default), warning, error. Counts stay totals.",
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "info"
+        },
+        "max_chars": {
+          "type": "integer",
+          "description": "Result size budget in characters (default 24000); longer lists are cut with truncated and a hint.",
+          "minimum": 2000,
+          "maximum": 60000,
+          "default": 24000
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Lint",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "norms",
+    "title": "Norms",
+    "description": "How released Red Faction levels are proportioned, as percentiles (p5-p95; one vote per level). Without metric: every metric with unit, reliability and whether it drives the kit's defaults. With metric (e.g. opening.width, lights.per_100m2): its numbers per bucket (exemplar = curated reference levels, overall, dm, ctf, sp, retail, ...); gametype narrows to one bucket. Instant; needs no level. For proportions, never geometry to copy.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "metric": {
+          "type": "string",
+          "description": "A metric id, e.g. opening.width (omit to list metrics)."
+        },
+        "gametype": {
+          "type": "string",
+          "description": "One bucket of the metric: exemplar, overall, dm, ctf, sp, exemplar.dm, retail, ..."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Norms",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "compare_to_norms",
+    "title": "Compare to norms",
+    "description": "Measures the open level from its compiled geometry (build sealed first after edits) and compares every metric that drives the kit's defaults with the reference range: the level's value, the bucket's p5-p95 and p50, and below / within / above. Out-of-range metrics are design hints, not errors. Seconds. Use while reviewing proportions; lint reports the same hints as info findings.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Compare to norms",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "spatial_query",
+    "title": "Spatial query",
+    "description": "Instant: raycast(p, dir), los(p, q), point_info(p), clearance(p). Measured (seconds, cached): walk(p?), routes(p, q, k), graph(kind, scale), sightlines, cover, cells, area_report(region | p + radius), spawn_report, item_report, locations(kind), setpieces. Results carry geometry freshness.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "description": "The query.",
+          "enum": [
+            "raycast",
+            "los",
+            "point_info",
+            "clearance",
+            "walk",
+            "routes",
+            "graph",
+            "sightlines",
+            "cover",
+            "cells",
+            "area_report",
+            "spawn_report",
+            "item_report",
+            "setpieces",
+            "locations"
+          ]
+        },
+        "p": {
+          "type": "array",
+          "description": "First point.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "q": {
+          "type": "array",
+          "description": "Second point.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "dir": {
+          "type": "array",
+          "description": "raycast direction.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "region": {
+          "type": "array",
+          "description": "Box: min xyz, max xyz.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 6,
+          "maxItems": 6
+        },
+        "radius": {
+          "type": "number",
+          "description": "With p: a circle (m)."
+        },
+        "k": {
+          "type": "integer",
+          "description": "routes wanted (3).",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "kind": {
+          "type": "string",
+          "description": "graph kind; locations kind."
+        },
+        "scale": {
+          "type": "integer",
+          "description": "graph cell: 8 or 4.",
+          "minimum": 4,
+          "maximum": 8
+        },
+        "fresh_build": {
+          "type": "string",
+          "description": "auto (preview build when stale), preview, sealed, none.",
+          "enum": [
+            "auto",
+            "preview",
+            "sealed",
+            "none"
+          ],
+          "default": "auto"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Spatial query",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "grade_level",
+    "title": "Grade level",
+    "description": "Self-review checks; each failure gives values, a kit fix and locations to act on. PASS <= 2 failures; FAIL >= 5 or a hard check. Loop: generate, grade, fix by location, regrade. Seconds.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "gametype": {
+          "type": "string",
+          "description": "Default: detected."
+        },
+        "players": {
+          "type": "integer",
+          "description": "Player count.",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "class": {
+          "type": "string",
+          "description": "Default: detected.",
+          "enum": [
+            "standard",
+            "open_air",
+            "payload"
+          ]
+        },
+        "fresh_build": {
+          "type": "string",
+          "description": "auto (preview build when stale), preview, sealed, none.",
+          "enum": [
+            "auto",
+            "preview",
+            "sealed",
+            "none"
+          ],
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Grade level",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_classes",
+    "title": "List classes",
+    "description": "The exact class names a kind accepts in level.place{}: Item, Entity and Clutter from the game tables (needs the RF install), Event from the event catalog; other kinds have none. Never guess a class name: list it. Instant. Next: describe_class for its fields.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "A placeable kind, e.g. Item, Entity, Clutter, Event, Light, respawn."
+        },
+        "filter": {
+          "type": "string",
+          "description": "Substring or glob to narrow the list."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "List classes",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "describe_class",
+    "title": "Describe class",
+    "description": "Describes a kind, or one class of it: category, description, whether it has an orientation, which kinds an event links to, and every field you can set (name, type, options, range). Instant. Use before placing or editing an object you have not used yet.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "A placeable kind, e.g. Event, Item, Light."
+        },
+        "class": {
+          "type": "string",
+          "description": "A class of the kind (omit to describe the kind)."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Describe class",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_textures",
+    "title": "List textures",
+    "description": "Lists texture names you can apply (sorted), each with whether it is a stock game texture and where it comes from. Needs the RF install. Instant. Filter with a substring or glob (e.g. \"*rock*\"); prefer stock textures for levels others will play.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "type": "string",
+          "description": "Substring or glob with * and ?."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "At most this many (default 50).",
+          "minimum": 1,
+          "maximum": 5000,
+          "default": 50
+        },
+        "stock_only": {
+          "type": "boolean",
+          "description": "Only stock game textures.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "List textures",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "api_reference",
+    "title": "Api reference",
+    "description": "The scripting reference generated from this build. Without member: an index of every global, type and design-kit function, one line each. With member (level, brush, level.brush, brush:set_pos, kit.room): its signature, options, defaults and example. Instant. Look a member up before using it in run_lua.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "member": {
+          "type": "string",
+          "description": "A global, type or member, e.g. kit.room or level.place."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Api reference",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  }
+]

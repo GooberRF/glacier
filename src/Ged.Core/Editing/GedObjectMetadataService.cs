@@ -139,61 +139,306 @@ public sealed class GedObjectMetadataService
     /// <paramref name="uid"/> as one undoable step. An entry with no blocks is dropped, and the whole
     /// chunk is dropped when it holds no entries (byte-identity).
     /// </summary>
-    public void SetBlock(int uid, GedMetadataType type, byte[]? payload, string? description = null)
-    {
-        List<GedObjectMetadataRecord> before = Snapshot();
-        List<GedObjectMetadataRecord> after = before.Select(e => e.Clone()).ToList();
+    public void SetBlock(int uid, GedMetadataType type, byte[]? payload, string? description = null) =>
+        SetBlocks(new[] { (uid, type, payload) }, description ?? "Edit object metadata");
 
-        GedObjectMetadataRecord? rec = after.FirstOrDefault(e => e.Uid == uid);
-        if (rec is null)
+    /// <summary>
+    /// Applies a batch of block writes — each adds/replaces (payload != null) or removes (payload ==
+    /// null) the <c>Type</c> block on <c>Uid</c> — as ONE undoable step with a single snapshot and
+    /// serialization (auto-tagging thousands of UIDs stays linear). Entries left with no blocks are
+    /// dropped, and the chunk is dropped when it holds no entries (byte-identity); new entries are
+    /// appended in batch order. A batch with no observable change records nothing. The chunk is
+    /// created, and removed again on undo, inside the command, and an existing chunk keeps its
+    /// position in the file.
+    /// </summary>
+    public void SetBlocks(IReadOnlyList<(int Uid, GedMetadataType Type, byte[]? Payload)> writes, string description)
+    {
+        ArgumentNullException.ThrowIfNull(writes);
+        if (writes.Count == 0)
         {
-            if (payload is null)
+            return;
+        }
+
+        // Only the records the batch touches are copied and compared (a kit run tags thousands of UIDs one call at a
+        // time, so copying and serializing the whole chunk per write would be quadratic). The first record of a UID
+        // is the one written, and the resulting entry order is the same as rewriting the whole list.
+        RflSection? existing = FindHost();
+        List<GedObjectMetadataRecord> entries = (existing?.Content as GedObjectMetadataSection)?.Entries ?? new List<GedObjectMetadataRecord>();
+        var first = new Dictionary<int, int>();
+        for (int i = 0; i < entries.Count; i++)
+        {
+            first.TryAdd(entries[i].Uid, i);
+        }
+
+        var changes = new Dictionary<int, (int Index, GedObjectMetadataRecord? Before, GedObjectMetadataRecord After)>();
+        var order = new List<int>();
+        foreach ((int uid, GedMetadataType type, byte[]? payload) in writes)
+        {
+            if (!changes.TryGetValue(uid, out var c))
             {
-                return; // removing an absent block: nothing to do
+                int idx = first.TryGetValue(uid, out int fi) ? fi : -1;
+                GedObjectMetadataRecord? before = idx >= 0 ? entries[idx].Clone() : null;
+                c = (idx, before, before?.Clone() ?? new GedObjectMetadataRecord { Uid = uid });
+                changes[uid] = c;
+                order.Add(uid);
             }
 
-            rec = new GedObjectMetadataRecord { Uid = uid };
-            after.Add(rec);
+            c.After.Blocks.RemoveAll(b => b.MetadataType == (uint)type);
+            if (payload is not null)
+            {
+                c.After.Blocks.Add(new GedObjectMetadataBlock(type, payload));
+            }
         }
 
-        rec.Blocks.RemoveAll(b => b.MetadataType == (uint)type);
-        if (payload is not null)
+        var changed = order.Select(uid => changes[uid]).Where(c =>
         {
-            rec.Blocks.Add(new GedObjectMetadataBlock(type, payload));
-        }
-
-        if (rec.Blocks.Count == 0)
-        {
-            after.Remove(rec);
-        }
-
-        if (Serialize(before).AsSpan().SequenceEqual(Serialize(after)))
+            var b = c.Before is null ? new List<GedObjectMetadataRecord>() : new List<GedObjectMetadataRecord> { c.Before };
+            var a = c.After.Blocks.Count == 0 ? new List<GedObjectMetadataRecord>() : new List<GedObjectMetadataRecord> { c.After };
+            return !Serialize(b).AsSpan().SequenceEqual(Serialize(a));
+        }).ToList();
+        if (changed.Count == 0)
         {
             return; // no observable change
         }
 
-        _doc.Undo.Execute(new RelayCommand(description ?? "Edit object metadata",
-            () => Apply(after),
-            () => Apply(before)));
+        // The host is resolved once, so do and undo act on the same section object: an existing chunk is restored at
+        // its original index, a new one is inserted at its canonical position.
+        int existingIndex = existing is null ? -1 : _doc.Rfl.Sections.IndexOf(existing);
+        bool wasDirty = existing?.Dirty ?? true;
+        RflSection host = existing ?? new RflSection((uint)SectionType.GedObjectMetadata, Array.Empty<byte>())
+        {
+            Content = new GedObjectMetadataSection(),
+            Dirty = true,
+        };
+        var replaced = changed.Where(c => c.Index >= 0 && c.After.Blocks.Count > 0).ToList();
+        var removed = changed.Where(c => c.Index >= 0 && c.After.Blocks.Count == 0).OrderBy(c => c.Index).ToList();
+        var added = changed.Where(c => c.Index < 0 && c.After.Blocks.Count > 0).Select(c => c.After).ToList();
+
+        void Do()
+        {
+            List<GedObjectMetadataRecord> list = ((GedObjectMetadataSection)host.Content!).Entries;
+            foreach (var c in replaced)
+            {
+                list[c.Index] = c.After.Clone();
+            }
+
+            for (int i = removed.Count - 1; i >= 0; i--)
+            {
+                list.RemoveAt(removed[i].Index);
+            }
+
+            foreach (GedObjectMetadataRecord r in added)
+            {
+                list.Add(r.Clone());
+            }
+
+            Place(host, existingIndex, list.Count > 0, dirty: true);
+        }
+
+        void Undo()
+        {
+            List<GedObjectMetadataRecord> list = ((GedObjectMetadataSection)host.Content!).Entries;
+            // Undo runs on the state this command left (later commands undone first): its new records are the last ones.
+            list.RemoveRange(list.Count - added.Count, added.Count);
+
+            foreach (var c in removed)
+            {
+                list.Insert(c.Index, c.Before!.Clone());
+            }
+
+            foreach (var c in replaced)
+            {
+                list[c.Index] = c.Before!.Clone();
+            }
+
+            Place(host, existingIndex, list.Count > 0, dirty: wasDirty);
+        }
+
+        _doc.Undo.Execute(new RelayCommand(description, Do, Undo));
+    }
+
+    /// <summary>Puts the chunk in the file while it holds entries and drops it when it holds none (byte-identity).</summary>
+    private void Place(RflSection host, int existingIndex, bool hasEntries, bool dirty)
+    {
+        if (!hasEntries)
+        {
+            _doc.Rfl.Sections.Remove(host);
+        }
+        else
+        {
+            if (!_doc.Rfl.Sections.Contains(host))
+            {
+                if (existingIndex >= 0)
+                {
+                    _doc.Rfl.Sections.Insert(Math.Clamp(existingIndex, 0, _doc.Rfl.Sections.Count), host);
+                }
+                else
+                {
+                    _doc.Rfl.InsertSection(host);
+                }
+            }
+
+            host.Dirty = dirty;
+        }
+
+        MetadataChanged?.Invoke();
+    }
+
+    // ---- tags ------------------------------------------------------
+
+    /// <summary>The provenance tags on <paramref name="uid"/> (empty when none or malformed).</summary>
+    public Dictionary<string, string> Tags(int uid) => ObjectTags.Decode(BlockPayload(uid, GedMetadataType.Tags));
+
+    /// <summary>Every UID's tags, decoded once (UIDs without a tag block are absent).</summary>
+    public IReadOnlyDictionary<int, Dictionary<string, string>> AllTags()
+    {
+        var map = new Dictionary<int, Dictionary<string, string>>();
+        if (FindSection() is { } section)
+        {
+            foreach (GedObjectMetadataRecord rec in section.Entries)
+            {
+                GedObjectMetadataBlock? block = rec.Blocks.FirstOrDefault(b => b.MetadataType == (uint)GedMetadataType.Tags);
+                if (block is not null && !map.ContainsKey(rec.Uid))
+                {
+                    map[rec.Uid] = ObjectTags.Decode(block.Payload);
+                }
+            }
+        }
+
+        return map;
+    }
+
+    // ---- delete-time tag cleanup ----------------------------------------------
+
+    /// <summary>What <see cref="DropTagsOfDeleted"/> changed, so the owning delete command can undo it.</summary>
+    internal sealed class TagDropSnapshot
+    {
+        internal TagDropSnapshot(RflSection host, int index, List<GedObjectMetadataRecord> entries, bool dirty)
+        {
+            Host = host;
+            Index = index;
+            Entries = entries;
+            Dirty = dirty;
+        }
+
+        public RflSection Host { get; }
+
+        public int Index { get; }
+
+        public List<GedObjectMetadataRecord> Entries { get; }
+
+        public bool Dirty { get; }
+    }
+
+    /// <summary>
+    /// Removes the Tags block of every UID in <paramref name="deleted"/> that no longer exists
+    /// (<paramref name="isLive"/> false), dropping entries left empty and the chunk itself when nothing
+    /// remains. Called INSIDE a delete command's do-action so the delete and the tag cleanup are one
+    /// undo step; <see cref="RestoreDroppedTags"/> reverts it. Other block types (a light's cookie) are
+    /// kept. Returns null — and changes nothing — when none of the deleted UIDs carried tags, so a
+    /// level without tags is untouched byte for byte.
+    /// </summary>
+    internal static TagDropSnapshot? DropTagsOfDeleted(RflFile rfl, IEnumerable<int> deleted, Func<int, bool> isLive)
+    {
+        rfl.ParseAllKnownSections();
+        RflSection? host = rfl.Sections.FirstOrDefault(s => s.Content is GedObjectMetadataSection);
+        if (host?.Content is not GedObjectMetadataSection section)
+        {
+            return null;
+        }
+
+        var dead = deleted.Where(u => !isLive(u)).ToHashSet();
+        const uint TagsType = (uint)GedMetadataType.Tags;
+        if (dead.Count == 0 || !section.Entries.Any(e => dead.Contains(e.Uid) && e.Blocks.Any(b => b.MetadataType == TagsType)))
+        {
+            return null;
+        }
+
+        var snapshot = new TagDropSnapshot(host, rfl.Sections.IndexOf(host), section.Entries, host.Dirty);
+        var after = new List<GedObjectMetadataRecord>(section.Entries.Count);
+        foreach (GedObjectMetadataRecord rec in section.Entries)
+        {
+            if (!dead.Contains(rec.Uid))
+            {
+                after.Add(rec);
+                continue;
+            }
+
+            GedObjectMetadataRecord kept = rec.Clone();
+            kept.Blocks.RemoveAll(b => b.MetadataType == TagsType);
+            if (kept.Blocks.Count > 0)
+            {
+                after.Add(kept);
+            }
+        }
+
+        if (after.Count == 0)
+        {
+            rfl.Sections.Remove(host);
+        }
+        else
+        {
+            section.Entries = after;
+            host.Dirty = true;
+        }
+
+        return snapshot;
+    }
+
+    /// <summary>Undoes <see cref="DropTagsOfDeleted"/>: the chunk returns at its old index with its old entries and dirty state.</summary>
+    internal static void RestoreDroppedTags(RflFile rfl, TagDropSnapshot snapshot)
+    {
+        if (!rfl.Sections.Contains(snapshot.Host))
+        {
+            rfl.Sections.Insert(Math.Clamp(snapshot.Index, 0, rfl.Sections.Count), snapshot.Host);
+        }
+
+        ((GedObjectMetadataSection)snapshot.Host.Content!).Entries = snapshot.Entries;
+        snapshot.Host.Dirty = snapshot.Dirty;
     }
 
     // ---- plumbing ------------------------------------------------------------
 
-    private void Apply(List<GedObjectMetadataRecord> entries)
+    /// <summary>Installs <paramref name="entries"/> (or removes the chunk when empty); undo restores the chunk's prior dirty state so an untouched loaded chunk saves from its original bytes.</summary>
+    private void Apply(RflSection host, int existingIndex, List<GedObjectMetadataRecord> entries, bool dirty)
     {
         if (entries.Count == 0)
         {
-            RemoveSection();
+            _doc.Rfl.Sections.Remove(host);
         }
         else
         {
-            RflSection host = _doc.Rfl.GetOrCreateSection(SectionType.GedObjectMetadata, () => new GedObjectMetadataSection());
-            EnsurePresent(host);
+            if (!_doc.Rfl.Sections.Contains(host))
+            {
+                if (existingIndex >= 0)
+                {
+                    _doc.Rfl.Sections.Insert(Math.Clamp(existingIndex, 0, _doc.Rfl.Sections.Count), host);
+                }
+                else
+                {
+                    _doc.Rfl.InsertSection(host);
+                }
+            }
+
             ((GedObjectMetadataSection)host.Content!).Entries = entries.Select(e => e.Clone()).ToList();
-            host.Dirty = true;
+            host.Dirty = dirty;
         }
 
         MetadataChanged?.Invoke();
+    }
+
+    private RflSection? FindHost()
+    {
+        _doc.Rfl.ParseAllKnownSections();
+        foreach (RflSection s in _doc.Rfl.Sections)
+        {
+            if (s.Content is GedObjectMetadataSection)
+            {
+                return s;
+            }
+        }
+
+        return null;
     }
 
     private List<GedObjectMetadataRecord> Snapshot() =>
@@ -226,27 +471,5 @@ public sealed class GedObjectMetadataService
         }
 
         return null;
-    }
-
-    private void RemoveSection()
-    {
-        for (int i = 0; i < _doc.Rfl.Sections.Count; i++)
-        {
-            if (_doc.Rfl.Sections[i].Content is GedObjectMetadataSection)
-            {
-                _doc.Rfl.Sections.RemoveAt(i);
-                return;
-            }
-        }
-    }
-
-    private void EnsurePresent(RflSection host)
-    {
-        if (_doc.Rfl.Sections.Contains(host))
-        {
-            return;
-        }
-
-        _doc.Rfl.InsertSection(host);
     }
 }

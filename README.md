@@ -24,8 +24,8 @@
 
 **The core editor**:
 
-- **Full modeling & authoring** — brush/CSG modeling with time-ordered booleans, face and vertex editing, texturing with a complete UV unwrap editor, every object type, all 90 stock and 58 Alpine events, and trigger / mover / group / cutscene authoring with links.
-- **Reads all RF1 RFLs** — opens every stock version (`0xB4`–`0xC8`) and every Alpine version (`300`–`305`).
+- **Full modeling & authoring** — brush/CSG modeling with time-ordered booleans, face and vertex editing, texturing with a complete UV unwrap editor, every object type, all 90 stock and 67 Alpine events, and trigger / mover / group / cutscene authoring with links.
+- **Reads all RF1 RFLs** — opens every stock version (`0xB4`–`0xC8`) and every Alpine version (`300`–`306`).
 - **RED-authentic geometry & lighting** — the full compile pipeline plus byte-exact lightmap baking that reproduces RED's per-texel kernel.
 - **One-click packaging** — build `.vpp` packfiles with a full dependency scanner.
 - **One-key playtest** — launch using Alpine Faction, single and multiplayer.

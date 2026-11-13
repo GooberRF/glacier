@@ -3,7 +3,7 @@ using System;
 namespace Ged.Core.Scripting;
 
 /// <summary>
-/// The sandbox execution constraints (plan §5.10): an instruction budget and a wall-clock
+/// The sandbox execution constraints: an instruction budget and a wall-clock
 /// timeout, enforced by running the script as a coroutine that yields to the host every
 /// <see cref="YieldEvery"/> VM instructions. Between yields the host checks the budget, the
 /// timeout, and the shared <c>CancellationToken</c>, so a runaway <c>while true</c> loop is
@@ -14,7 +14,12 @@ public sealed class ScriptExecutionLimits
     /// <summary>Maximum VM instructions before the run is aborted. Non-positive = unbounded.</summary>
     public long InstructionBudget { get; init; } = 200_000_000;
 
-    /// <summary>Wall-clock ceiling. <see cref="TimeSpan.Zero"/> or negative = unbounded.</summary>
+    /// <summary>
+    /// Wall-clock ceiling on SCRIPT execution time: time spent inside host operations (<c>ops.build</c>,
+    /// <c>ops.light</c>, hole checks, save, package, playtest) is not counted, so a long build or bake
+    /// never trips it (those stay cancellable via the run's cancellation token).
+    /// <see cref="TimeSpan.Zero"/> or negative = unbounded.
+    /// </summary>
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>Instructions between host-side yields (budget/timeout/cancellation checks).</summary>

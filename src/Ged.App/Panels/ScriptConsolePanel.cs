@@ -12,7 +12,7 @@ using Ged.Core.Scripting;
 namespace Ged.App.Panels;
 
 /// <summary>
-/// The docked Script Console (plan §6.1): a Lua REPL with line history, incremental evaluation,
+/// The docked Script Console: a Lua REPL with line history, incremental evaluation,
 /// color-coded output, and a "promote to editor" affordance. Read-only queries evaluate instantly;
 /// a mutation runs in a transaction and reports the visible "1 undo step". Sits in the bottom
 /// console row next to Log output / Linter.

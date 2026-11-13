@@ -20,8 +20,8 @@ public sealed class RflContext
     /// <summary>RF2 (version 0x127). RF2 editing is out of scope for GED.</summary>
     public bool IsRf2 => Version == 0x127;
 
-    /// <summary>Alpine Faction versions (300-305).</summary>
-    public bool IsAlpine => Version >= 0x12C && Version <= 0x131;
+    /// <summary>Alpine Faction versions (300-306).</summary>
+    public bool IsAlpine => Version >= 0x12C && Version <= 0x132;
 
     // --- Version gates (see rfl.ksy version docs) ---
 

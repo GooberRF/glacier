@@ -14,7 +14,9 @@ namespace Ged.App;
 /// <item><see cref="NoticeForDirtySave"/> — for a plain (no-seal) save, the one advisory nudge to emit
 /// so the author knows stale compiled geometry / stale lightmaps are theirs to rebuild.</item>
 /// </list>
-/// Factored out so the decision is unit-testable without a live window.
+/// Factored out so the decision is unit-testable without a live window; the rules themselves live in
+/// the Core <see cref="Ged.Core.Editor.LevelSavePolicy"/>, shared with command-line saves (the enum
+/// members here mirror its <c>LevelSaveSealOutcome</c> / <c>LevelSaveNotice</c> one-to-one).
 /// </summary>
 internal static class SaveGuard
 {
@@ -51,7 +53,7 @@ internal static class SaveGuard
     /// True when the document holds UNSEALED live-CSG preview geometry, the SOLE state that forces a
     /// pre-save rebuild. Everything else saves exactly as it stands (RED-style).
     /// </summary>
-    internal static bool RequiresSeal(bool geometryIsPreview) => geometryIsPreview;
+    internal static bool RequiresSeal(bool geometryIsPreview) => Ged.Core.Editor.LevelSavePolicy.RequiresSeal(geometryIsPreview);
 
     /// <summary>
     /// The advisory for a plain (no-seal) RED-style save: a merely-dirty document is written as-is, and
@@ -59,9 +61,7 @@ internal static class SaveGuard
     /// dirty — one hint per save.
     /// </summary>
     internal static SaveNotice NoticeForDirtySave(bool geometryDirty, bool lightingDirty) =>
-        geometryDirty ? SaveNotice.UnbuiltGeometry
-        : lightingDirty ? SaveNotice.UnbakedLighting
-        : SaveNotice.None;
+        (SaveNotice)Ged.Core.Editor.LevelSavePolicy.NoticeForDirtySave(geometryDirty, lightingDirty);
 
     /// <summary>
     /// Decides whether the save may write AFTER the seal build (the only rebuild a save triggers).
@@ -72,18 +72,6 @@ internal static class SaveGuard
     /// </param>
     /// <param name="geometryDirty">The build controller's geometry-dirty flag AFTER the seal build.</param>
     /// <param name="geometryIsPreview">The build controller's preview-quality flag AFTER the seal build.</param>
-    internal static PreSaveOutcome EvaluateSeal(bool sealBuildRan, bool geometryDirty, bool geometryIsPreview)
-    {
-        if (!sealBuildRan)
-        {
-            return PreSaveOutcome.AbortBuildRunning;
-        }
-
-        if (geometryDirty || geometryIsPreview)
-        {
-            return PreSaveOutcome.AbortSealIncomplete;
-        }
-
-        return PreSaveOutcome.Proceed;
-    }
+    internal static PreSaveOutcome EvaluateSeal(bool sealBuildRan, bool geometryDirty, bool geometryIsPreview) =>
+        (PreSaveOutcome)Ged.Core.Editor.LevelSavePolicy.EvaluateSeal(sealBuildRan, geometryDirty, geometryIsPreview);
 }

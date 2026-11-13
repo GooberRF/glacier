@@ -358,10 +358,13 @@ public sealed class GpuScene : IDisposable
                     continue;
                 }
 
+                // The engine draws a static mesh's stored vertices at the submesh offset (see V3dFile.ModelOffset).
+                Vec3 offset = file.ModelOffset(submesh);
+                Matrix4x4 submeshWorld = offset == Vec3.Zero ? world : Matrix4x4.CreateTranslation(offset.X, offset.Y, offset.Z) * world;
                 V3dLod lod = submesh.Lods[0];
                 foreach (V3dBatch batch in lod.Batches)
                 {
-                    BuildMeshBatch(submesh, lod, batch, instance, world, pick, vfs);
+                    BuildMeshBatch(submesh, lod, batch, instance, submeshWorld, pick, vfs);
                 }
             }
         }

@@ -9,6 +9,16 @@ namespace Ged.Core.Compiler;
 /// <summary>Progress callback payload: current stage text and an n/m counter.</summary>
 public readonly record struct CompileProgress(string Stage, int Current, int Total);
 
+/// <summary>Order of Glacier's seam sealer and the Alpine build repair on a sealed build (spec Q1 measurement).</summary>
+public enum RepairSealOrder
+{
+    /// <summary>The sealer runs with the t-joint pass before rooms; the repair runs after the rooms (shipping).</summary>
+    SealThenRepair,
+
+    /// <summary>The repair runs first; the sealer then runs on the repaired faces (pool rebuilt afterwards).</summary>
+    RepairThenSeal,
+}
+
 /// <summary>
 /// Tunables for a geometry build. Defaults reproduce a stock RED compile; the
 /// Alpine flag enables geoable/breakable room isolation and the room↔brush uid
@@ -290,11 +300,62 @@ public sealed class CompileOptions
     /// </summary>
     public bool PortalFaceVote { get; set; } = true;
 
+    /// <summary>
+    /// Apply an air portal brush the way RED does (boolean mode 4, "Chopping portal" — compiler-parity-notes.md
+    /// "Air portal brushes"): after every ordinary brush, opening its volume and leaving a two-sided portal face
+    /// wherever it removes a boundary face, so the doorway volume becomes a room of its own with a portal at each
+    /// end. Honoured by the accumulated folds (RED-authentic Shared BSP, Incremental, global partition). Off — or
+    /// on any other CSG path — the brush is folded in document order as a plain air brush and gets one membrane
+    /// on its centre plane (kept as the measurement baseline).
+    /// </summary>
+    public bool PortalChop { get; set; } = true;
+
+    /// <summary>
+    /// Build a free-standing lump of solid (a room whose walls are seen from the outside) as a detail room, as
+    /// RED's room builder does (<c>FUN_0048bd90</c> — compiler-parity-notes.md "Inside-out rooms"). Off keeps it a
+    /// portal-less main room (the measurement baseline).
+    /// </summary>
+    public bool InsideOutRooms { get; set; } = true;
+
+    /// <summary>DIAGNOSTIC (test-only, default off): force EVERY portal membrane through the face-vote branch
+    /// (bypass the geometric-consistent fast path), to measure the pure face-vote result against the hybrid +
+    /// probe. Carried per build (not a static) so a diagnostic compile cannot change a concurrent build's output.</summary>
+    internal bool ForceAlwaysPortalVote { get; set; }
+
     /// <summary>Build the lightmap surfaces + atlas pages (off for a fast CSG-only preview).</summary>
     public bool BuildSurfaces { get; set; } = true;
 
     /// <summary>Run the t-joint fixing pass (off for a fast preview).</summary>
     public bool FixTJoints { get; set; } = true;
+
+    /// <summary>
+    /// Alpine RED's build repair ("Repair holes when building", Alpine's <c>[Alpine] RepairBuildHoles</c>,
+    /// on by default — <c>editor_patch/editor_settings.h:22</c>): the coplanar seam tolerance in the boolean
+    /// (<see cref="CoplanarSeamTolerance"/>) plus <see cref="BuildRepair"/> — portal-plane unification, portal-twin
+    /// placement and split-room joining around the room builder, then the hole repair (line faces, portal strips,
+    /// crack welds, t-junction splits, portal and wall gap fills) after the t-joint pass. A preview build
+    /// (<see cref="FixTJoints"/> off) runs the cheap structural passes (seam tolerance, portal planes, twins, split
+    /// rooms) so its fragments and rooms match the sealed build's, but skips the hole repair: that pass follows the
+    /// t-joint seal the preview skips, and a preview is never hole-measured or saved. Counters land in
+    /// <see cref="BuildReport.Repair"/>. Default on, for the editor and automation alike.
+    /// </summary>
+    public bool AlpineRepair { get; set; } = true;
+
+    /// <summary>
+    /// MEASUREMENT switch for the repair's boolean half (Alpine pass B, <c>build_repair.cpp:1525-1541</c>): with
+    /// <see cref="AlpineRepair"/> on, a coplanar candidate face also claims a fragment's sample point within 1e-4 of
+    /// its edges. Default on; only measurements turn it off independently of the rest of the repair.
+    /// </summary>
+    public bool CoplanarSeamTolerance { get; set; } = true;
+
+    /// <summary>
+    /// MEASUREMENT switch (spec Q1): where Glacier's own <see cref="SeamSealer"/> runs relative to the Alpine
+    /// repair. The shipping order is <see cref="Compiler.RepairSealOrder.SealThenRepair"/>.
+    /// </summary>
+    public RepairSealOrder RepairSealOrder { get; set; } = RepairSealOrder.SealThenRepair;
+
+    /// <summary>DIAGNOSTIC (test-only): repair passes to skip (<see cref="BuildRepair.Pass"/> bits). 0 = all run.</summary>
+    internal BuildRepair.Pass RepairSkip { get; set; }
 
     /// <summary>
     /// Flagship 22 (output-stage coplanar merge): after the incremental fold, re-merge each source

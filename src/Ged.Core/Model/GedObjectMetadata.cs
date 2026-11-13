@@ -13,6 +13,12 @@ public enum GedMetadataType : uint
 {
     /// <summary>Payload = <c>vstring</c> cookie image filename projected by the light in the baker.</summary>
     LightCookie = 1,
+
+    /// <summary>
+    /// Payload = canonical UTF-8 JSON object of string → string provenance tags (keys sorted ordinal,
+    /// no whitespace). See <see cref="Editing.ObjectTags"/>. Brushes and objects share the UID space.
+    /// </summary>
+    Tags = 2,
 }
 
 /// <summary>

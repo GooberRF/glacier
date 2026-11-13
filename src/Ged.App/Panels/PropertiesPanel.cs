@@ -338,8 +338,25 @@ internal sealed class PropertiesPanel : UserControl
         var panel = new StackPanel { Spacing = 2 };
         panel.Children.Add(Header($"{lo.Kind}: {lo.DisplayName}"));
         panel.Children.Add(ReadonlyRow("UID", lo.Uid.ToString(CultureInfo.InvariantCulture)));
-        panel.Children.Add(Vec3Row("Position", new List<LevelObject> { lo }, o => o.Position,
-            (o, v) => doc.EditValue(o.Section, "Move object", o.Position, v, nv => o.Position = nv, $"pos-{o.Uid}"), doc));
+        if (lo.IsReadOnly)
+        {
+            // Alpine Faction 1.5 objects are kept exactly as loaded and saved back unchanged; they cannot be edited here.
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Alpine Faction 1.5 object: read-only in Glacier. It is saved back exactly as loaded; edit it in Alpine RED.",
+                FontSize = 11,
+                Opacity = 0.75,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            Vec3 p = lo.Position;
+            panel.Children.Add(ReadonlyRow("Position", string.Create(CultureInfo.InvariantCulture, $"{p.X:0.###}, {p.Y:0.###}, {p.Z:0.###}")));
+        }
+        else
+        {
+            panel.Children.Add(Vec3Row("Position", new List<LevelObject> { lo }, o => o.Position,
+                (o, v) => doc.EditValue(o.Section, "Move object", o.Position, v, nv => o.Position = nv, $"pos-{o.Uid}"), doc));
+        }
+
         panel.Children.Add(BoolRow("Hidden", new List<LevelObject> { lo }, o => o.Hidden,
             (o, v) => { doc.EditValue(o.Section, "Toggle hidden", o.Hidden, v, nv => o.Hidden = nv); _host?.RequestSceneRebuild(); }, doc));
 
@@ -932,22 +949,11 @@ internal sealed class PropertiesPanel : UserControl
     /// </summary>
     private void ChangeEffectType(EditorDocument doc, LevelObject lo, RoomEffect fx, int newType)
     {
-        using (doc.Undo.BeginTransaction("Change room-effect type"))
-        {
-            doc.EditValue(lo.Section, "Effect type", fx.EffectType, newType, v => fx.EffectType = v);
-
-            if (newType == RoomEffectsSection.EffectAmbientLight && fx.AmbientLightColor is null)
-            {
-                doc.EditValue(lo.Section, "Init ambient color", fx.AmbientLightColor,
-                    (RfColor?)new RfColor(128, 128, 128, 255), v => fx.AmbientLightColor = v);
-            }
-            else if (newType == RoomEffectsSection.EffectLiquidRoom && fx.LiquidProperties is null)
-            {
-                doc.EditValue(lo.Section, "Init liquid props", fx.LiquidProperties,
-                    (RoomEffectLiquidProperties?)new RoomEffectLiquidProperties { Waveform = 1, LiquidType = 1 },
-                    v => fx.LiquidProperties = v);
-            }
-        }
+        // The shared Core field path (also what scripts use): one undo step that sets the type and
+        // provisions the block the new type stores (InspectorPresence's room-effect members).
+        InspectorField typeField = ObjectInspectorCatalog.For(LevelObjectKind.RoomEffect).Single(f => f.Path == "EffectType");
+        InspectorAccess.Set(doc, lo, typeField, newType);
+        _ = fx;
 
         _host?.RequestSceneRebuild();
         Refresh();
@@ -1078,17 +1084,11 @@ internal sealed class PropertiesPanel : UserControl
 
     private Control BuildVirtualRow(EditorDocument doc, LevelObject lo, InspectorField field)
     {
-        // Trigger MP flags (0xAB script-name encoding) are editable checkboxes.
-        if (lo.Model is Trigger t && field.Label.StartsWith("MP ", StringComparison.Ordinal))
+        // Trigger MP flags (0xAB script-name encoding) are editable checkboxes. The encoding (which
+        // keeps the real script name after the flag byte) lives in the shared Core accessor, so the
+        // panel and scripts write it identically.
+        if (lo.Model is Trigger && !field.ReadOnly && InspectorAccess.Get(doc, lo, field) is bool on)
         {
-            int bit = field.Label switch
-            {
-                "MP Clientside" => 0x2,
-                "MP Solo" => 0x4,
-                "MP Solo Ignore Resets" => 0x8,
-                _ => 0,
-            };
-            bool on = t.IsPureFactionEncoded && (t.ScriptName[1] & bit) != 0;
             var check = new CheckBox { IsChecked = on };
             if (field.Note is not null)
             {
@@ -1097,18 +1097,8 @@ internal sealed class PropertiesPanel : UserControl
 
             check.IsCheckedChanged += (_, _) =>
             {
-                Commit(doc, () =>
-                {
-                    int flags = t.IsPureFactionEncoded ? t.ScriptName[1] : 0;
-                    flags = check.IsChecked == true ? flags | bit : flags & ~bit;
-
-                    // Preserve the trigger's real script name that follows the flag byte; toggling a
-                    // flag must never discard it (Alpine PutFlagsIntoScriptName, trigger.cpp:64-72).
-                    string baseName = t.IsPureFactionEncoded ? t.ScriptName[2..] : t.ScriptName;
-                    string old = t.ScriptName;
-                    string next = flags == 0 ? baseName : "«" + (char)flags + baseName;
-                    doc.EditValue(lo.Section, "Edit " + field.Label, old, next, v => t.ScriptName = v);
-                });
+                bool value = check.IsChecked == true;
+                Commit(doc, () => InspectorAccess.Set(doc, lo, field, value));
             };
             return LabeledRow(field.Label, check);
         }

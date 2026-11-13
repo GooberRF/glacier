@@ -46,6 +46,33 @@ public sealed class AlpineMeshObject
 
     /// <summary>Present iff <see cref="IsClutter"/> != 0.</summary>
     public AlpineMeshClutterInfo? Clutter { get; set; }
+
+    /// <summary>
+    /// RFL 306 flag block (block A, one byte per mesh after the records; editor_patch/mesh.cpp:356-359, 491-498):
+    /// non-zero keeps this mesh out of the baked shadow casters.
+    /// </summary>
+    public byte NoShadowCast { get; set; }
+
+    /// <summary>
+    /// RFL 306 geometry block (block B; mesh.cpp:361-366, 500-516): for collision mode 3, which geometry collides —
+    /// 0 highest LOD, 1 lowest LOD, 2 <see cref="CollisionMeshFilename"/> (editor_patch/mfc_types.h:720; Alpine reads
+    /// other values as 0).
+    /// </summary>
+    public byte BrushGeoSource { get; set; }
+
+    /// <summary>RFL 306 geometry block: the static .v3m collided instead of the render mesh (source 2), or empty.</summary>
+    public string CollisionMeshFilename { get; set; } = string.Empty;
+
+    /// <summary>RFL 306 geometry block: uniform draw scale (default 1).</summary>
+    public float DrawScale { get; set; } = 1f;
+
+    /// <summary>
+    /// Serializer bookkeeping: how many of the record's trailing optional fields (material,
+    /// is-clutter flag, then the four corpse fields) the loaded chunk stored, when it stored
+    /// fewer than all of them — older Alpine layouts end a chunk's last record early and Alpine
+    /// reads the missing fields as defaults. Null means the full layout.
+    /// </summary>
+    internal int? StoredOptionalFields { get; set; }
 }
 
 /// <summary>A per-slot texture override on an Alpine mesh object.</summary>

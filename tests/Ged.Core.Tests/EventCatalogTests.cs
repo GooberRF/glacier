@@ -13,7 +13,9 @@ namespace Ged.Core.Tests;
 
 public class EventCatalogTests
 {
-    /// <summary>The 58 Alpine event class names (events.tbl AF_* sections / event.h ids 100-157).</summary>
+    /// <summary>
+    /// The 67 Alpine event class names: ids 100-158 (Alpine 1.4) and 159-166 (Alpine 1.5; game_patch/object/event_alpine.cpp:52-118).
+    /// </summary>
     private static readonly string[] AlpineNames =
     {
         "Set_Variable", "Clone_Entity", "Set_Player_World_Collide", "Switch_Random", "Difficulty_Gate", "HUD_Message",
@@ -25,7 +27,9 @@ public class EventCatalogTests
         "Respawn_Point_State", "Modify_Respawn_Point", "When_Captured", "Set_Capture_Point_Owner", "Owner_Gate",
         "Set_Gameplay_Rule", "When_Round_Ends", "Mesh_Animate", "Mesh_Set_Texture", "Mesh_Set_Collision",
         "AF_Fullscreen_Image", "AF_Fullscreen_Color", "Unhide_Glare", "Gas_Region_State", "Modify_Gas_Region",
-        "Resize_Gas_Region", "ATX_Set_Frame", "ATX_Play", "ATX_Pause", "ATX_Set_Frame_Time",
+        "Resize_Gas_Region", "ATX_Set_Frame", "ATX_Play", "ATX_Pause", "ATX_Set_Frame_Time", "Weather_Region_State",
+        "Display_Projection", "Climbing_Region_State", "When_Destroyed", "Rope_State", "Mesh_Set_Scale", "Payload_Handler",
+        "Payload_Checkpoint", "When_Setup_Ends",
     };
 
     private static readonly string[] OrientationClasses =
@@ -39,20 +43,20 @@ public class EventCatalogTests
     };
 
     [Fact]
-    public void Catalog_Has_All_148_Classes_With_Unique_Game_Ids()
+    public void Catalog_Has_All_157_Classes_With_Unique_Game_Ids()
     {
-        Assert.Equal(148, EventSchemaCatalog.All.Count);
-        Assert.Equal(148, EventSchemaCatalog.All.Select(e => e.GameId).Distinct().Count());
+        Assert.Equal(157, EventSchemaCatalog.All.Count);
+        Assert.Equal(157, EventSchemaCatalog.All.Select(e => e.GameId).Distinct().Count());
 
-        // Stock ids 0-89 (90) and Alpine ids 100-157 (58) each present exactly once.
+        // Stock ids 0-89 (90) and Alpine ids 100-166 (67) each present exactly once.
         Assert.Equal(90, EventSchemaCatalog.All.Count(e => e.GameId is >= 0 and <= 89));
-        Assert.Equal(58, EventSchemaCatalog.All.Count(e => e.GameId is >= 100 and <= 157));
+        Assert.Equal(67, EventSchemaCatalog.All.Count(e => e.GameId is >= 100 and <= 166));
         foreach (int id in Enumerable.Range(0, 90))
         {
             Assert.NotNull(EventSchemaCatalog.FindById(id));
         }
 
-        foreach (int id in Enumerable.Range(100, 58))
+        foreach (int id in Enumerable.Range(100, 67))
         {
             Assert.NotNull(EventSchemaCatalog.FindById(id));
         }
@@ -77,13 +81,13 @@ public class EventCatalogTests
     [Fact]
     public void Every_Alpine_Event_Has_An_Alpine_Schema()
     {
-        Assert.Equal(58, AlpineNames.Length);
+        Assert.Equal(67, AlpineNames.Length);
         foreach (string name in AlpineNames)
         {
             EventSchema? s = EventSchemaCatalog.Find(name);
             Assert.True(s is not null, $"Alpine event '{name}' missing from catalog.");
             Assert.True(s!.IsAlpine, $"'{name}' should be flagged Alpine.");
-            Assert.Equal(300, s.MinVersion);
+            Assert.Equal(s.GameId >= 159 ? 306 : 300, s.MinVersion); // Alpine 1.5 events need RFL 306
         }
     }
 
@@ -93,7 +97,7 @@ public class EventCatalogTests
         Assert.False(EventSchemaCatalog.Find("Play_Custom_Animation")!.Placeable);
         Assert.False(EventSchemaCatalog.Find("Follow_Player")!.Placeable);
         Assert.False(EventSchemaCatalog.Find("Set_Light_State")!.Placeable);
-        Assert.Equal(145, EventSchemaCatalog.Placeable.Count());
+        Assert.Equal(154, EventSchemaCatalog.Placeable.Count());
     }
 
     [Fact]

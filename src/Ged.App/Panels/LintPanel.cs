@@ -5,13 +5,15 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Ged.Core.Linting;
+using Ged.Core.Model;
 
 namespace Ged.App.Panels;
 
 /// <summary>
 /// The level-linter results panel: a header summary plus one row per finding with
-/// a severity icon, description, and (when the finding names a UID) a "Jump" that
-/// frames the object in the active viewport. Populated on demand by the shell.
+/// a severity icon, description, and a "Jump" that frames the finding in the active viewport —
+/// the named object when it has a UID, else its world location (e.g. a leak edge). Populated on
+/// demand by the shell.
 /// </summary>
 internal sealed class LintPanel : UserControl
 {
@@ -31,8 +33,9 @@ internal sealed class LintPanel : UserControl
         };
     }
 
-    /// <summary>Shows a linter report; <paramref name="jump"/> frames the object with the given UID.</summary>
-    public void Show(LintReport report, Action<int> jump)
+    /// <summary>Shows a linter report; <paramref name="jump"/> frames the object with the given UID and
+    /// <paramref name="jumpToPoint"/> (optional) frames a location-only finding.</summary>
+    public void Show(LintReport report, Action<int> jump, Action<Vec3>? jumpToPoint = null)
     {
         ArgumentNullException.ThrowIfNull(report);
         _list.Children.Clear();
@@ -46,11 +49,11 @@ internal sealed class LintPanel : UserControl
 
         foreach (LintFinding f in report.Findings)
         {
-            _list.Children.Add(Row(f, jump));
+            _list.Children.Add(Row(f, jump, jumpToPoint));
         }
     }
 
-    private static Control Row(LintFinding f, Action<int> jump)
+    private static Control Row(LintFinding f, Action<int> jump, Action<Vec3>? jumpToPoint)
     {
         var icon = new TextBlock
         {
@@ -77,12 +80,21 @@ internal sealed class LintPanel : UserControl
 
         if (f.Uid is int uid)
         {
-            var jumpBtn = new Button { Content = "Jump", FontSize = 10, Padding = new Thickness(6, 1), Margin = new Thickness(4, 0, 0, 0) };
-            jumpBtn.Click += (_, _) => jump(uid);
-            row.Children.Add(jumpBtn);
+            row.Children.Add(JumpButton(() => jump(uid)));
+        }
+        else if (f.Location is Vec3 at && jumpToPoint is not null)
+        {
+            row.Children.Add(JumpButton(() => jumpToPoint(at)));
         }
 
         return row;
+    }
+
+    private static Button JumpButton(Action onClick)
+    {
+        var jumpBtn = new Button { Content = "Jump", FontSize = 10, Padding = new Thickness(6, 1), Margin = new Thickness(4, 0, 0, 0) };
+        jumpBtn.Click += (_, _) => onClick();
+        return jumpBtn;
     }
 
     private static string Glyph(LintSeverity s) => s switch

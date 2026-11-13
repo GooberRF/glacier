@@ -59,6 +59,12 @@ public sealed partial class MainWindow
             return;
         }
 
+        doc.SyncStaleMoverCopies(); // the packaged level must carry movers matching their edited brushes
+        foreach (string note in doc.Rfl.ReconcileAlpineLightmaps())
+        {
+            LogOperation("Packfile", note); // a stale Alpine lightmap chunk is not packaged
+        }
+
         byte[] levelBytes = doc.SaveToBytes(updateTimestamp: true);
         PackfileBuildResult? result = await Dialogs.PackfileDialog.ShowAsync(this, plan, levelBytes);
         if (result is null)

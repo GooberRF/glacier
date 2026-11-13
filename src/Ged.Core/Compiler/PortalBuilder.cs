@@ -28,6 +28,13 @@ public sealed class PortalMembrane
     /// </summary>
     public CsgFace? Opening { get; set; }
 
+    /// <summary>
+    /// False for a membrane the boolean itself produced (an air portal brush's chop, RED's mode 4): its faces
+    /// are in-place fragments of the walls the brush opened, so the world is already cut at them and
+    /// <see cref="PortalBuilder.ChopWorldFaces"/> leaves it alone.
+    /// </summary>
+    public bool ChopsWorld { get; init; } = true;
+
     /// <summary>Clipped fragments facing the plane's front side.</summary>
     public List<CsgFace> FrontFaces { get; } = new();
 
@@ -88,10 +95,67 @@ public sealed class PortalBuilder
 
     public IReadOnlyList<PortalMembrane> Membranes => _membranes;
 
-    /// <summary>Chops each portal brush into open space and appends the membrane faces.</summary>
+    /// <summary>
+    /// Takes over the portal faces the boolean left where an air portal brush opened a boundary face
+    /// (<see cref="CsgFace.ChopPortal"/>): groups them into one membrane per portal brush and plane, and adds the
+    /// reversed copy of each. RED does exactly this in the last phase of a mode-4 boolean (RED.exe
+    /// <c>FUN_004a8660</c>): each world face the chop would remove is marked as a portal face
+    /// (<c>FUN_004a97a0</c>) and a reversed clone of it (<c>FUN_0048d510</c>) is marked and added, so each side
+    /// of the opening gets its own copy. Returns the uids of the portal brushes that left at least one portal face.
+    /// </summary>
+    public HashSet<int> AdoptChopPortalFaces(List<CsgFace> open)
+    {
+        var chopped = new HashSet<int>();
+        int count = open.Count;
+        for (int i = 0; i < count; i++)
+        {
+            CsgFace front = open[i];
+            if (!front.ChopPortal || front.Vertices.Count < 3)
+            {
+                continue;
+            }
+
+            PortalMembrane? record = null;
+            foreach (PortalMembrane m in _membranes)
+            {
+                if (!m.ChopsWorld && m.BrushUid == front.SourceBrushUid &&
+                    m.Plane.Normal.Dot(front.Plane.Normal) > 0.9999f &&
+                    MathF.Abs(m.Plane.Distance(front.Vertices[0].Position)) < CsgPlane.OnPlaneEpsilon)
+                {
+                    record = m;
+                    break;
+                }
+            }
+
+            if (record is null)
+            {
+                record = new PortalMembrane { Plane = front.Plane, BrushUid = front.SourceBrushUid, ChopsWorld = false };
+                _membranes.Add(record);
+            }
+
+            CsgFace back = front.With(new List<CsgVertex>(front.Vertices));
+            back.Flip();
+            record.FrontFaces.Add(front);
+            record.BackFaces.Add(back);
+            open.Add(back);
+            chopped.Add(front.SourceBrushUid);
+        }
+
+        return chopped;
+    }
+
+    /// <summary>
+    /// Chops each portal brush into open space and appends the membrane faces. Brushes in
+    /// <paramref name="chopped"/> already have the portal faces the boolean's portal chop left and are skipped.
+    /// A brush in <paramref name="chopApplied"/> but not in <paramref name="chopped"/> went through the chop and
+    /// opened no wall; its centre-plane membrane is kept only in the space that was open before the portal
+    /// chops, so a brush whose doorway another portal brush had already opened (a duplicate) adds nothing.
+    /// </summary>
     public void InsertPortalFaces(
         List<CsgFace> open,
         List<(Brush Brush, List<CsgFace> Faces)> portalBrushes,
+        IReadOnlySet<int> chopApplied,
+        IReadOnlySet<int> chopped,
         CsgSolver solver,
         ref int step,
         int total,
@@ -101,6 +165,11 @@ public sealed class PortalBuilder
         {
             options.Cancellation.ThrowIfCancellationRequested();
             options.Progress?.Invoke(new CompileProgress("Chopping portal", ++step, total));
+
+            if (chopped.Contains(brush.Uid))
+            {
+                continue;
+            }
 
             CsgFace? opening = LargestFace(faces);
             if (opening is null)
@@ -127,7 +196,9 @@ public sealed class PortalBuilder
             membrane.Flags = 0;
 
             // Chop: clip to the open cross-section (fragments in rock are discarded).
-            List<CsgFace> fragments = solver.ClipToOpen(membrane);
+            List<CsgFace> fragments = chopApplied.Contains(brush.Uid)
+                ? solver.ClipToOpenBeforePortalChops(membrane)
+                : solver.ClipToOpen(membrane);
             if (fragments.Count == 0)
             {
                 continue; // portal buried in rock / outside the level
@@ -173,6 +244,11 @@ public sealed class PortalBuilder
 
         foreach (PortalMembrane m in _membranes)
         {
+            if (!m.ChopsWorld)
+            {
+                continue;
+            }
+
             Vec3 mn = new(float.MaxValue, float.MaxValue, float.MaxValue);
             Vec3 mx = new(float.MinValue, float.MinValue, float.MinValue);
             foreach (CsgVertex v in m.Vertices)

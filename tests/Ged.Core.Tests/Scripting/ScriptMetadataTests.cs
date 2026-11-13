@@ -3,7 +3,7 @@ using Xunit;
 
 namespace Ged.Core.Tests.Scripting;
 
-/// <summary>Facade-only tests (no engine) for script header metadata parsing (plan §6.5).</summary>
+/// <summary>Facade-only tests (no engine) for script header metadata parsing.</summary>
 public sealed class ScriptMetadataTests
 {
     [Fact]

@@ -59,7 +59,7 @@ public sealed partial class MainWindow
             var uids = BrushEd.SelectedBrushes.ToList();
             var brushes = uids.Select(u => BrushEd.FindBrush(u)!).Where(b => b is not null).ToList();
 
-            string meshName = SanitizeMeshName(Path.GetFileNameWithoutExtension(LevelFileName())) + "_mesh.v3m";
+            string meshName = Ged.Core.IO.Mesh.Import.MeshObjectImport.SanitizeMeshName(Path.GetFileNameWithoutExtension(LevelFileName())) + "_mesh.v3m";
             V3dFile v3d = BrushMeshExport.ToV3d(meshName, brushes, opts.ResetOrigin, out Vec3 origin);
 
             string meshesDir = MeshesOutputDir();

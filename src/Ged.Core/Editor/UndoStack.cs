@@ -104,6 +104,17 @@ public sealed class UndoStack
     /// </summary>
     public Func<IDisposable>? AtomicApplyScope { get; set; }
 
+    /// <summary>
+    /// Optional runner for a command's FIRST application in <see cref="Execute"/>: it must call the
+    /// command's <see cref="IDocumentCommand.Do"/> exactly once and return the command to record —
+    /// the same one, or a wrapper whose Do / Undo also re-apply / reverse state the runner derived
+    /// from the edit. The document uses it to keep linked data in the same undo step as the edit that
+    /// moved it (a whole-mover transform carrying its member brush — see
+    /// <see cref="Ged.Core.Editing.MoverObjectTransformLink"/>). Null = the command runs as-is. Undo and redo
+    /// never pass through it: they replay the recorded command.
+    /// </summary>
+    public Func<IDocumentCommand, IDocumentCommand>? CommandRunner { get; set; }
+
     private sealed class NullScope : IDisposable
     {
         public static readonly NullScope Instance = new();
@@ -177,7 +188,15 @@ public sealed class UndoStack
     public void Execute(IDocumentCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
-        command.Do();
+        if (CommandRunner is { } run)
+        {
+            command = run(command);
+        }
+        else
+        {
+            command.Do();
+        }
+
         Record(command);
     }
 
@@ -387,15 +406,49 @@ public sealed class UndoStack
     /// Begins a transaction. Commands executed until the returned handle is committed or
     /// disposed are grouped into one undo node; disposing without an explicit call commits.
     /// <see cref="Transaction.Rollback"/> undoes them.
+    /// <para>
+    /// <b>Nesting.</b> Calling this while a transaction is already open returns a <b>joined child</b>
+    /// handle (<see cref="Transaction.IsNested"/>) instead of throwing: its commands are recorded into
+    /// the outermost transaction, so the whole nest still produces exactly ONE undo node (named by the
+    /// outermost description) when the outermost transaction commits. On the child,
+    /// <see cref="Transaction.Commit"/> / <see cref="Transaction.Dispose"/> are no-ops toward the stack
+    /// (the outer transaction decides), and <see cref="Transaction.Rollback"/> undoes — in reverse —
+    /// only the commands recorded since the child began, restoring the document to exactly the state
+    /// it had when the child began, and drops them from the outer transaction, which stays open and
+    /// valid (a later outer commit records only what remains; a later outer rollback undoes the rest).
+    /// A child used after its outermost transaction has closed is inert. This lets self-contained
+    /// "one undo step" operations (prefab placement, multi-brush face edits) run inside a larger
+    /// transaction such as a script run.
+    /// </para>
     /// </summary>
     public Transaction BeginTransaction(string description)
     {
         if (_transaction is not null)
         {
-            throw new InvalidOperationException("A transaction is already open.");
+            return new Transaction(this, description, _transaction);
         }
 
-        _transaction = new Transaction(this, description);
+        _transaction = new Transaction(this, description, root: null);
+        return _transaction;
+    }
+
+    /// <summary>
+    /// Begins a transaction whose commands, on commit, are FOLDED into the current undo node instead
+    /// of becoming a node of their own: the node's command becomes "its original command, then these",
+    /// so one Undo reverses both and one Redo re-applies both. Used for derived-data upkeep that an
+    /// operation performs on the author's behalf (refreshing stale mover copies before a save or build)
+    /// so it rides along with the latest edit rather than adding an extra step the author must undo
+    /// first. At the baseline (no node to fold into) the commands become a normal node. Opened inside
+    /// another transaction it joins that one, exactly like <see cref="BeginTransaction"/>.
+    /// </summary>
+    public Transaction BeginFoldedTransaction(string description)
+    {
+        if (_transaction is not null)
+        {
+            return new Transaction(this, description, _transaction);
+        }
+
+        _transaction = new Transaction(this, description, root: null) { FoldIntoCurrent = true };
         return _transaction;
     }
 
@@ -427,7 +480,18 @@ public sealed class UndoStack
         IDocumentCommand entry = t.Commands.Count == 1
             ? t.Commands[0]
             : new CompositeCommand(t.Description, t.Commands.ToArray());
-        AddChildNode(entry);
+        if (t.FoldIntoCurrent && _current != _root && _current.Command is { } top)
+        {
+            // Folded: the current node now applies its own command and then these. The composite has no
+            // coalesce key, and the barrier below stops a continuing drag from coalescing into (and so
+            // dropping the Do of) the folded commands.
+            _current.Command = new CompositeCommand(_current.Description, new[] { top, entry });
+        }
+        else
+        {
+            AddChildNode(entry);
+        }
+
         _coalesceBarrier = true;
         Changed?.Invoke();
     }
@@ -446,6 +510,29 @@ public sealed class UndoStack
         }
 
         _coalesceBarrier = true;
+        Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Rolls back a joined child: undoes (newest first) the commands its root transaction recorded
+    /// since the child began and removes them from the root, leaving the root open. Inert once the
+    /// root has closed (its commands then belong to a committed node or were already undone).
+    /// </summary>
+    private void RollbackNested(Transaction root, int startIndex)
+    {
+        if (!ReferenceEquals(_transaction, root))
+        {
+            return;
+        }
+
+        List<IDocumentCommand> commands = root.Commands;
+        int start = Math.Clamp(startIndex, 0, commands.Count);
+        for (int i = commands.Count - 1; i >= start; i--)
+        {
+            commands[i].Undo();
+        }
+
+        commands.RemoveRange(start, commands.Count - start);
         Changed?.Invoke();
     }
 
@@ -574,23 +661,40 @@ public sealed class UndoStack
         return count;
     }
 
-    /// <summary>A group of commands recorded as a single undo entry.</summary>
+    /// <summary>
+    /// A group of commands recorded as a single undo entry. A handle returned while another
+    /// transaction was open is a joined child (<see cref="IsNested"/>); see
+    /// <see cref="UndoStack.BeginTransaction"/> for the nesting semantics.
+    /// </summary>
     public sealed class Transaction : IDisposable
     {
         private readonly UndoStack _owner;
+        private readonly Transaction? _root;
+        private readonly int _startIndex;
         private bool _closed;
 
-        internal Transaction(UndoStack owner, string description)
+        internal Transaction(UndoStack owner, string description, Transaction? root)
         {
             _owner = owner;
             Description = description;
+            _root = root;
+            _startIndex = root?.Commands.Count ?? 0;
         }
 
         internal List<IDocumentCommand> Commands { get; } = new();
 
         public string Description { get; }
 
-        /// <summary>Collapses the recorded commands into one undo entry.</summary>
+        /// <summary>True for an outermost <see cref="UndoStack.BeginFoldedTransaction"/>: commit folds into the current node.</summary>
+        internal bool FoldIntoCurrent { get; init; }
+
+        /// <summary>True for a joined child opened inside another transaction (records into the outermost one).</summary>
+        public bool IsNested => _root is not null;
+
+        /// <summary>
+        /// Outermost: collapses the recorded commands into one undo entry. Joined child: closes the
+        /// handle only — its commands stay in the outer transaction, which decides their fate.
+        /// </summary>
         public void Commit()
         {
             if (_closed)
@@ -599,10 +703,17 @@ public sealed class UndoStack
             }
 
             _closed = true;
-            _owner.CommitTransaction(this);
+            if (_root is null)
+            {
+                _owner.CommitTransaction(this);
+            }
         }
 
-        /// <summary>Undoes every recorded command and discards the transaction.</summary>
+        /// <summary>
+        /// Outermost: undoes every recorded command and discards the transaction. Joined child: undoes
+        /// only the commands recorded since the child began (the document returns to its state at the
+        /// child's start) and leaves the outer transaction open.
+        /// </summary>
         public void Rollback()
         {
             if (_closed)
@@ -611,7 +722,14 @@ public sealed class UndoStack
             }
 
             _closed = true;
-            _owner.RollbackTransaction(this);
+            if (_root is null)
+            {
+                _owner.RollbackTransaction(this);
+            }
+            else
+            {
+                _owner.RollbackNested(_root, _startIndex);
+            }
         }
 
         public void Dispose() => Commit();

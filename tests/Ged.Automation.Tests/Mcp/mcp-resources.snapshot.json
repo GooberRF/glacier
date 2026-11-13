@@ -1,0 +1,139 @@
+{
+  "resources": [
+    {
+      "name": "guide-index",
+      "title": "Glacier agent guide: sections",
+      "uri": "glacier://guide/index",
+      "description": "The agent guide's sections with their numbers, titles and sizes. Start here: read the sections you need with glacier://guide/<section> (1-3 and 9 before your first edit), each small enough for one read.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "name": "guide",
+      "title": "Glacier agent guide",
+      "uri": "glacier://guide",
+      "description": "How to build and edit Red Faction levels with Glacier, as one document: the build-look-check loop, the world model, the design kit, discovery, editing existing levels, the verification checklist, pitfalls and a worked example. It is long; a client that cuts long reads short should read glacier://guide/index and the sections instead.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "name": "conventions",
+      "title": "Scripting conventions",
+      "uri": "glacier://conventions",
+      "description": "Units, axes, rotation, CSG time order, texture scale and the other rules every script follows (the same text as ged.conventions).",
+      "mimeType": "text/plain"
+    },
+    {
+      "name": "api-index",
+      "title": "Lua API index",
+      "uri": "glacier://api/lua",
+      "description": "One line per global, type and design-kit function. Read one entry with glacier://api/lua/<name> (e.g. level.brush, kit.room).",
+      "mimeType": "text/plain"
+    },
+    {
+      "name": "api-stub",
+      "title": "Lua API stub",
+      "uri": "glacier://api/stub",
+      "description": "The scripting API as an annotated Lua stub (signatures and types of every global and member).",
+      "mimeType": "text/x-lua"
+    },
+    {
+      "name": "kit",
+      "title": "Design kit reference",
+      "uri": "glacier://kit",
+      "description": "Every design-kit function (local kit = ged.import(\"kit\")) with its option keys, types, defaults and meaning.",
+      "mimeType": "text/plain"
+    },
+    {
+      "name": "kit-source",
+      "title": "Design kit source",
+      "uri": "glacier://kit/source",
+      "description": "The design kit's Lua source as shipped with this build (scripts/lib/kit.lua, then each kit_* module it installs functions from): read it to see exactly what a kit function builds.",
+      "mimeType": "text/x-lua"
+    },
+    {
+      "name": "norms",
+      "title": "Corpus norms: metrics",
+      "uri": "glacier://norms",
+      "description": "The corpus norms built into Glacier: every level metric (doorway and corridor sizes, headroom, light density, texture tiling, ...) with unit, reliability, use and published buckets. Read one metric with glacier://norms/<metric> (e.g. opening.width).",
+      "mimeType": "application/json"
+    },
+    {
+      "name": "level-summary",
+      "title": "Open level summary",
+      "uri": "glacier://level/current/summary",
+      "description": "A brief structured summary of the level open in this session (the level_summary tool with detail brief). Read it again after a change; it is not pushed.",
+      "mimeType": "application/json"
+    }
+  ],
+  "resourceTemplates": [
+    {
+      "name": "guide-section",
+      "title": "Glacier agent guide section",
+      "uriTemplate": "glacier://guide/{section}",
+      "description": "One section of the agent guide by number (glacier://guide/3 is the core loop, 9 the checklist); a long section is split into lettered parts (6a, 6b). glacier://guide/index lists them all.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "name": "api-entry",
+      "title": "Lua API entry",
+      "uriTemplate": "glacier://api/lua/{member}",
+      "description": "One global, type or member of the Lua scripting API, or a design-kit function: level, brush, level.brush, brush:set_pos, kit.room.",
+      "mimeType": "text/plain"
+    },
+    {
+      "name": "norms-metric",
+      "title": "Corpus norms: one metric",
+      "uriTemplate": "glacier://norms/{metric}",
+      "description": "One metric of the corpus norms with its percentiles (p5, p25, p50, p75, p95, n) in every published bucket (exemplar, overall, dm, ctf, sp, ...).",
+      "mimeType": "application/json"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "blockout_from_brief",
+      "title": "Block out a level from a brief",
+      "description": "Plan, then block out a new level with the design kit from a written brief, verify it, and report what the designer should refine.",
+      "arguments": [
+        {
+          "name": "brief",
+          "description": "What the level should be: size, rooms or areas, connections, storeys, items, mood.",
+          "required": true
+        },
+        {
+          "name": "gametype",
+          "description": "The game type it is for, e.g. deathmatch, CTF, team deathmatch, single player.",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "audit_level",
+      "title": "Review the open level",
+      "description": "Read-only review of the open level: summary, plan renders of every storey, holes and lint; findings with UIDs and positions, no edits.",
+      "arguments": [
+        {
+          "name": "focus",
+          "description": "What to look at most closely, e.g. spawns, lighting, leaks, links, item placement.",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "extend_level",
+      "title": "Extend the open level",
+      "description": "Add to the open level: checkpoint, study the surroundings, build the addition with the design kit, diff to confirm, verify.",
+      "arguments": [
+        {
+          "name": "goal",
+          "description": "What to add and where, e.g. \"a balcony over the north hall reached by stairs from the east corridor\".",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "fix_leaks",
+      "title": "Fix leaks",
+      "description": "Find the open level's holes with check_holes, render around them, make the smallest repair, and re-check until it is watertight.",
+      "arguments": []
+    }
+  ]
+}

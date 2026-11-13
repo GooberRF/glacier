@@ -15,7 +15,7 @@ namespace Ged.Core.Editing;
 public sealed record GateFinding(string Feature, string Detail, IReadOnlyList<int> Uids);
 
 /// <summary>
-/// The result of a compatibility check. GED always saves Alpine v305, so this never
+/// The result of a compatibility check. GED always saves Alpine v306, so this never
 /// blocks a save; it is an <em>analysis</em>. Against the Alpine reference the report is
 /// always clear. Against the stock (v200) reference, every Alpine-specific feature the
 /// level uses is itemized informationally — the report makes no stock-load claim.
@@ -44,7 +44,7 @@ public sealed class FeatureGateReport
         }
 
         var sb = new StringBuilder();
-        sb.AppendLine($"Uses {Findings.Count} Alpine-specific feature(s). Glacier always saves as Alpine v305.");
+        sb.AppendLine($"Uses {Findings.Count} Alpine-specific feature(s). Glacier always saves as Alpine v306.");
         sb.AppendLine();
         foreach (GateFinding f in Findings)
         {
@@ -66,7 +66,7 @@ public sealed class FeatureGateReport
 }
 
 /// <summary>
-/// Compatibility analysis (not a save gate — GED always writes Alpine v305).
+/// Compatibility analysis (not a save gate — GED always writes Alpine v306).
 /// Enumerates the Alpine-specific features a level uses, measured against the
 /// stock (v200) reference: Alpine events (MinVersion ≥ 300), Mesh/Note/Corona/Bag
 /// objects, non-default alpine_level_properties, geoable/breakable brushes, mover
@@ -158,6 +158,16 @@ public static class FeatureGate
         {
             findings.Add(new GateFinding("Bag objects (Alpine)",
                 "alpine_bag_objects section (Alpine-specific).", bag.Bags.Select(b => b.Uid).ToList()));
+        }
+
+        // The Alpine 1.4/1.5 chunks (weather regions through liquid emission, lightmaps, terrain).
+        foreach (RflSection s in rfl.Sections)
+        {
+            if (s.TypeId is >= (uint)SectionType.AlpineWeatherRegions and <= (uint)SectionType.AlpineLiquidEmission)
+            {
+                findings.Add(new GateFinding($"{char.ToUpperInvariant(SectionIds.Describe(s.TypeId)[0])}{SectionIds.Describe(s.TypeId)[1..]} data (Alpine)",
+                    $"0x{s.TypeId:X8} chunk (Alpine-specific).", System.Array.Empty<int>()));
+            }
         }
     }
 

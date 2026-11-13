@@ -22,10 +22,10 @@ using Ged.Core.Scripting;
 namespace Ged.App.Dialogs;
 
 /// <summary>
-/// The Script Editor (plan §6.2): a peer window of <c>UvUnwrapWindow</c> using AvaloniaEdit for the
+/// The Script Editor: a peer window of <c>UvUnwrapWindow</c> using AvaloniaEdit for the
 /// code surface with Lua syntax highlighting, a Run / Dry-Run / Run-Selection toolbar, a
 /// capabilities banner, and inline error reporting into the status line + Log output. Unknown
-/// (unsaved) scripts default to Dry-Run (§6.7). Output routes to the shared Script Log.
+/// (unsaved) scripts default to Dry-Run. Output routes to the shared Script Log.
 /// </summary>
 internal sealed class ScriptEditorWindow : Window
 {
@@ -255,7 +255,7 @@ internal sealed class ScriptEditorWindow : Window
         }
     }
 
-    // ---- Static API completion (plan §6.3) ------------------------------------
+    // ---- Static API completion ------------------------------------
 
     private static readonly IReadOnlyList<string> Globals = ScriptApiReference.GlobalNames();
     private static readonly System.Collections.Generic.IReadOnlyDictionary<string, IReadOnlyList<string>> MembersByReceiver =

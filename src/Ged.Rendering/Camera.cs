@@ -60,6 +60,21 @@ public sealed class Camera
 
     public OrthoView Ortho { get; set; } = OrthoView.Top;
 
+    /// <summary>
+    /// How far behind <see cref="Position"/> (along the view axis) an orthographic camera's eye
+    /// sits; the ortho depth range is measured from that eye.
+    /// </summary>
+    public const float OrthoEyeDistance = 3000f;
+
+    /// <summary>
+    /// Optional orthographic depth range (near, far), in world units from the ortho eye
+    /// (<see cref="Position"/> minus <see cref="OrthoEyeDistance"/> along <see cref="Forward"/>).
+    /// Null (the default, used by every viewport) keeps the fixed 0.1..12000 range. Set by the
+    /// command-line floor-plan render to slice a storey out of the level (geometry nearer than
+    /// <c>Near</c> or beyond <c>Far</c> is clipped).
+    /// </summary>
+    public (float Near, float Far)? OrthoDepthRange { get; set; }
+
     /// <summary>Unit forward (view) direction in world space.</summary>
     public Vector3 Forward => ForwardVec().ToNumerics();
 
@@ -280,7 +295,7 @@ public sealed class Camera
         Vector3D<float> up = Projection == CameraProjection.Orthographic && Ortho is OrthoView.Top or OrthoView.Bottom
             ? new Vector3D<float>(0f, 0f, 1f)
             : WorldUp;
-        Vector3D<float> eye = Projection == CameraProjection.Orthographic ? pos - (f * 3000f) : pos;
+        Vector3D<float> eye = Projection == CameraProjection.Orthographic ? pos - (f * OrthoEyeDistance) : pos;
 
         Vector3D<float> r = Vector3D.Normalize(Vector3D.Cross(up, f));
         Vector3D<float> u = Vector3D.Cross(f, r);
@@ -311,8 +326,8 @@ public sealed class Camera
         {
             float height = MathF.Max(OrthoZoom, 0.01f) * 2f;
             float width = height * MathF.Max(AspectRatio, 0.01f);
-            const float zn = 0.1f;
-            const float zf = 12000f;
+            float zn = OrthoDepthRange?.Near ?? 0.1f;
+            float zf = OrthoDepthRange?.Far ?? 12000f;
             float range = 1f / (zf - zn);
             return new Matrix4X4<float>(
                 new Vector4D<float>(2f / width, 0f, 0f, 0f),

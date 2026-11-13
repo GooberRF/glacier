@@ -48,15 +48,15 @@ public sealed class GlobalPartitionDiag
         }
 
         // level -> GlobalPartition ceiling (measured floor; zeros are hard). Proof (b)/(c) live in here too:
-        // dm06 = 0 (storm canary), ctf04 <= 13 and ctfstockintrade <= 3 (the PartitionClip community regressions
-        // must not recur — measured 10 and 3, headroom to the inc floor 13 / 3).
+        // dm06 = 0 (storm canary), ctf04 = 0 and ctfstockintrade <= 3 (the PartitionClip community regressions
+        // must not recur); dm04/dm07/dm08/ctf04/ctfwlpro re-measured under the cell-bounded fold probe.
         var ceilings = new (string Level, int Ceil)[]
         {
-            ("dm01.rfl", 0), ("dm02.rfl", 0), ("dm04.rfl", 14), ("dm05.rfl", 0), ("dm06.rfl", 0),
-            ("glass_house.rfl", 0), ("ctf01.rfl", 17), ("ctf02.rfl", 5), ("ctfwlpro.rfl", 6),
+            ("dm01.rfl", 0), ("dm02.rfl", 0), ("dm04.rfl", 3), ("dm05.rfl", 0), ("dm06.rfl", 0),
+            ("glass_house.rfl", 0), ("ctf01.rfl", 17), ("ctf02.rfl", 5), ("ctfwlpro.rfl", 0),
             ("dmabruptdecayrc2a27.rfl", 5), ("kothcowb1~.rfl", 0), ("ctf07.rfl", 58),
-            ("dmwarzoneclassicb1.rfl", 17), ("dm07.rfl", 20), ("dm08.rfl", 3),
-            ("ctf04.rfl", 13), ("ctfstockintradeb1.rfl", 3), ("dmedgeofdespairb1a1.rfl", 0),
+            ("dmwarzoneclassicb1.rfl", 17), ("dm07.rfl", 2), ("dm08.rfl", 0),
+            ("ctf04.rfl", 0), ("ctfstockintradeb1.rfl", 3), ("dmedgeofdespairb1a1.rfl", 0),
         };
 
         foreach ((string level, int ceil) in ceilings)

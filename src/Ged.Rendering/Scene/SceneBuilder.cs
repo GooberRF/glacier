@@ -162,6 +162,11 @@ public static class SceneBuilder
                 continue;
             }
 
+            if (!isMover && options.ExcludedRooms is { } excluded && excluded.Contains(f.RoomIndex))
+            {
+                continue;
+            }
+
             bool isPortal = f.IsPortalFace;
             if (isPortal && options.PortalFaces == PortalFaceDrawMode.None)
             {
@@ -174,6 +179,11 @@ public static class SceneBuilder
             }
 
             if ((flags & FaceFlags.IsDetail) != 0 && !options.IncludeDetailFaces)
+            {
+                continue;
+            }
+
+            if (!isPortal && (flags & FaceFlags.ShowSky) != 0 && !options.IncludeSkyFaces)
             {
                 continue;
             }
@@ -340,7 +350,7 @@ public static class SceneBuilder
 
     private static int LightmapIndexForFace(Geometry g, Face f, int lightmapCount)
     {
-        if ((f.SurfaceIndex & 0xFFFF) == 0xFFFF || f.SurfaceIndex < 0 || f.SurfaceIndex >= g.Surfaces.Count)
+        if (!Geometry.FaceHasLightmapUvs(f) || f.SurfaceIndex < 0 || f.SurfaceIndex >= g.Surfaces.Count)
         {
             return -1;
         }
@@ -363,7 +373,7 @@ public static class SceneBuilder
         // directional coronas — every object with a meaningful spawn/projection facing.
         void FacingArrow(Vec3 pos, Mat3 rot)
         {
-            if (options.EventFacingArrows)
+            if (options.EventFacingArrows && options.ObjectIcons)
             {
                 scene.Lines.AddRange(OverlayBuilder.EventFacingArrow(pos, rot, size * 5f, options.EventArrowColor));
             }
@@ -374,7 +384,7 @@ public static class SceneBuilder
         // in its UP row — see the corona case below).
         void FacingArrowDir(Vec3 pos, Vec3 dir)
         {
-            if (options.EventFacingArrows)
+            if (options.EventFacingArrows && options.ObjectIcons)
             {
                 scene.Lines.AddRange(OverlayBuilder.EventFacingArrow(pos, dir, size * 5f, options.EventArrowColor));
             }
@@ -389,6 +399,11 @@ public static class SceneBuilder
         {
             var pos = new Vector3(p.X, p.Y, p.Z);
             uidPositions[uid] = pos;
+            if (!options.ObjectIcons)
+            {
+                return;
+            }
+
             uint tint = options.UseOriginalIcons ? White : (tintOverride ?? Palette.BillboardTint(kind));
 
             // A non-square ORIGINAL icon (RED's 32×64 MP-respawn, 64×32 keyframe) renders at
@@ -431,7 +446,7 @@ public static class SceneBuilder
 
                         // Facing arrow for oriented events (Alpine event.cpp:1249-1263): a
                         // fixed-size glyph along the event's forward vector.
-                        if (options.EventFacingArrows && RflEvent.HasFacingArrow(e.ClassName))
+                        if (options.EventFacingArrows && options.ObjectIcons && RflEvent.HasFacingArrow(e.ClassName))
                         {
                             scene.Lines.AddRange(OverlayBuilder.EventFacingArrow(
                                 e.Position, e.Rotation ?? Mat3.Identity, size * 5f, options.EventArrowColor));

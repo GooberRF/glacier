@@ -41,6 +41,13 @@ public static class AppPaths
     /// <summary>The settings file (<c>settings.cfg</c>).</summary>
     public static string SettingsFile => Paths.SettingsFile;
 
+    /// <summary>
+    /// The per-user profile settings file (<c>%APPDATA%\Glacier\settings.cfg</c>) — where the editor keeps its
+    /// settings when its own folder is not writable. Tools that run from a different folder than the editor
+    /// (glacier-cli) look here after <see cref="SettingsFile"/>.
+    /// </summary>
+    public static string ProfileSettingsFile => Resolve(BaseDirectory, baseWritable: false).SettingsFile;
+
     /// <summary>The keymap file (<c>keymap.cfg</c>).</summary>
     public static string KeymapFile => Paths.KeymapFile;
 

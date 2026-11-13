@@ -11,10 +11,10 @@ namespace Ged.Core.Tests;
 /// reloading must yield a self-consistent header (offsets / counts / total
 /// size), and every untouched section must still byte-match the original.
 ///
-/// The check runs on the canonical Alpine v305 form of each level: GED always saves
-/// v305, so we first upgrade (a no-op for a v305 source) and take that as the
+/// The check runs on the canonical Alpine v306 form of each level: GED always saves
+/// v306, so we first upgrade (a no-op for a v306 source) and take that as the
 /// baseline. The header-recompute + untouched-verbatim invariant then applies to a
-/// v305 dirty-save, which is the only save GED performs.
+/// v306 dirty-save, which is the only save GED performs.
 /// </summary>
 public sealed class HeaderIntegrityTests
 {
@@ -31,9 +31,9 @@ public sealed class HeaderIntegrityTests
 
         string path = Path.Combine(Corpus.Directory!, fileName);
 
-        // Canonical v305 baseline (GED never writes below v305). For a v305 source this
-        // is byte-identical to the file on disk; for a pre-305 source it is the upgraded
-        // form. All the invariants below apply to this v305 form.
+        // Canonical v306 baseline (GED never writes below v306). For a v306 source this
+        // is byte-identical to the file on disk; for a pre-306 source it is the upgraded
+        // form. All the invariants below apply to this v306 form.
         RflFile upgraded = RflFile.Load(File.ReadAllBytes(path));
         upgraded.UpgradeToAlpine();
         byte[] originalBytes = upgraded.Save(updateTimestamp: false);

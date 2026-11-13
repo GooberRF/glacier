@@ -7,7 +7,7 @@ using Xunit;
 
 namespace Ged.Core.Tests.Scripting;
 
-/// <summary>Tests for the portable scripts library + the bundled example gallery (plan §6.4/§6.5).</summary>
+/// <summary>Tests for the portable scripts library + the bundled example gallery.</summary>
 public sealed class ScriptLibraryTests
 {
     [Fact]

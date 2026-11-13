@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Text.Json;
 using Ged.Core.IO.Rfg;
+using Ged.Core.Model;
 
 namespace Ged.Core.Prefabs;
 
@@ -84,6 +85,57 @@ public sealed class PrefabPackage
         byte[]? thumb = ReadEntryBytes(zip, ThumbnailEntry);
 
         return new PrefabPackage { Manifest = manifest, Payload = payload, Thumbnail = thumb };
+    }
+
+    /// <summary>
+    /// Reads a package for placement: the package, its payload normalized to FIXED prefab-local space
+    /// (<see cref="BasedPayload"/>), and the file's source hash (<see cref="FileHash(byte[])"/>, the
+    /// lineage record's propagation key). The file is read once.
+    /// </summary>
+    public static (PrefabPackage Package, RfgFile Payload, string Hash) LoadBased(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        byte[] bytes = File.ReadAllBytes(path);
+        using var ms = new MemoryStream(bytes, writable: false);
+        PrefabPackage pkg = Load(ms);
+        return (pkg, BasedPayload(pkg), FileHash(bytes));
+    }
+
+    /// <summary>
+    /// The package payload in FIXED prefab-local space (origin == pivot). A legacy v1 package (not
+    /// <see cref="PrefabManifest.PivotBased"/>) establishes its pivot once — the payload's bounding-box
+    /// centre — and is re-based in memory, then treated as fixed for this placement.
+    /// </summary>
+    public static RfgFile BasedPayload(PrefabPackage pkg)
+    {
+        ArgumentNullException.ThrowIfNull(pkg);
+        RfgFile payload = pkg.Payload;
+        if (!pkg.Manifest.PivotBased)
+        {
+            Editing.RfgInterop.TransformInPlace(payload, Mat3.Identity, Editing.RfgInterop.ComputePivot(payload).Scale(-1f));
+        }
+
+        return payload;
+    }
+
+    /// <summary>The source hash of a package file (first 16 hex digits of its SHA-256), or "" when unreadable.</summary>
+    public static string FileHash(string path)
+    {
+        try
+        {
+            return FileHash(File.ReadAllBytes(path));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>The source hash of package bytes (first 16 hex digits of their SHA-256).</summary>
+    public static string FileHash(byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..16];
     }
 
     /// <summary>Reads only the manifest + thumbnail (skips parsing the RFG payload) for the library grid.</summary>

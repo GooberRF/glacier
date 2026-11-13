@@ -47,6 +47,9 @@ public sealed class SurfaceBuilder
     private const float Quantum = 1e-3f;
     private static readonly float[] ResMultiplier = { 0.5f, 1f, 2f, 4f };
 
+    /// <summary>Most lightmap surfaces a level can carry (Alpine RED's <c>red_max_level_surfaces</c>).</summary>
+    internal const int MaxLevelSurfaces = 32767;
+
     // Item 6 (amendment): High-Resolution Lightmaps widens pages + fragment cap + ppm (format-safe).
     private readonly int _pageSize;
     private readonly int _maxFragment;
@@ -90,6 +93,13 @@ public sealed class SurfaceBuilder
                 continue;
             }
 
+            // A wall-gap fill from the Alpine build repair keeps surface −1, as Alpine RED's does
+            // (build_repair.cpp:1286-1289).
+            if (f.RepairFill)
+            {
+                continue;
+            }
+
             eligible.Add(f);
         }
 
@@ -98,6 +108,13 @@ public sealed class SurfaceBuilder
         var outp = new SurfaceBuildResult();
         foreach (List<CsgFace> cluster in clusters)
         {
+            // RED numbers surfaces in a short (FUN_004aa610); Alpine RED stops starting new surfaces at 32767
+            // and the remaining faces keep surface −1 (editor_patch/terrain_build.h:36, terrain_build.cpp:710-717).
+            if (outp.Surfaces.Count >= MaxLevelSurfaces)
+            {
+                break;
+            }
+
             if (BuildSurface(cluster, rooms, outp.Surfaces.Count) is Surface s)
             {
                 bool fullBright = ((FaceFlags)cluster[0].Flags & FaceFlags.FullBright) != 0;

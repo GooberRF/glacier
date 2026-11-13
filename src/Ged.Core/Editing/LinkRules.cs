@@ -52,6 +52,13 @@ public static class LinkRules
             return true;
         }
 
+        // A link to a mover is stored as its start keyframe (the mover's UID in game; Lua link_to(mover) and
+        // RED both write it that way), so a keyframe is a mover target.
+        if (targetKind == LevelObjectKind.Keyframe && schema.LinkTargets.Contains(EventLinkTarget.Mover))
+        {
+            return true;
+        }
+
         EventLinkTarget mapped = LinkModel.ToTarget(targetKind);
         foreach (EventLinkTarget t in schema.LinkTargets)
         {

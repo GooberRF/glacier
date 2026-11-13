@@ -95,9 +95,25 @@ public static class V3dMeshBuilder
         lod.NumVertices = totalVertices;
         submesh.Lods.Add(lod);
 
+        // Stored the way the game's meshes are: vertices around their bounding-box centre, the centre as the submesh
+        // offset (the engine draws stored vertex + offset, V3dFile.ModelOffset), so the mesh appears in game exactly
+        // where its model-space vertices put it.
         Vec3 center = min.Add(max).Scale(0.5f);
+        if (center != Vec3.Zero)
+        {
+            foreach (V3dBatch batch in lod.Batches)
+            {
+                for (int i = 0; i < batch.Positions.Length; i++)
+                {
+                    batch.Positions[i] = batch.Positions[i].Sub(center);
+                }
+
+                batch.Planes = BuildPlanes(batch);
+            }
+        }
+
         submesh.Offset = center;
-        submesh.BoundingBox = new Aabb(min, max);
+        submesh.BoundingBox = new Aabb(min.Sub(center), max.Sub(center));
         submesh.Radius = anyVertex ? max.Sub(center).Length() : 1f;
 
         file.Submeshes.Add(submesh);

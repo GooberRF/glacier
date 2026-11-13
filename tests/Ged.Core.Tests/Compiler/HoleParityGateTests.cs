@@ -55,27 +55,35 @@ public sealed class HoleParityGateTests
     // watertightness properties at once (shared registry cuts + verbatim un-crossed authored faces) with both
     // world faces and caps routed down ONE symmetric partition; the SeamSealer still reconciles the sub-mm
     // divergent-triple station cohort (measured NOT removable — see compiler-parity-notes.md, the flip ledger).
-    // Floor + 2 headroom; zeros held hard at ≤2 (the watertight convention). dm04/ctf01/ctfwlpro floors reflect
-    // the flagship-32 RED-shared-corner snap (dm04 9→6, ctfwlpro 20→8) and flagship-19 EdgeLerpSplit (ctf01 →8).
+    // Floor + 2 headroom; zeros held hard at ≤2 (the watertight convention). ctf01's floor reflects flagship-19
+    // EdgeLerpSplit (→8). RATCHETED by the corner-snap gate + cell-bounded fragment probe (CsgSolver
+    // SnapKeepsCornerOnItsPlanes / FragmentProbeEps; compiler-parity-notes.md): dm07 14→2, ctf04 13→0,
+    // ctfwlpro 8→0, dm04 6→0 (the flagship-32 residual six closed), dm08 5→2 — matching RED's compiled faces at
+    // the dm07 and dm04 sites. Alpine RED inherits stock fragment classification/snapping, so this is parity work,
+    // not a divergence (ALPINE-COMPAT-SPEC.md).
+    // ALPINE TIER (C2): the default path now also runs Alpine RED's build repair (CompileOptions.AlpineRepair, passes
+    // A-E) — measured hole-neutral on every level below (no ceiling moved). Each line carries Alpine RED's own count
+    // (same HoleDetector rule, on its repair-on -buildonly output, alpine-ref 8db7d90b); AlpineTierGateTests gates
+    // the full reference set, and where Glacier already beats Alpine RED its own number is kept.
     private static readonly IReadOnlyDictionary<string, int> Ceiling = new Dictionary<string, int>
     {
-        ["dm01.rfl"] = 2,   // floor 0 (watertight)
-        ["dm02.rfl"] = 2,   // floor 0 (watertight)
-        ["dm04.rfl"] = 8,   // floor 6 (flagship 32: RED-shared-corner snap closes seams E/H + cluster-3 duplicate; was 11)
-        ["dm05.rfl"] = 2,   // floor 0 (watertight)
-        ["dm06.rfl"] = 2,   // floor 0 (watertight)
-        ["glass_house.rfl"] = 2, // floor 0 (watertight)
-        ["ctf01.rfl"] = 10, // el floor 8 (flagship 19 flip; was inc 11)
-        ["ctf02.rfl"] = 7,  // floor 5
-        ["ctfwlpro.rfl"] = 10, // floor 8 (flagship 32: RED-shared-corner snap closes 12 seams; was floor 20 / ceiling 22)
-        ["dmabruptdecayrc2a27.rfl"] = 8, // floor 6
-        ["kothcowb1~.rfl"] = 2, // floor 0 (watertight — beats RED's own 8)
-        ["dm07.rfl"] = 16,  // floor 14 (SharedBsp-flip measurement; RED's own baseline is 8 here)
-        ["ctf07.rfl"] = 44, // floor 42 (the flip WIN: 74→42 under SharedBsp; rooms/portals RED-exact 158/97)
-        ["ctf04.rfl"] = 15, // floor 13
-        ["dm15.rfl"] = 18,  // floor 16
-        ["dm08.rfl"] = 7,   // floor 5
-        ["dmedgeofdespairb1a1.rfl"] = 2, // floor 0 (the flip WIN: →0 watertight — beats RED's own 36)
+        ["dm01.rfl"] = 2,   // floor 0 (watertight); Alpine RED 0
+        ["dm02.rfl"] = 2,   // floor 0 (watertight); Alpine RED 0
+        ["dm04.rfl"] = 2,   // floor 0 (cell-bounded fold probe closes the residual six; was 8 / floor 6); Alpine RED 0
+        ["dm05.rfl"] = 2,   // floor 0 (watertight); Alpine RED 0
+        ["dm06.rfl"] = 2,   // floor 0 (watertight); Alpine RED 0
+        ["glass_house.rfl"] = 2, // floor 0 (watertight); Alpine RED 0
+        ["ctf01.rfl"] = 7,  // floor 5 (RATCHETED at C2 from 10 / el floor 8 — re-measured 5 after the corner-snap/fold-probe fix, with or without repair); Alpine RED 6 (Glacier beats it)
+        ["ctf02.rfl"] = 2,  // floor 0 (RATCHETED at C2 from 7 / floor 5 — re-measured 0, with or without repair); Alpine RED 73 (Glacier beats it)
+        ["ctfwlpro.rfl"] = 2, // floor 0 (cell-bounded fold probe; was 10 / floor 8); Alpine RED 0
+        ["dmabruptdecayrc2a27.rfl"] = 8, // floor 6; Alpine RED 0
+        ["kothcowb1~.rfl"] = 2, // floor 0 (watertight — beats RED's own 8 and Alpine RED's 2)
+        ["dm07.rfl"] = 4,   // floor 2 (corner-snap gate + cell-bounded fold probe; was 16 / floor 14; RED's own baseline is 8 here, Alpine RED 10)
+        ["ctf07.rfl"] = 44, // floor 42 (the flip WIN: 74→42 under SharedBsp; rooms/portals RED-exact 158/97); Alpine RED 0
+        ["ctf04.rfl"] = 2,  // floor 0 (cell-bounded fold probe; was 15 / floor 13); Alpine RED 0
+        ["dm15.rfl"] = 18,  // floor 16; Alpine RED 0
+        ["dm08.rfl"] = 4,   // floor 2 (cell-bounded fold probe; was 7 / floor 5); Alpine RED 2
+        ["dmedgeofdespairb1a1.rfl"] = 2, // floor 0 (the flip WIN: →0 watertight — beats RED's own 36 and Alpine RED's 22)
     };
 
     // Levels GED compiles fully watertight on the default (shared-BSP) path — held to the exact RED bound

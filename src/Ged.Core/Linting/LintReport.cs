@@ -19,6 +19,9 @@ public sealed class LintReport
 
     public IReadOnlyList<LintFinding> Findings { get; }
 
+    /// <summary>Checks that were skipped or limited, with the reason (e.g. the out-of-norm check on preview geometry).</summary>
+    public IReadOnlyList<string> Notes { get; init; } = System.Array.Empty<string>();
+
     public int ErrorCount => Findings.Count(f => f.Severity == LintSeverity.Error);
 
     public int WarningCount => Findings.Count(f => f.Severity == LintSeverity.Warning);

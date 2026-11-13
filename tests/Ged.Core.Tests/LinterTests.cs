@@ -19,6 +19,67 @@ namespace Ged.Core.Tests;
 /// </summary>
 public sealed class LinterTests
 {
+    // ─── Alpine wiring patterns that look like orphans ───────────────────────
+
+    /// <summary>
+    /// A Payload_Checkpoint is wired only by the cart keyframe that names it (alpinefaction
+    /// game_patch/multi/payload.cpp:258-298), and a KOTH capture zone is the trigger its Capture_Point_Handler links
+    /// (gametype.cpp:719-731): neither is an orphan / a do-nothing trigger. A second trigger the handler links is not the
+    /// zone (Alpine takes the first) and keeps the warning, and so does a checkpoint nothing names.
+    /// </summary>
+    [Fact]
+    public void Lint_Knows_Keyframe_Named_Checkpoints_And_Capture_Zone_Triggers()
+    {
+        Scripting.KitTestHarness.KitRun run = Scripting.KitTestHarness.Run(
+            "local zone = level.place{ kind = 'trigger', name = 'zone', pos = {0, 2, 0}, props = { shape = 'Sphere', sphere_radius = 6, activated_by = 'Players' } }\n" +
+            "local extra = level.place{ kind = 'trigger', name = 'extra', pos = {8, 2, 0}, props = { shape = 'Sphere', sphere_radius = 2, activated_by = 'Players' } }\n" +
+            "level.place{ kind = 'event', class = 'Capture_Point_Handler', name = 'hill', pos = {0, 1, 0}, links = { zone, extra } }\n" +
+            "local body = level.brush{ pos = {0, 0.5, 20}, size = {2, 1, 3}, detail = true }\n" +
+            "local cart = level.create_mover{ name = 'cart', brushes = { body }, props = { movement_type = 'One Way' } }\n" +
+            "local kf = cart:add_keyframe{ pos = {0, 0.5, 40} }\n" +
+            "local named = level.place{ kind = 'event', class = 'Payload_Checkpoint', name = 'named', pos = {0, 2, 40} }\n" +
+            "kf:set('triggered_event_uid', named.uid)\n" +
+            "local loose = level.place{ kind = 'event', class = 'Payload_Checkpoint', name = 'loose', pos = {0, 2, 60} }\n" +
+            "return zone.uid .. ',' .. extra.uid .. ',' .. named.uid .. ',' .. loose.uid");
+        int[] uids = run.Result.ReturnValue!.Split(',').Select(int.Parse).ToArray();
+        List<LintFinding> findings = LevelLinter.Lint(run.Doc.Rfl, new LintOptions()).Findings.ToList();
+
+        Assert.DoesNotContain(findings, f => f.Category == LintCategory.TriggerWithoutLinks && f.Uid == uids[0]);
+        Assert.Contains(findings, f => f.Category == LintCategory.TriggerWithoutLinks && f.Uid == uids[1]);
+        Assert.DoesNotContain(findings, f => f.Category == LintCategory.EventOrphan && f.Uid == uids[2]);
+        Assert.Contains(findings, f => f.Category == LintCategory.EventOrphan && f.Uid == uids[3]);
+    }
+
+    /// <summary>
+    /// RED's portal rule (compiler-parity-notes.md "Air portal brushes and inside-out rooms", rule 1): an air portal
+    /// brush builds portals only where it cuts through solid, so a slab inside an opening that is already carved is
+    /// a warning; one that cuts the wall itself (kit.doorway{portal = true}) is clean; a solid portal is RED's
+    /// membrane form and only an informational note.
+    /// </summary>
+    [Fact]
+    public void Lint_Portal_Brushes_Follow_Reds_Portal_Rule()
+    {
+        Scripting.KitTestHarness.KitRun run = Scripting.KitTestHarness.Run(
+            "local a = kit.room{name = 'a', pos = {0, 0, 0}, size = {16, 6, 16}}\n" +
+            "local b = kit.room{name = 'b', pos = {15, 0, 0}, size = {12, 6, 12}}\n" +
+            "local c = kit.room{name = 'c', pos = {0, 0, 17}, size = {16, 6, 16}}\n" +
+            "local cut = kit.doorway{name = 'cut', a = a, b = b, portal = true}\n" +
+            "kit.doorway{name = 'open', a = a, b = c}\n" +
+            "local slab = level.brush{pos = {0, 2, 8.5}, size = {3, 4, 0.4}, portal = true}\n" +
+            "local membrane = level.brush{pos = {0, 2, 8.5}, size = {3, 4, 0.4}} membrane:set_portal(true)\n" +
+            "return cut.portal_brush.uid .. ',' .. slab.uid .. ',' .. membrane.uid");
+        int[] uids = run.Result.ReturnValue!.Split(',').Select(int.Parse).ToArray();
+        List<LintFinding> findings = LevelLinter.Lint(run.Doc.Rfl, new LintOptions()).Findings.ToList();
+
+        Assert.DoesNotContain(findings, f => f.Uid == uids[0] && f.Category is LintCategory.PortalOpensNothing or LintCategory.SolidPortal);
+        LintFinding open = Assert.Single(findings, f => f.Category == LintCategory.PortalOpensNothing);
+        Assert.Equal(uids[1], open.Uid);
+        Assert.Equal(LintSeverity.Warning, open.Severity);
+        LintFinding solid = Assert.Single(findings, f => f.Category == LintCategory.SolidPortal);
+        Assert.Equal(uids[2], solid.Uid);
+        Assert.Equal(LintSeverity.Info, solid.Severity);
+    }
+
     // ─── One-of-each-defect fixture ──────────────────────────────────────────
 
     [Fact]
@@ -57,6 +118,37 @@ public sealed class LinterTests
         // No player_start / MP respawns in the fixture -> void-spawn error.
         Assert.Contains(report.Findings, f =>
             f.Category == LintCategory.MissingPlayerStart && f.Severity == LintSeverity.Error);
+    }
+
+    [Fact]
+    public void Lint_Findings_Carry_World_Locations()
+    {
+        RflFile level = AllDefectsLevel();
+        LintReport report = LevelLinter.Lint(level, new LintOptions { Target = SaveTarget.Alpine });
+
+        // Every leak edge is its own located finding (the fixture's lone triangle has 3 open edges).
+        List<LintFinding> leaks = report.Findings.Where(f => f.Category == LintCategory.GeometryLeak).ToList();
+        Assert.Equal(3, leaks.Count);
+        Assert.All(leaks, f => Assert.NotNull(f.Location));
+
+        // Object findings carry the object's position; level-wide findings carry none.
+        Assert.Contains(report.Findings, f => f.Category == LintCategory.TriggerWithoutLinks && f.Location is not null);
+        Assert.Contains(report.Findings, f => f.Category == LintCategory.NavPoint && f.Location is not null);
+        Assert.All(report.Findings.Where(f => f.Category is LintCategory.MissingPlayerStart or LintCategory.LimitBudget),
+            f => Assert.Null(f.Location));
+    }
+
+    [Fact]
+    public void Leak_Findings_Are_Capped_With_A_Summary()
+    {
+        RflFile level = AllDefectsLevel();
+        LintReport report = LevelLinter.Lint(level, new LintOptions { Target = SaveTarget.Alpine, MaxLeakFindings = 1 });
+
+        List<LintFinding> leaks = report.Findings.Where(f => f.Category == LintCategory.GeometryLeak).ToList();
+        Assert.Equal(2, leaks.Count);
+        Assert.NotNull(leaks[0].Location);
+        Assert.Null(leaks[1].Location);
+        Assert.Contains("3 total", leaks[1].Message);
     }
 
     [Fact]
@@ -355,5 +447,52 @@ public sealed class LinterTests
     {
         var s = new RflSection((uint)type, Array.Empty<byte>()) { Content = content, Dirty = true };
         rfl.Sections.Insert(rfl.Sections.Count - 1, s);
+    }
+
+    [Fact]
+    public void A_Movers_Copy_Is_Not_A_Duplicate_But_Two_Copies_Under_One_Uid_Are()
+    {
+        Ged.Core.Editor.EditorDocument doc = Ged.Core.Editor.LevelTemplates.CreateNew(new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local));
+        int brush = new BrushEditor(doc).CreateBrush(new BrushCreateParams { Shape = BrushShape.Box, Width = 2, Height = 3, Depth = 0.25f }, new Vec3(0, 1.5f, 0), Mat3.Identity);
+        new MoverService(doc).CreateMover(new[] { brush }, Array.Empty<int>(), "door1");
+        Assert.DoesNotContain(LevelLinter.Lint(doc.Rfl).Findings, f => f.Category == LintCategory.DuplicateUid && f.Uid == brush);
+
+        MoversSection movers = doc.Rfl.Sections.Select(s => s.Content).OfType<MoversSection>().Single();
+        movers.Movers.Add(GeometryClone.Deep(movers.Movers.Single()));
+        Assert.Contains(LevelLinter.Lint(doc.Rfl).Findings, f => f.Category == LintCategory.DuplicateUid && f.Uid == brush);
+    }
+
+    [Fact]
+    public void A_Level_With_Brushes_And_No_Compiled_Geometry_Is_An_Error_Until_It_Is_Built()
+    {
+        Ged.Core.Editor.EditorDocument doc = Ged.Core.Editor.LevelTemplates.CreateNew(new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local));
+        Assert.DoesNotContain(LevelLinter.Lint(doc.Rfl).Findings, f => f.Category == LintCategory.MissingGeometry); // no brushes yet
+
+        int room = new BrushEditor(doc).CreateBrush(new BrushCreateParams { Shape = BrushShape.Box, Width = 8, Height = 4, Depth = 8, Air = true }, new Vec3(0, 2, 0), Mat3.Identity);
+        Assert.True(room > 0);
+        LintFinding missing = Assert.Single(LevelLinter.Lint(doc.Rfl).Findings, f => f.Category == LintCategory.MissingGeometry);
+        Assert.Equal(LintSeverity.Error, missing.Severity);
+        Assert.Contains("crashes", missing.Message, StringComparison.Ordinal);
+
+        Ged.Core.Compiler.CompiledLevel built = Ged.Core.Compiler.GeometryBuildService.Build(doc.Rfl,
+            Ged.Core.Compiler.CompileOptionsFactory.CreateForDocument(doc, vfs: null, new Ged.Core.Compiler.BuildSettings(), new Ged.Core.Compiler.CompileRequest { Sealed = true }));
+        Ged.Core.Compiler.GeometryBuildService.Apply(doc.Rfl, built);
+        Assert.DoesNotContain(LevelLinter.Lint(doc.Rfl).Findings, f => f.Category == LintCategory.MissingGeometry);
+    }
+
+    [Fact]
+    public void Built_Stock_Levels_Have_No_Missing_Geometry_Finding()
+    {
+        string dir = Path.Combine(Ged.Core.Tests.Scripting.ScriptTestFixture.RepoRoot() ?? ".", "research", "example_rfls");
+        if (!Directory.Exists(dir))
+        {
+            return; // research corpus absent: skip
+        }
+
+        foreach (string level in new[] { "dm01.rfl", "dm03.rfl", "dm17.rfl", "ctf01.rfl" }.Select(f => Path.Combine(dir, f)).Where(File.Exists))
+        {
+            RflFile rfl = RflFile.Load(level);
+            Assert.DoesNotContain(LevelLinter.Lint(rfl, new LintOptions { CheckGeometryLeaks = false }).Findings, f => f.Category == LintCategory.MissingGeometry);
+        }
     }
 }

@@ -163,6 +163,12 @@ public sealed class GeometryBuildController
     public bool UseSharedBspBuild { get; set; } = true;
 
     /// <summary>
+    /// Geometry ▸ Repair holes when building: Alpine RED's build repair (<see cref="CompileOptions.AlpineRepair"/>).
+    /// Persisted via <see cref="AppSettings.RepairBuildHoles"/>; on by default.
+    /// </summary>
+    public bool RepairBuildHoles { get; set; } = true;
+
+    /// <summary>
     /// Preview Lighting: while true, light-affecting document changes (property edits,
     /// gizmo/key moves, add/delete) debounce into an automatic incremental relight.
     /// Mirrors the MainWindow "Preview Lighting" menu toggle.
@@ -578,61 +584,115 @@ public sealed class GeometryBuildController
         options.WithMethod(MethodForBake(preview));
 
     /// <summary>
-    /// Item 4: builds the light-cookie resolver for a bake — reads the light-UID→cookie map from
-    /// the object-metadata chunk and decodes each cookie image through the VFS. Missing / undecodable
-    /// cookies are recorded in <paramref name="warnings"/> and skipped (bake without). Returns null
-    /// when the level uses no cookies (the bake then does no cookie work at all).
+    /// The user's build choices as the Core <see cref="BuildSettings"/> the shared
+    /// <see cref="CompileOptionsFactory"/> consumes — the Geometry-menu build method and the
+    /// effective lightmap method. Script builds run inside the editor read the same settings, so a
+    /// script build is identical to a toolbar build.
     /// </summary>
-    private Func<int, Ged.Core.Lighting.LightCookie?>? CookieResolverFor(
-        EditorDocument doc, Ged.Core.Assets.AssetVfs? vfs, List<string> warnings)
+    public BuildSettings CurrentBuildSettings => new()
     {
-        var meta = new Ged.Core.Editing.GedObjectMetadataService(doc);
-        IReadOnlyDictionary<int, string> cookies = meta.AllCookies();
-        if (cookies.Count == 0)
-        {
-            return null;
-        }
+        UseSharedBsp = UseSharedBspBuild,
+        RepairBuildHoles = RepairBuildHoles,
+        LightingMethod = Method,
+    };
 
-        return Ged.Core.Lighting.LightCookies.BuildResolver(
-            cookies,
-            file => LoadCookieImage(vfs, file),
-            file => warnings.Add($"Light cookie '{file}' could not be loaded — baked without it."));
-    }
-
-    /// <summary>Item 6: resolves each light's cookie sharpness (metadata chunk) for the bake; null when no cookies.</summary>
-    private static Func<int, float>? SharpnessResolverFor(EditorDocument doc)
+    /// <summary>
+    /// The controller's texture-traits cache (created on first use from the mounted VFS), shared with
+    /// in-editor script builds so they do not re-decode every texture. Null when nothing is mounted.
+    /// </summary>
+    internal Ged.Core.Assets.TextureTraitsCache? TextureTraits
     {
-        var meta = new Ged.Core.Editing.GedObjectMetadataService(doc);
-        IReadOnlyDictionary<int, float> map = meta.AllCookieSharpness();
-        if (map.Count == 0)
+        get
         {
-            return null;
-        }
-
-        return uid => map.TryGetValue(uid, out float s) ? s : 1f;
-    }
-
-    private static (int Width, int Height, byte[] Rgba)? LoadCookieImage(Ged.Core.Assets.AssetVfs? vfs, string file)
-    {
-        if (vfs is null)
-        {
-            return null;
-        }
-
-        try
-        {
-            Ged.Core.IO.Tex.DecodedTexture? decoded = vfs.LoadTexture(file);
-            if (decoded is null)
+            if (_traits is null && _session.Vfs is { } vfs)
             {
-                return null;
+                _traits = new Ged.Core.Assets.TextureTraitsCache(vfs);
             }
 
-            Ged.Core.IO.Tex.TextureImage img = decoded.Primary;
-            return (img.Width, img.Height, img.Pixels);
+            return _traits;
         }
-        catch
+    }
+
+    /// <summary>True while an interactive (user) build or bake is in flight.</summary>
+    public bool IsUserBuildRunning => _building && !_currentBuildIsBackground;
+
+    /// <summary>True while any build or bake (user or seamless background) is in flight.</summary>
+    public bool IsBuildRunning => _building;
+
+    /// <summary>
+    /// Suppresses the "document changed" bookkeeping while an external (script) build applies its
+    /// result to the document — the same guard the controller's own builds use, so a build's
+    /// <c>MarkDirty</c> is not mistaken for a light edit. Dispose to restore.
+    /// </summary>
+    internal IDisposable ExternalApplyScope()
+    {
+        bool was = _applying;
+        _applying = true;
+        return new Restore(() => _applying = was);
+    }
+
+    /// <summary>
+    /// Adopts a SEALED build that something other than this controller compiled and applied to the
+    /// document (a script's <c>ops.build</c> / <c>ops.light</c>), so the editor reflects it exactly as
+    /// it would its own build: any seamless background build / pending live preview is superseded,
+    /// the dirty flags clear (lighting only when <paramref name="bakedLighting"/>), the brush-overlay
+    /// stash is rebuilt from the result, and the viewport + Build Output refresh. <paramref name="preview"/>
+    /// marks an UNSEALED preview build (a command-line preview build), which Save and Check for Holes
+    /// re-seal exactly as they do the editor's own live preview.
+    /// </summary>
+    public void AdoptExternalBuild(CompiledLevel result, bool bakedLighting, bool preview = false)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        // A seamless background build in flight would otherwise apply its stale (unsealed) result over
+        // this one when it completes; a pending live-preview tick would do the same.
+        if (_building && _currentBuildIsBackground)
         {
-            return null;
+            _cts?.Cancel();
+        }
+
+        _previewTimer.Stop();
+        GeometryDirty = false;
+        GeometryIsPreview = preview;
+        HoleLocations = Array.Empty<Vec3>();
+        if (bakedLighting)
+        {
+            LightingDirty = false;
+            _dirtyLightRegion = null;
+            _relightTimer.Stop();
+        }
+
+        _session.BrushFaceSurvival = result.SurvivingBrushFaces;
+        _session.BrushFragments = Ged.Rendering.Scene.BrushFragmentIndex.Build(
+            result.Geometry, result.BrushFaceIdStart, result.SurvivingBrushFaces);
+        _session.StaleFragmentBrushUids.Clear();
+
+        StateChanged?.Invoke();
+        _refreshScene();
+        Report(result.Report);
+        _showReport(bakedLighting ? "Lighting" : "Build", result.Report);
+    }
+
+    /// <summary>
+    /// Records leak locations found by an external (script) Check-for-Holes so the status bar and
+    /// hole markers reflect them, as the editor's own hole check does.
+    /// </summary>
+    public void AdoptExternalHoleCheck(IReadOnlyList<Vec3> holes)
+    {
+        HoleLocations = holes ?? Array.Empty<Vec3>();
+        StateChanged?.Invoke();
+    }
+
+    private sealed class Restore : IDisposable
+    {
+        private Action? _undo;
+
+        public Restore(Action undo) => _undo = undo;
+
+        public void Dispose()
+        {
+            _undo?.Invoke();
+            _undo = null;
         }
     }
 
@@ -714,6 +774,28 @@ public sealed class GeometryBuildController
         _cts = new CancellationTokenSource();
         CancellationToken token = _cts.Token;
 
+        // The build bakes (and renumbers the faces of) the movers-section copies, and the viewport draws
+        // them: refresh any whose member brush was edited since the copy was taken, here on the UI thread
+        // before the compile reads them. Folded into the latest undo step, so the live-CSG preview never
+        // adds an undo entry of its own. Untouched movers are never visited. Stash-only builds leave the
+        // document alone.
+        if (applyToDocument)
+        {
+            _applying = true;
+            try
+            {
+                doc.SyncStaleMoverCopies();
+            }
+            catch (Exception ex)
+            {
+                CrashHandler.LogNonFatal("mover-copy-sync", ex);
+            }
+            finally
+            {
+                _applying = false;
+            }
+        }
+
         // Item 3: show a progress card for user-initiated compiles/bakes. The debounced auto-preview
         // (interactive == false) is meant to be seamless, so it stays out of the overlay.
         using Ged.App.Services.OperationProgress? progress = interactive
@@ -721,37 +803,28 @@ public sealed class GeometryBuildController
             : null;
 
         // Texture-derived face flags (invisible / alpha / holes) need the VFS.
-        if (_traits is null && _session.Vfs is { } vfs)
-        {
-            _traits = new Ged.Core.Assets.TextureTraitsCache(vfs);
-        }
+        Ged.Core.Assets.TextureTraitsCache? traits = TextureTraits;
 
-        Ged.Core.Assets.TextureTraitsCache? traits = _traits;
-        var options = new CompileOptions
-        {
-            Alpine = doc.Rfl.Context.IsAlpine,
-            // Geometry menu "Build method": RED-authentic shared BSP vs GED's Incremental fold.
-            SharedBsp = UseSharedBspBuild,
-            BuildSurfaces = interactive,   // preview skips the surface/atlas stage for speed
-            FixTJoints = interactive,
-            BakeLighting = bakeLighting,
-            // Item 6: High-Resolution Lightmaps raises the surface texel density so cookies resolve.
-            // It only affects the surface stage (interactive builds); the cheap preview skips surfaces.
-            HighResLightmaps = Method?.HighResLightmaps ?? false,
-            Cancellation = token,
-            TextureTraits = traits is null ? null : traits.Get,
-            Progress = p => Dispatcher.UIThread.Post(() =>
+        // The shared Core factory assembles the options (Alpine room-UID tables, build method,
+        // lightmap method, texture traits) exactly as script / headless builds do. A preview bake
+        // keeps RED Classic unless the last full bake was fast (MethodForBake's gate).
+        CompileOptions options = CompileOptionsFactory.Create(
+            doc.Rfl,
+            CurrentBuildSettings,
+            new CompileRequest
             {
-                _status($"{p.Stage}… {p.Current}/{p.Total}");
-                progress?.Report(p.Stage, p.Current, p.Total);
-            }),
-        };
-        options.Lighting.CastShadows = shadows;
-        options.Lighting.WarnStockLightLimit = !doc.Rfl.Context.IsAlpine;
-        if (bakeLighting)
-        {
-            ApplyMethod(options.Lighting, preview);
-        }
+                Sealed = interactive, // preview skips the surface/atlas stage + t-joint seal for speed
+                BakeLighting = bakeLighting,
+                CastShadows = shadows,
+                ApplyLightingMethod = MethodForBake(preview) is not null,
+                Cancellation = token,
+                Progress = p => Dispatcher.UIThread.Post(() =>
+                {
+                    _status($"{p.Stage}… {p.Current}/{p.Total}");
+                    progress?.Report(p.Stage, p.Current, p.Total);
+                }),
+            },
+            traits is null ? null : traits.Get);
 
         _status(bakeLighting ? "Building geometry + lighting…" : interactive ? "Building geometry…" : "Preview…");
         var cookieWarnings = new List<string>();
@@ -764,8 +837,7 @@ public sealed class GeometryBuildController
                 // bake; missing cookies are reported and baked without.
                 if (bakeLighting)
                 {
-                    options.Lighting.CookieResolver = CookieResolverFor(doc, _session.Vfs, cookieWarnings);
-                    options.Lighting.CookieSharpnessResolver = SharpnessResolverFor(doc);
+                    CompileOptionsFactory.ResolveLightCookies(options.Lighting, doc, _session.Vfs, cookieWarnings);
                 }
 
                 return GeometryBuildService.Build(doc.Rfl, options);
@@ -885,9 +957,10 @@ public sealed class GeometryBuildController
         {
             BakeStats stats = await Task.Run(() =>
             {
-                opts.CookieResolver = CookieResolverFor(doc, _session.Vfs, cookieWarnings); // item 4
-                opts.CookieSharpnessResolver = SharpnessResolverFor(doc); // item 6
-                return LevelLighting.BakeInto(g, lm.Lightmaps, lights, ambient, opts, region);
+                CompileOptionsFactory.ResolveLightCookies(opts, doc, _session.Vfs, cookieWarnings); // items 4 + 6
+                // Also records the relight, so the next save drops a stale Alpine lightmap chunk.
+                return GeometryBuildService.Relight(doc.Rfl, lights, ambient, opts, region)
+                    ?? throw new InvalidOperationException("The level has no compiled geometry or lightmaps to relight.");
             });
 
             sw.Stop();
@@ -942,6 +1015,9 @@ public sealed class GeometryBuildController
         {
             Array.Fill(page.Pixels, (byte)128);
         }
+
+        // The stock pages no longer hold the bake an Alpine lightmap chunk was made with: the next save drops it.
+        doc.Rfl.NoteGlacierLightingChange(GlacierLightingChange.Lighting);
 
         _applying = true;
         // section already marked dirty by FindLightmaps

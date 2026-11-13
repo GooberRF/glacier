@@ -187,11 +187,18 @@ public sealed class UndoStackTests
     }
 
     [Fact]
-    public void Nested_Transaction_Throws()
+    public void Nested_Transaction_Joins_The_Outer_One()
     {
+        // A transaction begun inside another is a joined child (see NestedTransactionTests for the
+        // full commit/rollback semantics), not an error.
         var stack = new UndoStack();
-        stack.BeginTransaction("outer");
-        Assert.Throws<System.InvalidOperationException>(() => stack.BeginTransaction("inner"));
+        UndoStack.Transaction outer = stack.BeginTransaction("outer");
+        UndoStack.Transaction inner = stack.BeginTransaction("inner");
+        Assert.True(inner.IsNested);
+        inner.Commit();
+        Assert.True(stack.InTransaction);
+        outer.Commit();
+        Assert.False(stack.InTransaction);
     }
 
     // ---- Q4: Replay (StepToward) reaches the same state as the Instant (MoveToNode) jump ----

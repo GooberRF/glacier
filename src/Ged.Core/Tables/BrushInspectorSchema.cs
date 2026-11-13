@@ -49,10 +49,10 @@ public static class BrushInspectorCatalog
         {
             Virtual = true, Note = "[ALPINE] Breakable no-debris flag (material byte bit 7).",
         },
-        new InspectorField("UID", "Uid", InspectorEditor.Int) { Virtual = true, Note = "Read-only." },
+        new InspectorField("UID", "Uid", InspectorEditor.Int) { Virtual = true, ReadOnly = true, Note = "Read-only." },
         new InspectorField("Time Index", "Uid", InspectorEditor.Int)
         {
-            Virtual = true, Note = "Read-only CSG time order (Start/End of Time reorders).",
+            Virtual = true, ReadOnly = true, Note = "Read-only CSG time order (Start/End of Time reorders).",
         },
     };
 

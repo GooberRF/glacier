@@ -56,6 +56,29 @@ public sealed class GeometryCompiler
         int faceIdCursor = 0;
         int uidHigh = 0;
 
+        var solver = new CsgSolver
+        {
+            UseWorldBsp = _options.UseWorldBsp,
+            UseLeafExtraction = _options.UseLeafExtraction,
+            SourceFaceEmission = _options.SourceFaceEmission,
+            IncrementalAccumulator = _options.IncrementalAccumulator,
+            BRepBoundary = _options.BRepBoundary,
+            PartitionClip = _options.PartitionClip,
+            GlobalPartition = _options.GlobalPartition,
+            SharedBsp = _options.SharedBsp,
+            BoundedVolumeClip = _options.BoundedVolumeClip,
+            FusedPartition = _options.FusedPartition,
+            EdgeLerpSplit = _options.EdgeLerpSplit,
+            EdgeMergeTolerance = _options.EdgeMergeTolerance,
+            RegionWiseCoincidence = _options.RegionWiseCoincidence,
+            CoplanarSeamTolerance = _options.AlpineRepair && _options.CoplanarSeamTolerance,
+        };
+
+        // Air portal brushes on a fold that applies RED's portal chop (boolean mode 4): held back from the
+        // time-ordered brush fold and applied after it, as RED runs its portal list after its brush list
+        // (RED.exe GeoBuild_Driver 0x004399b0: a brush joins the portal list OR the brush list, 0x00439b9c).
+        var chopBrushes = new List<(Brush Brush, List<CsgFace> Faces)>();
+
         var traitCache = new Dictionary<string, TextureTraits>();
 
         foreach (Brush b in _brushes)
@@ -91,7 +114,14 @@ public sealed class GeometryCompiler
                         carve.Add(clone);
                     }
 
-                    solidBrushes.Add((b, true, carve));
+                    if (_options.PortalChop && solver.SupportsPortalChop)
+                    {
+                        chopBrushes.Add((b, carve));
+                    }
+                    else
+                    {
+                        solidBrushes.Add((b, true, carve));
+                    }
                 }
             }
             else if ((flags & (BrushFlags.Detail | BrushFlags.Geoable)) != 0)
@@ -121,28 +151,19 @@ public sealed class GeometryCompiler
         // (subtract) brushes; the survival solver returns the open/solid boundary faces,
         // already oriented so normals point into open space (RF's convention).
         int step = 0;
-        int total = solidBrushes.Count + portalBrushes.Count;
-        var solver = new CsgSolver
-        {
-            UseWorldBsp = _options.UseWorldBsp,
-            UseLeafExtraction = _options.UseLeafExtraction,
-            SourceFaceEmission = _options.SourceFaceEmission,
-            IncrementalAccumulator = _options.IncrementalAccumulator,
-            BRepBoundary = _options.BRepBoundary,
-            PartitionClip = _options.PartitionClip,
-            GlobalPartition = _options.GlobalPartition,
-            SharedBsp = _options.SharedBsp,
-            BoundedVolumeClip = _options.BoundedVolumeClip,
-            FusedPartition = _options.FusedPartition,
-            EdgeLerpSplit = _options.EdgeLerpSplit,
-            EdgeMergeTolerance = _options.EdgeMergeTolerance,
-            RegionWiseCoincidence = _options.RegionWiseCoincidence,
-        };
+        int total = solidBrushes.Count + chopBrushes.Count + portalBrushes.Count;
         foreach ((Brush _, bool isAir, List<CsgFace> faces) in solidBrushes)
         {
             _options.Cancellation.ThrowIfCancellationRequested();
             _options.Progress?.Invoke(new CompileProgress("Adding brush", ++step, total));
             solver.AddBrush(isAir, faces);
+        }
+
+        foreach ((Brush brush, List<CsgFace> faces) in chopBrushes)
+        {
+            _options.Cancellation.ThrowIfCancellationRequested();
+            _options.Progress?.Invoke(new CompileProgress("Adding brush", ++step, total));
+            solver.AddPortalChop(faces, brush.Uid);
         }
 
         // Memory/perf instrumentation for the CSG solve (world-BSP budget discipline — the 11.6 GB lesson).
@@ -191,6 +212,11 @@ public sealed class GeometryCompiler
         // consumed by CSG — and the brush overlays can hide them.
         foreach (CsgFace f in open)
         {
+            if (f.IsPortal)
+            {
+                continue; // a chop portal face is no brush face's surviving fragment
+            }
+
             if (result.SurvivingBrushFaces.TryGetValue(f.SourceBrushUid, out bool[]? bits)
                 && csgFaceStart.TryGetValue(f.SourceBrushUid, out int start))
             {
@@ -207,7 +233,18 @@ public sealed class GeometryCompiler
         // cross a membrane (mode-4 semantics: no face spans a doorway sheet, so the
         // room flood can separate the two sides exactly at the portal).
         var portalPass = new PortalBuilder(_report);
-        portalPass.InsertPortalFaces(open, portalBrushes, solver, ref step, total, _options);
+        // An air portal brush that opened no wall — it lies in space that was already open — leaves no portal
+        // face in RED's chop (RED builds no portal from it). Glacier still gives that brush its centre-plane
+        // membrane below, where that plane crosses space open before the portal chops, so a portal slab set in
+        // an existing opening (what kit.doorway{portal=true} makes) keeps dividing the two sides.
+        HashSet<int> chopped = portalPass.AdoptChopPortalFaces(open);
+        var chopApplied = new HashSet<int>();
+        foreach ((Brush brush, List<CsgFace> _) in chopBrushes)
+        {
+            chopApplied.Add(brush.Uid);
+        }
+
+        portalPass.InsertPortalFaces(open, portalBrushes, chopApplied, chopped, solver, ref step, total, _options);
         portalPass.ChopWorldFaces(open);
 
         // Combine world + detail faces for output. Detail faces already face into open space.
@@ -227,6 +264,11 @@ public sealed class GeometryCompiler
                 welder.Add(v.Position);
             }
         }
+
+        // Alpine RED's build repair (ALPINE-COMPAT-SPEC §3.1): passes A/C/D on every build, the hole repair (E)
+        // on sealed builds only — it follows the t-joint pass a preview skips.
+        BuildRepair? repair = _options.AlpineRepair ? new BuildRepair(_report.Repair) { Skip = _options.RepairSkip } : null;
+        bool sealAfterRepair = repair is not null && _options.FixTJoints && _options.RepairSealOrder == RepairSealOrder.RepairThenSeal;
 
         if (_options.FixTJoints)
         {
@@ -248,7 +290,7 @@ public sealed class GeometryCompiler
             // dmabrupt 10→88 with the sealer off) — the sealer is essential on every CSG path.
             float sealTol = _options.SealTolerance
                 ?? (_options.UseLeafExtraction || _options.FusedPartition || _options.IncrementalAccumulator ? 3e-3f : 1e-3f);
-            if (sealTol > 0f)
+            if (sealTol > 0f && !sealAfterRepair)
             {
                 SeamSealer.Seal(allFaces, sealTol);
             }
@@ -267,18 +309,25 @@ public sealed class GeometryCompiler
             facePoolIndices.Add(idx);
         }
 
+        // Repair pass A: unify coplanar portal pieces' planes before the room builder.
+        repair?.BeforeRooms(allFaces, facePoolIndices, welder.Vertices);
+
         // Phase 4: rooms — edge-adjacency flood fill (connected open cells), split
-        // at portal membranes by the plane-side vote.
+        // at portal membranes by the plane-side vote. (Repair pass C runs inside, after the flood.)
         _options.Progress?.Invoke(new CompileProgress("Building rooms", 0, 1));
         var roomBuilder = new RoomBuilder(_report);
         RoomBuildResult rooms = roomBuilder.Build(
             allFaces, facePoolIndices, welder.Vertices, open.Count, solidBrushes, detailBrushes,
-            portalPass.Membranes, _effects, _options.Alpine, _options.PortalFaceVote);
+            portalPass.Membranes, _effects, _options.Alpine, _options.PortalFaceVote, _options.ForceAlwaysPortalVote, repair,
+            _options.InsideOutRooms);
 
         // Phase 5: portal records between rooms; membranes that divided nothing
         // stay untagged and are dropped so no stray portal faces reach the file.
         portalPass.BuildRecords(rooms);
         CompactDroppedPortalFaces(allFaces, facePoolIndices, rooms);
+
+        // Repair pass D: count the portal faces portal linking removed; keep every doorway for the wall fill.
+        repair?.CountUnplacedPortals(allFaces);
 
         // Phase 6: liquid surfaces — a clipped water surface per liquid room (mode-6 equivalent).
         LiquidSurfaceBuilder.Insert(allFaces, facePoolIndices, welder, rooms, solver);
@@ -299,6 +348,18 @@ public sealed class GeometryCompiler
         if (_options.CleanOutputFaces)
         {
             _report.OutputFacesCleaned = OutputFaceCleanup.Clean(allFaces, facePoolIndices, welder.Vertices);
+        }
+
+        // Repair pass E: Alpine RED's hole repair, on the finished sealed solid right before the hole count
+        // (Alpine runs it from the build driver's CheckForHoles call, after the stock t-joint pass).
+        if (repair is not null && _options.FixTJoints)
+        {
+            _options.Progress?.Invoke(new CompileProgress("Repairing holes", 0, 1));
+            repair.RepairHoles(allFaces, facePoolIndices, welder.Vertices, rooms, portalPass.Portals);
+            if (sealAfterRepair)
+            {
+                ResealAfterRepair(allFaces, facePoolIndices, welder);
+            }
         }
 
         // Phase 7: surfaces + lightmap atlas.
@@ -380,6 +441,32 @@ public sealed class GeometryCompiler
 
             return perimeter > 1e-6f && (2f * area) / perimeter < MinFragmentWidth;
         });
+    }
+
+    /// <summary>
+    /// Spec-Q1 measurement order (<see cref="RepairSealOrder.RepairThenSeal"/>): Glacier's seam sealer on the repaired
+    /// faces, then every face re-pooled (the sealer moves and inserts corners by position).
+    /// </summary>
+    private void ResealAfterRepair(List<CsgFace> faces, List<int[]> facePoolIndices, VertexWelder welder)
+    {
+        float sealTol = _options.SealTolerance
+            ?? (_options.UseLeafExtraction || _options.FusedPartition || _options.IncrementalAccumulator ? 3e-3f : 1e-3f);
+        if (sealTol <= 0f)
+        {
+            return;
+        }
+
+        SeamSealer.Seal(faces, sealTol);
+        for (int i = 0; i < faces.Count; i++)
+        {
+            var idx = new int[faces[i].Vertices.Count];
+            for (int k = 0; k < idx.Length; k++)
+            {
+                idx[k] = welder.Add(faces[i].Vertices[k].Position);
+            }
+
+            facePoolIndices[i] = idx;
+        }
     }
 
     /// <summary>

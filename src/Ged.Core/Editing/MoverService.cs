@@ -72,8 +72,11 @@ public sealed class MoverService
         ArgumentNullException.ThrowIfNull(objectUids);
 
         BrushesSection? brushes = BrushesContent();
-        (MoversSection movers, RflSection moversHost) = EnsureMovers();
-        (GroupsSection groups, RflSection groupsHost) = EnsureMovingGroups();
+
+        // A missing movers / moving_groups section is prepared DETACHED and inserted by the command
+        // (removed again on undo), so undoing the first mover on a level leaves the file byte-identical.
+        (MoversSection movers, RflSection moversHost, bool moversCreated) = PrepareMovers();
+        (GroupsSection groups, RflSection groupsHost, bool groupsCreated) = PrepareMovingGroups();
 
         // The member brushes: they stay in the brushes section; independent copies go into movers.
         var movingBrushes = brushes?.Brushes.Where(b => brushUids.Contains(b.Uid)).ToList() ?? new List<Brush>();
@@ -135,6 +138,9 @@ public sealed class MoverService
         group.MovingData.StartingKeyframe = 0;
         group.MovingData.MovementType = 1; // one_way (RED.exe FUN_00416000 @0x0041607+: *(data+0x20)=1)
 
+        // The copies are taken now: snapshot the members so a later edit marks this mover stale.
+        CopyTaken taken = SnapshotMembers(movingBrushes);
+
         _doc.Undo.Execute(new RelayCommand($"Create mover \"{name}\"",
             () =>
             {
@@ -149,11 +155,13 @@ public sealed class MoverService
                 }
 
                 groups.Groups.Add(group);
+                taken.Apply(_doc.MoverCopies);
                 MarkDirty(moversHost, groupsHost);
                 _doc.RefreshObjects();
             },
             () =>
             {
+                taken.Revert(_doc.MoverCopies);
                 groups.Groups.Remove(group);
                 foreach (Brush copy in moverCopies)
                 {
@@ -161,10 +169,359 @@ public sealed class MoverService
                 }
 
                 MarkDirty(moversHost, groupsHost);
+                if (moversCreated)
+                {
+                    _doc.Rfl.Sections.Remove(moversHost);
+                }
+
+                if (groupsCreated)
+                {
+                    _doc.Rfl.Sections.Remove(groupsHost);
+                }
+
                 _doc.RefreshObjects();
             }));
 
         return group;
+    }
+
+    /// <summary>
+    /// Refreshes a mover's <c>movers</c>-section copies from its member brushes in the <c>brushes</c>
+    /// section, and recomputes every member transform relative to the current start keyframe — the
+    /// same derivation <see cref="CreateMover"/> uses (member position − start-keyframe position; a
+    /// brush keeps its own rotation, an object member keeps its stored rotation). A copy whose content
+    /// still matches its member (transform, flags, life, vertices, face corners, UVs, textures, face
+    /// flags) is left untouched, so its baked lighting and build-assigned face ids survive and an
+    /// unedited mover syncs to a no-op. A stale copy gets the member's Position / Rotation / Geometry
+    /// (a deep clone, planes recomputed) / Flags / Life; a member with no copy gets one. The members
+    /// are re-snapshotted in <see cref="EditorDocument.MoverCopies"/> (the copy is current again). One
+    /// undo step that restores the previous copies, transforms and snapshots. Returns true when
+    /// anything changed.
+    /// </summary>
+    public bool SyncMemberCopies(Group group)
+    {
+        ArgumentNullException.ThrowIfNull(group);
+        if (group.MovingData is not { } data)
+        {
+            return false;
+        }
+
+        BrushesSection? brushes = BrushesContent();
+        var sources = new Dictionary<int, Brush>();
+        foreach (Brush b in brushes?.Brushes ?? Enumerable.Empty<Brush>())
+        {
+            if (group.Brushes.Contains(b.Uid))
+            {
+                sources.TryAdd(b.Uid, b);
+            }
+        }
+
+        (MoversSection movers, RflSection moversHost, bool moversCreated) = PrepareMovers();
+        var refreshes = new List<(Brush Copy, Brush Fresh, (Vec3 Position, Mat3 Rotation, Geometry Geometry, uint Flags, int Life) Old)>();
+        var added = new List<Brush>();
+        foreach (int uid in group.Brushes)
+        {
+            if (!sources.TryGetValue(uid, out Brush? source))
+            {
+                continue;
+            }
+
+            Brush fresh = GeometryClone.Deep(source);
+            GeometryUtil.RecomputeAllPlanes(fresh.Geometry);
+            Brush? copy = movers.Movers.FirstOrDefault(m => m.Uid == uid);
+            if (copy is null)
+            {
+                added.Add(fresh);
+            }
+            else if (!SameContent(copy, source))
+            {
+                refreshes.Add((copy, fresh, (copy.Position, copy.Rotation, copy.Geometry, copy.Flags, copy.Life)));
+            }
+        }
+
+        // Member transforms, relative to the start keyframe (see CreateMover).
+        Vec3 start = data.Keyframes.Count > 0
+            ? data.Keyframes[Math.Clamp(data.StartingKeyframe, 0, data.Keyframes.Count - 1)].Position
+            : MemberBoundsCenter(group);
+        List<MovingGroupMemberTransform> oldTransforms = data.MemberTransforms;
+        var newTransforms = new List<MovingGroupMemberTransform>();
+        var seen = new HashSet<int>();
+        foreach (MovingGroupMemberTransform t in oldTransforms)
+        {
+            seen.Add(t.Uid);
+            newTransforms.Add(Relative(t.Uid, t.Rotation, sources, start) ?? new MovingGroupMemberTransform { Uid = t.Uid, Position = t.Position, Rotation = t.Rotation });
+        }
+
+        foreach (int uid in group.Brushes.Concat(group.Objects))
+        {
+            if (seen.Add(uid) && Relative(uid, Mat3.Identity, sources, start) is { } t)
+            {
+                newTransforms.Add(t);
+            }
+        }
+
+        bool transformsChanged = newTransforms.Count != oldTransforms.Count ||
+            newTransforms.Where((t, i) => t.Uid != oldTransforms[i].Uid || !t.Position.Equals(oldTransforms[i].Position) || !t.Rotation.Equals(oldTransforms[i].Rotation)).Any();
+        if (refreshes.Count == 0 && added.Count == 0 && !transformsChanged)
+        {
+            return false;
+        }
+
+        RflSection movingHost = MovingGroupsHost();
+        CopyTaken taken = SnapshotMembers(sources.Values);
+        _doc.Undo.Execute(new RelayCommand($"Sync mover \"{group.Name}\"",
+            () =>
+            {
+                if (moversCreated && !_doc.Rfl.Sections.Contains(moversHost))
+                {
+                    _doc.Rfl.InsertSection(moversHost);
+                }
+
+                taken.Apply(_doc.MoverCopies);
+
+                foreach ((Brush copy, Brush fresh, _) in refreshes)
+                {
+                    copy.Position = fresh.Position;
+                    copy.Rotation = fresh.Rotation;
+                    copy.Geometry = fresh.Geometry;
+                    copy.Flags = fresh.Flags;
+                    copy.Life = fresh.Life;
+                }
+
+                movers.Movers.AddRange(added);
+                data.MemberTransforms = newTransforms;
+                MarkDirty(moversHost, movingHost);
+                _doc.RefreshObjects();
+            },
+            () =>
+            {
+                taken.Revert(_doc.MoverCopies);
+                foreach ((Brush copy, _, var old) in refreshes)
+                {
+                    copy.Position = old.Position;
+                    copy.Rotation = old.Rotation;
+                    copy.Geometry = old.Geometry;
+                    copy.Flags = old.Flags;
+                    copy.Life = old.Life;
+                }
+
+                foreach (Brush b in added)
+                {
+                    movers.Movers.Remove(b);
+                }
+
+                data.MemberTransforms = oldTransforms;
+                MarkDirty(moversHost, movingHost);
+                if (moversCreated)
+                {
+                    _doc.Rfl.Sections.Remove(moversHost);
+                }
+
+                _doc.RefreshObjects();
+            }));
+        return true;
+    }
+
+    /// <summary>A member's transform relative to <paramref name="start"/>, or null when the member no longer exists.</summary>
+    private MovingGroupMemberTransform? Relative(int uid, Mat3 objectRotation, Dictionary<int, Brush> brushes, Vec3 start)
+    {
+        if (brushes.TryGetValue(uid, out Brush? b))
+        {
+            return new MovingGroupMemberTransform { Uid = uid, Position = b.Position.Sub(start), Rotation = b.Rotation };
+        }
+
+        return _doc.FindByUid(uid) is { } o && o.Kind != LevelObjectKind.Mover
+            ? new MovingGroupMemberTransform { Uid = uid, Position = o.Position.Sub(start), Rotation = objectRotation }
+            : null;
+    }
+
+    /// <summary>
+    /// True when a movers-section copy still matches its member brush in everything an author edits:
+    /// transform, flags (the editor-only geoable mirror excluded), life, vertex positions, face corner
+    /// indices and UVs, texture names, face flags and smoothing groups. Build-owned state (planes,
+    /// face ids, lightmap surfaces/coordinates, room indices) is ignored.
+    /// </summary>
+    internal static bool SameContent(Brush copy, Brush member)
+    {
+        const uint EditorOnly = (uint)BrushFlags.Geoable;
+        if (!copy.Position.Equals(member.Position) || !copy.Rotation.Equals(member.Rotation) ||
+            (copy.Flags & ~EditorOnly) != (member.Flags & ~EditorOnly) || copy.Life != member.Life)
+        {
+            return false;
+        }
+
+        Geometry a = copy.Geometry;
+        Geometry b = member.Geometry;
+        if (a.Vertices.Count != b.Vertices.Count || a.Faces.Count != b.Faces.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < a.Vertices.Count; i++)
+        {
+            if (!a.Vertices[i].Equals(b.Vertices[i]))
+            {
+                return false;
+            }
+        }
+
+        for (int f = 0; f < a.Faces.Count; f++)
+        {
+            Face fa = a.Faces[f];
+            Face fb = b.Faces[f];
+            if (fa.Flags != fb.Flags || fa.SmoothingGroups != fb.SmoothingGroups || fa.Vertices.Count != fb.Vertices.Count ||
+                !string.Equals(TextureName(a, fa), TextureName(b, fb), StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            for (int v = 0; v < fa.Vertices.Count; v++)
+            {
+                if (fa.Vertices[v].Index != fb.Vertices[v].Index || !fa.Vertices[v].TextureCoords.Equals(fb.Vertices[v].TextureCoords))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private static string? TextureName(Geometry g, Face f) =>
+        f.Texture >= 0 && f.Texture < g.Textures.Count ? g.Textures[f.Texture] : null;
+
+    /// <summary>
+    /// Every mover with a member brush edited after its copy was taken (see
+    /// <see cref="MoverCopyTracker"/>), with those member UIDs ascending, in file order.
+    /// </summary>
+    public IReadOnlyList<(Group Mover, IReadOnlyList<int> TouchedBrushUids)> StaleMovers()
+    {
+        var result = new List<(Group, IReadOnlyList<int>)>();
+        IReadOnlyList<Group> movers = Movers;
+        if (movers.Count == 0 || _doc.MoverCopies.TrackedCount == 0)
+        {
+            return result;
+        }
+
+        var brushes = new Dictionary<int, Brush>();
+        foreach (Brush b in BrushesContent()?.Brushes ?? Enumerable.Empty<Brush>())
+        {
+            brushes.TryAdd(b.Uid, b);
+        }
+
+        foreach (Group g in movers)
+        {
+            if (g.MovingData is null)
+            {
+                continue;
+            }
+
+            var touched = g.Brushes.Distinct()
+                .Where(uid => brushes.TryGetValue(uid, out Brush? b) && _doc.MoverCopies.IsTouched(b))
+                .OrderBy(u => u).ToList();
+            if (touched.Count > 0)
+            {
+                result.Add((g, touched));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Refreshes (<see cref="SyncMemberCopies"/>) every mover in <see cref="StaleMovers"/> — optionally
+    /// only those <paramref name="include"/> accepts — and returns the ones whose copies or member
+    /// transforms actually changed. All refreshes are FOLDED into the latest undo step
+    /// (<see cref="UndoStack.BeginFoldedTransaction"/>; inside an open transaction, such as a script
+    /// run, they join it): undoing that step reverses the edit and the refresh together, so the
+    /// member and its copy always undo as a pair and the author never has to undo an extra "sync"
+    /// step a save or build added. Movers whose members were not touched are never visited.
+    /// </summary>
+    public IReadOnlyList<(Group Mover, IReadOnlyList<int> TouchedBrushUids)> SyncStaleCopies(Func<Group, bool>? include = null)
+    {
+        var stale = StaleMovers().Where(s => include is null || include(s.Mover)).ToList();
+        var synced = new List<(Group, IReadOnlyList<int>)>();
+        if (stale.Count == 0)
+        {
+            return synced;
+        }
+
+        UndoStack.Transaction tx = _doc.Undo.BeginFoldedTransaction("Sync mover copies");
+        try
+        {
+            foreach ((Group g, IReadOnlyList<int> uids) in stale)
+            {
+                if (SyncMemberCopies(g))
+                {
+                    synced.Add((g, uids));
+                }
+            }
+        }
+        finally
+        {
+            tx.Commit();
+        }
+
+        return synced;
+    }
+
+    /// <summary>
+    /// The current shape of a mover's brushes for display (the mover ghost): each member brush from the
+    /// <c>brushes</c> section — the shape the author edits — or its <c>movers</c>-section copy when the
+    /// member is absent there. Never stale, unlike the copies alone between an edit and the next
+    /// save/build.
+    /// </summary>
+    public IReadOnlyList<Brush> CurrentMemberShapes(Group group)
+    {
+        ArgumentNullException.ThrowIfNull(group);
+        var members = new HashSet<int>(group.Brushes);
+        var shapes = new List<Brush>();
+        var found = new HashSet<int>();
+        foreach (Brush b in BrushesContent()?.Brushes ?? Enumerable.Empty<Brush>())
+        {
+            if (members.Contains(b.Uid) && found.Add(b.Uid))
+            {
+                shapes.Add(b);
+            }
+        }
+
+        shapes.AddRange(MoverBrushes.Where(m => members.Contains(m.Uid) && found.Add(m.Uid)));
+        return shapes;
+    }
+
+    /// <summary>
+    /// Snapshots of <paramref name="members"/> as their copies are taken, plus the snapshots they
+    /// replace — applied/reverted inside the owning command so undo keeps the tracker consistent.
+    /// </summary>
+    private CopyTaken SnapshotMembers(IEnumerable<Brush> members)
+    {
+        var entries = members
+            .Select(b => (b.Uid, New: GeometryClone.Deep(b), Old: _doc.MoverCopies.Snapshot(b.Uid)))
+            .ToList();
+        return new CopyTaken(entries);
+    }
+
+    private sealed class CopyTaken
+    {
+        private readonly List<(int Uid, Brush New, Brush? Old)> _entries;
+
+        public CopyTaken(List<(int Uid, Brush New, Brush? Old)> entries) => _entries = entries;
+
+        public void Apply(MoverCopyTracker tracker)
+        {
+            foreach ((int uid, Brush fresh, _) in _entries)
+            {
+                tracker.SetSnapshot(uid, fresh);
+            }
+        }
+
+        public void Revert(MoverCopyTracker tracker)
+        {
+            for (int i = _entries.Count - 1; i >= 0; i--)
+            {
+                tracker.SetSnapshot(_entries[i].Uid, _entries[i].Old);
+            }
+        }
     }
 
     /// <summary>
@@ -230,17 +587,23 @@ public sealed class MoverService
     };
 
     /// <summary>
-    /// A keyframe seeded with RED's "no triggered event / no items" sentinels: <c>event_uid</c>,
-    /// <c>item_uid1</c> and <c>item_uid2</c> all <b>-1</b>, matching every RED-authored keyframe and
-    /// RF.exe's own read defaults (<c>FUN_00463820</c> reads them with default <c>0xffffffff</c>).
-    /// The model default of 0 would make a fresh keyframe read as if it triggered the object with
-    /// UID 0.
+    /// A keyframe seeded with RED.exe's fresh-keyframe defaults, verified against RED's keyframe
+    /// constructor <c>FUN_00452770</c> (RED.exe @0x00452770; the 0xbc-byte object the keyframe maker
+    /// <c>FUN_00416000</c> allocates). Its fields sit in RFL keyframe order after the script name:
+    /// <c>+0x98</c> pause = 0, <c>+0x9c</c> depart (travel time to next) = <b>1.0</b> and
+    /// <c>+0xa0</c> return travel = <b>1.0</b> (both <c>0x3f800000</c>), <c>+0xa4</c>/<c>+0xa8</c>
+    /// accel/decel = 0, <c>+0xac..+0xb4</c> event / item1 / item2 UIDs = <b>-1</b>
+    /// (<c>0xffffffff</c>), <c>+0xb8</c> degrees about axis = 0. The -1 sentinels also match RF.exe's
+    /// read defaults (<c>FUN_00463820</c>); the model default of 0 would read as triggering UID 0, and
+    /// 0-second travel times would make a fresh mover snap instead of travel.
     /// </summary>
     private static Keyframe NewKeyframe(int uid, Vec3 position, Mat3 rotation) => new()
     {
         Uid = uid,
         Position = position,
         Rotation = rotation,
+        DepartTravelTime = 1f,
+        ReturnTravelTime = 1f,
         EventUid = -1,
         ItemUid1 = -1,
         ItemUid2 = -1,
@@ -339,11 +702,13 @@ public sealed class MoverService
             return;
         }
 
-        (MoversSection movers, RflSection moversHost) = EnsureMovers();
+        // A level whose movers section is absent has no copies to remove — never create it here.
+        RflSection? moversHost = FindHost(SectionType.Movers);
+        List<Brush> movers = (moversHost?.Content as MoversSection)?.Movers ?? new List<Brush>();
         RflSection movingHost = MovingGroupsHost();
         int groupIndex = mg.Groups.IndexOf(group);
         var memberUids = new HashSet<int>(group.Brushes);
-        var removedMovers = movers.Movers
+        var removedMovers = movers
             .Select((m, i) => (Brush: m, Index: i))
             .Where(t => memberUids.Contains(t.Brush.Uid))
             .OrderByDescending(t => t.Index)
@@ -354,11 +719,16 @@ public sealed class MoverService
             {
                 foreach (var (b, _) in removedMovers)
                 {
-                    movers.Movers.Remove(b);
+                    movers.Remove(b);
                 }
 
                 mg.Groups.Remove(group);
-                MarkDirty(moversHost, movingHost);
+                MarkDirty(movingHost);
+                if (moversHost is not null)
+                {
+                    moversHost.Dirty = true;
+                }
+
                 _doc.RefreshObjects();
                 _doc.NotifyLinksChanged();
             },
@@ -367,10 +737,15 @@ public sealed class MoverService
                 mg.Groups.Insert(Math.Clamp(groupIndex, 0, mg.Groups.Count), group);
                 foreach (var (b, index) in Enumerable.Reverse(removedMovers))
                 {
-                    movers.Movers.Insert(Math.Clamp(index, 0, movers.Movers.Count), b);
+                    movers.Insert(Math.Clamp(index, 0, movers.Count), b);
                 }
 
-                MarkDirty(moversHost, movingHost);
+                MarkDirty(movingHost);
+                if (moversHost is not null)
+                {
+                    moversHost.Dirty = true;
+                }
+
                 _doc.RefreshObjects();
                 _doc.NotifyLinksChanged();
             }));
@@ -412,6 +787,9 @@ public sealed class MoverService
         host.Dirty = true;
         _doc.MarkDirty();
         _doc.RefreshObjects();
+
+        // The restored members ARE their copies: snapshot them so only a later edit marks them stale.
+        _doc.MoverCopies.TrackUntracked(_doc.Rfl);
         return missing.Count;
     }
 
@@ -456,7 +834,10 @@ public sealed class MoverService
             return;
         }
 
-        (AlpineLevelPropertiesSection alp, RflSection host) = EnsureAlpineLevelProps();
+        // The section (when absent) is created inside the command, so undoing the first Hold Open on
+        // a stock level removes it again and the file stays byte-identical.
+        AlpinePropertiesEdit edit = AlpinePropertiesEdit.Begin(_doc);
+        AlpineLevelPropertiesSection alp = edit.Content;
         int uid = first.Uid;
         bool has = alp.HoldOpenKeyframeUids.Contains(uid);
         if (has == holdOpen)
@@ -467,7 +848,7 @@ public sealed class MoverService
         _doc.Undo.Execute(new RelayCommand(holdOpen ? "Enable Hold Open" : "Disable Hold Open",
             () =>
             {
-                EnsureSectionPresent(host);
+                edit.Attach();
                 if (holdOpen)
                 {
                     alp.HoldOpenKeyframeUids.Add(uid);
@@ -477,7 +858,6 @@ public sealed class MoverService
                     alp.HoldOpenKeyframeUids.Remove(uid);
                 }
 
-                host.Dirty = true;
                 _doc.RefreshObjects();
             },
             () =>
@@ -491,7 +871,7 @@ public sealed class MoverService
                     alp.HoldOpenKeyframeUids.Add(uid);
                 }
 
-                host.Dirty = true;
+                edit.Detach();
                 _doc.RefreshObjects();
             }));
     }
@@ -532,10 +912,18 @@ public sealed class MoverService
         return EnsureMovingGroups().Host;
     }
 
-    private (MoversSection Content, RflSection Host) EnsureMovers()
+    /// <summary>The movers section, or a new DETACHED one (<c>Created</c>) the caller's command inserts.</summary>
+    private (MoversSection Content, RflSection Host, bool Created) PrepareMovers()
     {
-        RflSection host = _doc.Rfl.GetOrCreateSection(SectionType.Movers, () => new MoversSection());
-        return ((MoversSection)host.Content!, host);
+        RflSection host = _doc.Rfl.FindOrPrepareSection(SectionType.Movers, () => new MoversSection(), out bool created);
+        return ((MoversSection)host.Content!, host, created);
+    }
+
+    /// <summary>The moving_groups section, or a new DETACHED one (<c>Created</c>) the caller's command inserts.</summary>
+    private (GroupsSection Content, RflSection Host, bool Created) PrepareMovingGroups()
+    {
+        RflSection host = _doc.Rfl.FindOrPrepareSection(SectionType.MovingGroups, () => new GroupsSection(SectionType.MovingGroups), out bool created);
+        return ((GroupsSection)host.Content!, host, created);
     }
 
     private (GroupsSection Content, RflSection Host) EnsureMovingGroups()
@@ -544,17 +932,18 @@ public sealed class MoverService
         return ((GroupsSection)host.Content!, host);
     }
 
-    private (AlpineLevelPropertiesSection Content, RflSection Host) EnsureAlpineLevelProps()
+    private RflSection? FindHost(SectionType type)
     {
-        RflSection host = _doc.Rfl.GetOrCreateSection(SectionType.AlpineLevelProperties,
-            () => new AlpineLevelPropertiesSection { Version = 4 });
-        var alp = (AlpineLevelPropertiesSection)host.Content!;
-        if (alp.Version < 4)
+        _doc.Rfl.ParseAllKnownSections();
+        foreach (RflSection s in _doc.Rfl.Sections)
         {
-            alp.Version = 4;
+            if (s.TypeId == (uint)type)
+            {
+                return s;
+            }
         }
 
-        return (alp, host);
+        return null;
     }
 
     private void EnsureSectionPresent(RflSection host)

@@ -111,6 +111,34 @@ public static class Deformers
         GeometryUtil.RecomputeAllPlanes(g);
     }
 
+    /// <summary>
+    /// Tapers the selected vertices along <paramref name="axis"/>: the two other components are scaled
+    /// about the set centre by a factor that ramps linearly from 1 at the low end of the axis extent to
+    /// <paramref name="highScale"/> at the high end.
+    /// </summary>
+    public static void Taper(Geometry g, int axis, float highScale, IReadOnlyCollection<int>? indices = null)
+    {
+        ICollection<int> set = Resolve(g, indices);
+        (float min, float max) = ExtentAlong(g, set, axis);
+        float span = max - min;
+        if (span < 1e-5f)
+        {
+            return;
+        }
+
+        Vec3 c = CentreOf(g, set);
+        foreach (int i in set)
+        {
+            Vec3 v = g.Vertices[i];
+            float t = (v.Component(axis) - min) / span;
+            float s = 1f + ((highScale - 1f) * t);
+            Vec3 scaled = c.Add(v.Sub(c).Scale(s));
+            g.Vertices[i] = scaled.WithComponent(axis, v.Component(axis));
+        }
+
+        GeometryUtil.RecomputeAllPlanes(g);
+    }
+
     /// <summary>Randomly perturbs the selected vertices within ±<paramref name="amount"/> per axis.</summary>
     public static void Jitter(Geometry g, float amount, int seed, IReadOnlyCollection<int>? indices = null)
     {

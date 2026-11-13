@@ -4,7 +4,7 @@ using System.Threading;
 namespace Ged.Core.Scripting;
 
 /// <summary>
-/// The swappable engine boundary (plan §5.1, §8): the App references this, never MoonSharp
+/// The swappable engine boundary: the App references this, never MoonSharp
 /// directly, so replacing the engine (MoonSharp ↔ Jint) is a one-project change. Implemented by
 /// <c>Ged.Scripting.MoonSharpHost</c>.
 /// </summary>

@@ -7,7 +7,7 @@ using Xunit;
 namespace Ged.Core.Tests.Scripting;
 
 /// <summary>
-/// The API-surface guard (plan §5.8): pins every exposed script global + member. A removed or
+/// The API-surface guard: pins every exposed script global + member. A removed or
 /// renamed member changes the generated snapshot and fails CI — the same discipline the
 /// round-trip byte-identity invariant enforces for the file format. Also regenerates the shipped
 /// reference (<c>docs/internal/SCRIPTING-API.md</c>) + Lua stub (<c>scripts/api/ged.lua</c>) and asserts

@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace Ged.Core.Scripting;
 
 /// <summary>
-/// Metadata parsed from a script's leading <c>--@key value</c> header comments (plan §6.5).
+/// Metadata parsed from a script's leading <c>--@key value</c> header comments.
 /// A user script with a <c>--@name</c>/<c>--@id</c> becomes a first-class command registered in
 /// the palette; <c>--@api</c> pins the API version; <c>--@allow-destructive</c> pre-authorizes
 /// delete/overwrite/package/playtest for batch use.

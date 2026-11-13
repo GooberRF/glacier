@@ -673,7 +673,9 @@ public sealed partial class MainWindow
             lines.AddRange(OverlayBuilder.Path(points, Math.Clamp(data.StartingKeyframe, 0, points.Count - 1)));
             if (_showMoverGhost && _movers is not null)
             {
-                var moverBrushes = _movers.MoverBrushes.Where(b => group.Brushes.Contains(b.Uid)).ToList();
+                // The members' CURRENT shape (the brushes-section brush the author edits), not the movers-
+                // section copy, which lags an edit until the next save/build refreshes it.
+                IReadOnlyList<Ged.Core.Model.Brush> moverBrushes = _movers.CurrentMemberShapes(group);
                 if (moverBrushes.Count > 0)
                 {
                     CoreVec3 sampled = OverlayBuilder.SamplePath(points, _moverTransportT);

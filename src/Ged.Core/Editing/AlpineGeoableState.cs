@@ -166,7 +166,7 @@ public static class AlpineGeoableState
         if (create)
         {
             host = rfl.GetOrCreateSection(
-                SectionType.AlpineLevelProperties, () => new AlpineLevelPropertiesSection { Version = 4 });
+                SectionType.AlpineLevelProperties, () => new AlpineLevelPropertiesSection { Version = AlpineLevelPropertiesSection.CurrentVersion });
             return host.Content as AlpineLevelPropertiesSection;
         }
 

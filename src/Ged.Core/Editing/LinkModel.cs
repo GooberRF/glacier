@@ -51,6 +51,11 @@ public static class LinkModel
         LevelObjectKind.PushRegion => EventLinkTarget.PushRegion,
         LevelObjectKind.AmbientSound => EventLinkTarget.AmbientSound,
         LevelObjectKind.MpRespawnPoint => EventLinkTarget.RespawnPoint,
+        LevelObjectKind.ClimbRegion => EventLinkTarget.ClimbRegion,
+        LevelObjectKind.WeatherRegion => EventLinkTarget.WeatherRegion,
+        LevelObjectKind.RopeEmitter => EventLinkTarget.RopeEmitter,
+        LevelObjectKind.ProjectionCamera => EventLinkTarget.ProjectionCamera,
+        LevelObjectKind.MeshObject => EventLinkTarget.MeshObject,
         _ => EventLinkTarget.Object,
     };
 

@@ -39,24 +39,59 @@ public static unsafe class AssimpImporter
         ArgumentException.ThrowIfNullOrEmpty(path);
         Assimp assimp = Api.Value ?? throw new InvalidOperationException("Native Assimp library is not available.");
 
-        const uint flags = (uint)(
-            PostProcessSteps.Triangulate |
-            PostProcessSteps.GenerateSmoothNormals |
-            PostProcessSteps.JoinIdenticalVertices |
-            PostProcessSteps.PreTransformVertices |
-            PostProcessSteps.FindDegenerates |
-            PostProcessSteps.ImproveCacheLocality);
+        AiScene* scene = assimp.ImportFile(path, Flags);
+        return Convert(assimp, scene, path, DetectFormat(path));
+    }
 
-        AiScene* scene = assimp.ImportFile(path, flags);
+    /// <summary>
+    /// Imports a mesh from <paramref name="bytes"/> (the whole model file) without touching the file system:
+    /// Assimp gets no file access, so a format that keeps data in separate files (a .gltf with external
+    /// .bin buffers) fails instead of reading them. <paramref name="extension"/> (e.g. ".glb") selects the
+    /// parser; <paramref name="displayName"/> names the file in errors.
+    /// </summary>
+    public static ImportedModel ImportFromMemory(byte[] bytes, string extension, string displayName)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentException.ThrowIfNullOrEmpty(extension);
+        Assimp assimp = Api.Value ?? throw new InvalidOperationException("Native Assimp library is not available.");
+        if (bytes.Length == 0)
+        {
+            throw new V3dFormatException($"Assimp failed to import '{displayName}': the file is empty.");
+        }
+
+        AiScene* scene;
+        fixed (byte* p = bytes)
+        {
+            scene = assimp.ImportFileFromMemory(p, (uint)bytes.Length, Flags, extension.TrimStart('.'));
+        }
+
+        return Convert(assimp, scene, displayName, DetectFormat(extension));
+    }
+
+    private const uint Flags = (uint)(
+        PostProcessSteps.Triangulate |
+        PostProcessSteps.GenerateSmoothNormals |
+        PostProcessSteps.JoinIdenticalVertices |
+        PostProcessSteps.PreTransformVertices |
+        PostProcessSteps.FindDegenerates |
+        PostProcessSteps.ImproveCacheLocality);
+
+    private static ImportedModel Convert(Assimp assimp, AiScene* scene, string path, ImportedFormat format)
+    {
         if (scene is null || scene->MRootNode is null)
         {
             string err = assimp.GetErrorStringS();
+            if (scene is not null)
+            {
+                assimp.ReleaseImport(scene);
+            }
+
             throw new V3dFormatException($"Assimp failed to import '{path}': {err}");
         }
 
         try
         {
-            var model = new ImportedModel { Format = DetectFormat(path) };
+            var model = new ImportedModel { Format = format };
             for (int m = 0; m < scene->MNumMeshes; m++)
             {
                 AiMesh* mesh = scene->MMeshes[m];

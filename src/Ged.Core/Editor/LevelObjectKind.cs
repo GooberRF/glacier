@@ -41,4 +41,28 @@ public enum LevelObjectKind
     CoronaObject,
     BagObject,
     PlayerStart,
+
+    // Alpine Faction 1.5 (RFL 306) objects. Read-only in the editor for now: they load, list and inspect, and
+    // round-trip byte for byte, but cannot yet be placed, moved or edited.
+
+    /// <summary>An Alpine weather region (0x0AFBAE06).</summary>
+    WeatherRegion,
+
+    /// <summary>An Alpine vehicle factory (0x0AFBAE07).</summary>
+    VehicleFactory,
+
+    /// <summary>An Alpine projection camera (0x0AFBAE08).</summary>
+    ProjectionCamera,
+
+    /// <summary>An Alpine rope emitter (0x0AFBAE0A).</summary>
+    RopeEmitter,
+
+    /// <summary>An Alpine directional light (0x0AFBAE0C).</summary>
+    DirectionalLight,
+
+    /// <summary>An Alpine vehicle waypoint helper (0x0AFBAE0D).</summary>
+    WaypointHelper,
+
+    /// <summary>An Alpine terrain (0x0AFBAE0B); its position is the grid origin.</summary>
+    Terrain,
 }

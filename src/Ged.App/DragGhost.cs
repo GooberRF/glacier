@@ -70,6 +70,7 @@ internal static class DragGhost
                 continue;
             }
 
+            Vector3 offset = V(mesh.ModelOffset(sm)); // where the game draws the stored vertices
             foreach (V3dBatch batch in sm.Lods[0].Batches)
             {
                 var seen = new HashSet<(int, int)>();
@@ -86,8 +87,8 @@ internal static class DragGhost
                         return;
                     }
 
-                    Vector3 a = V(batch.Positions[ia]);
-                    Vector3 c = V(batch.Positions[ib]);
+                    Vector3 a = V(batch.Positions[ia]) + offset;
+                    Vector3 c = V(batch.Positions[ib]) + offset;
                     b.Add(a);
                     b.Add(c);
                     lines.Add(new LineSegment(a, c, color));

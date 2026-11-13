@@ -52,6 +52,13 @@ public sealed class SceneBuildOptions
     /// <summary>Include faces flagged invisible. Off by default.</summary>
     public bool IncludeInvisibleFaces { get; set; }
 
+    /// <summary>
+    /// Include faces flagged <c>show_sky</c>. On by default (every viewport). The command-line
+    /// renderer turns it off for views from outside the level (plan, ortho, iso), where those faces
+    /// would roof over the interior.
+    /// </summary>
+    public bool IncludeSkyFaces { get; set; } = true;
+
     /// <summary>Include detail-brush faces. On by default.</summary>
     public bool IncludeDetailFaces { get; set; } = true;
 
@@ -67,6 +74,20 @@ public sealed class SceneBuildOptions
 
     /// <summary>Emit object billboards / meshes. On by default.</summary>
     public bool IncludeObjects { get; set; } = true;
+
+    /// <summary>
+    /// Emit the editor's object icons (billboards, and the facing arrows drawn with them) for objects that show no mesh
+    /// in the game — lights, spawns, events, triggers, keyframes — and as the fallback beside a mesh. On by default (every
+    /// viewport). Off leaves only what the game draws: objects whose class resolves to a mesh (clutter, items, entities,
+    /// Alpine mesh objects); the command-line renderer turns it off for clean in-game views.
+    /// </summary>
+    public bool ObjectIcons { get; set; } = true;
+
+    /// <summary>
+    /// Static-geometry rooms (compiled room indices) left out of the scene, e.g. the sky room in a view of the playable
+    /// level. Null = none (default).
+    /// </summary>
+    public HashSet<int>? ExcludedRooms { get; set; }
 
     /// <summary>Emit object link lines ("Show Links"). On by default.</summary>
     public bool IncludeLinks { get; set; } = true;

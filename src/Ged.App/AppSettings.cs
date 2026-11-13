@@ -87,6 +87,20 @@ public sealed class AppSettings
     /// <summary>Set once the first-run wizard has completed.</summary>
     public bool FirstRunComplete { get; set; }
 
+    /// <summary>
+    /// Accept connections from <c>glacier-cli --attach</c> (command-line tools and AI agents) so they
+    /// can run scripts, builds, checks and saves on the open level while you watch; every change is
+    /// one undo step. Default on. The connection is a per-user local pipe — never a network port.
+    /// </summary>
+    public bool EnableAutomationBridge { get; set; } = true;
+
+    /// <summary>
+    /// Lets an AI agent connected through <c>glacier-cli mcp</c> discard unsaved changes, overwrite other
+    /// existing files and run scripts that delete, save or package. Default off; the server must also be
+    /// started with <c>--allow-destructive</c> (both are needed). Command-line tools are unaffected.
+    /// </summary>
+    public bool AllowDestructiveAutomation { get; set; }
+
     // ---- Viewport ----
     public float FarClip { get; set; } = 6000f;
 
@@ -173,6 +187,12 @@ public sealed class AppSettings
     /// choice survives restarts; an existing settings file that explicitly chose a method is respected on load.
     /// </summary>
     public bool UseSharedBspBuild { get; set; } = true;
+
+    /// <summary>
+    /// Geometry ▸ Repair holes when building (Alpine RED's build repair, its <c>RepairBuildHoles</c> setting).
+    /// On by default, as in Alpine RED; maps to <see cref="Ged.Core.Compiler.CompileOptions.AlpineRepair"/>.
+    /// </summary>
+    public bool RepairBuildHoles { get; set; } = true;
 
     /// <summary>Show measurement/dimension annotations in the viewport (B7 View toggle). Default on.</summary>
     public bool ShowAnnotations { get; set; } = true;

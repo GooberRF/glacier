@@ -50,7 +50,7 @@ public static class WhereUsed
         return set;
     }
 
-    private static bool IsTextureKind(DependencyKind kind) => kind is
+    internal static bool IsTextureKind(DependencyKind kind) => kind is
         DependencyKind.FaceTexture or DependencyKind.LiquidTexture or DependencyKind.DecalTexture or
         DependencyKind.ParticleBitmap or DependencyKind.BoltBitmap or DependencyKind.CoronaBitmap or
         DependencyKind.EventBitmap or DependencyKind.MeshObjectTexture or DependencyKind.GeomodTexture or

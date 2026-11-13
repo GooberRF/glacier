@@ -7,7 +7,8 @@ namespace Ged.Core.Editing;
 /// <summary>
 /// Alpine group Mirror (X/Y/Z): reflects brushes and objects together across the
 /// axis-perpendicular plane through a shared pivot. Brush geometry is reflected in
-/// world space and re-oriented outward so face plane normals stay valid; object
+/// world space and every face reversed (a reflection inverts handedness), so each brush keeps
+/// its stored orientation (outward solid, inward air) and face plane normals stay valid; object
 /// positions and orientation matrices are reflected so lights re-sync and
 /// directional frames mirror correctly. Pure — the service wraps it in undo.
 /// </summary>
@@ -30,7 +31,7 @@ public static class GroupMirror
     /// <summary>
     /// Mirrors a brush across the pivot plane: reflects every world vertex, moves
     /// the origin to its reflection, bakes the reflection into local geometry, then
-    /// re-orients faces outward and recomputes planes/UVs.
+    /// reverses every face (keeping the brush's stored orientation) and recomputes planes/UVs.
     /// </summary>
     public static void MirrorBrush(Brush b, Vec3 pivot, int axis)
     {
@@ -44,7 +45,7 @@ public static class GroupMirror
         }
 
         b.Position = newPos;
-        BrushFactory.OrientOutward(b.Geometry);
+        BrushOrientation.Reverse(b.Geometry);
         GeometryUtil.RecomputeAllPlanes(b.Geometry);
         GeometryUtil.AssignAllPlanarUv(b.Geometry);
     }

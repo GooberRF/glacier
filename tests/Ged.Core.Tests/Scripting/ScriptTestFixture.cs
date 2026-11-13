@@ -68,6 +68,14 @@ internal static class ScriptTestFixture
     /// <summary>A runner backed by the real MoonSharp host.</summary>
     public static ScriptRunner Runner() => new(new MoonSharpHost());
 
+    /// <summary>
+    /// Script limits for tests that run real kit and example scripts: the production instruction budget — the
+    /// deterministic guard that still stops a runaway loop at the same point on any machine — with a load-tolerant
+    /// wall-clock ceiling. The production 30 s wall clock measures the machine as much as the script: on a loaded
+    /// 4-core box a 10 s kit script can pass 30 s of script time. Tests of the timeout itself pass their own limits.
+    /// </summary>
+    public static ScriptExecutionLimits LoadTolerantLimits => new() { Timeout = TimeSpan.FromSeconds(240) };
+
     /// <summary>The repo root (GED_REPO_ROOT override, else walk up to Glacier.sln), or null.</summary>
     public static string? RepoRoot()
     {
@@ -111,13 +119,14 @@ internal static class ScriptTestFixture
         bool dryRun = false,
         int seed = 0,
         BrushEditor? brushes = null,
-        IScriptOperations? ops = null)
+        IScriptOperations? ops = null,
+        Func<EditorDocument, ScriptServices>? services = null)
     {
         var log = new ScriptLog();
         ScriptRunResult result = Runner().Run(
-            Services(doc, brushes, ops),
+            services?.Invoke(doc) ?? Services(doc, brushes, ops),
             source,
-            new ScriptRunOptions { ChunkName = "test", DryRun = dryRun, AllowDestructive = true, Seed = seed },
+            new ScriptRunOptions { ChunkName = "test", DryRun = dryRun, AllowDestructive = true, Seed = seed, Limits = LoadTolerantLimits },
             log);
         return (result, log);
     }

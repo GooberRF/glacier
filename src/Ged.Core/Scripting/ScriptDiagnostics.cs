@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Ged.Core.Scripting;
 
 /// <summary>
-/// A script error carrying source coordinates when the engine supplies them (plan §5.6).
+/// A script error carrying source coordinates when the engine supplies them.
 /// Rendered in the Script Log as <c>script.lua:12: attempt to index nil field 'texture'</c>
 /// with a one-line friendly hint.
 /// </summary>
@@ -97,6 +99,74 @@ public sealed class ScriptRunResult
 
     /// <summary>True when the run executed in dry-run/preview mode (always rolled back).</summary>
     public bool WasDryRun { get; }
+
+    /// <summary>
+    /// What the run changed (or, in dry-run, would have changed), by kind — e.g. <c>placed</c>,
+    /// <c>moved</c>, <c>deleted</c> — in first-recorded order. Empty for a failed or read-only run.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> Changes { get; private init; } = new Dictionary<string, int>();
+
+    /// <summary>The total of <see cref="Changes"/>.</summary>
+    public int ChangeCount
+    {
+        get
+        {
+            int sum = 0;
+            foreach (int v in Changes.Values)
+            {
+                sum += v;
+            }
+
+            return sum;
+        }
+    }
+
+    /// <summary>
+    /// The UIDs (objects, brushes, keyframes) a committed run created and that still exist at commit,
+    /// ascending. Empty for a dry run, a failed run, or a run that changed nothing. C#-only: the
+    /// command-line tools report it so a caller can address exactly what a run added.
+    /// </summary>
+    public IReadOnlyList<int> CreatedUids { get; private init; } = Array.Empty<int>();
+
+    /// <summary>A copy of this result carrying <paramref name="changes"/> (snapshotted).</summary>
+    public ScriptRunResult WithChanges(IReadOnlyDictionary<string, int> changes) =>
+        new(Success, Committed, ReturnValue, Error, UndoNodesAdded, WasDryRun)
+        {
+            Changes = new Dictionary<string, int>(changes, StringComparer.Ordinal),
+            CreatedUids = CreatedUids,
+            FacadeCalls = FacadeCalls,
+            ScriptTime = ScriptTime,
+        };
+
+    /// <summary>A copy of this result carrying <paramref name="created"/> (snapshotted, sorted ascending).</summary>
+    public ScriptRunResult WithCreated(IReadOnlyCollection<int> created) =>
+        new(Success, Committed, ReturnValue, Error, UndoNodesAdded, WasDryRun)
+        {
+            Changes = Changes,
+            CreatedUids = created.OrderBy(u => u).ToArray(),
+            FacadeCalls = FacadeCalls,
+            ScriptTime = ScriptTime,
+        };
+
+    /// <summary>
+    /// Diagnostic: how many facade methods (Lua → C# entry points such as <c>level.brush</c> or
+    /// <c>q:tag</c>) the run called. Property reads are not counted. The organic-geometry corpus budgets it,
+    /// so a regression to per-vertex or per-face callbacks fails loudly.
+    /// </summary>
+    public int FacadeCalls { get; private init; }
+
+    /// <summary>Diagnostic: the run's script execution time (host operations such as builds excluded).</summary>
+    public TimeSpan ScriptTime { get; private init; }
+
+    /// <summary>A copy of this result carrying the run's call count and script time.</summary>
+    public ScriptRunResult WithStats(int facadeCalls, TimeSpan scriptTime) =>
+        new(Success, Committed, ReturnValue, Error, UndoNodesAdded, WasDryRun)
+        {
+            Changes = Changes,
+            CreatedUids = CreatedUids,
+            FacadeCalls = facadeCalls,
+            ScriptTime = scriptTime,
+        };
 
     public static ScriptRunResult Ok(string? returnValue, bool committed, int undoNodesAdded, bool wasDryRun) =>
         new(true, committed, returnValue, null, undoNodesAdded, wasDryRun);

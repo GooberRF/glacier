@@ -376,6 +376,7 @@ public sealed class EditorSession : IDisposable
         Vfs?.Dispose();
         Vfs = null;
         RfInstallDir = null;
+        _catalogs = GameCatalogs.Empty;
         _entities = null;
         _clutter = null;
         _items = null;
@@ -387,53 +388,18 @@ public sealed class EditorSession : IDisposable
     public RenderScene OpenLevel(string path)
     {
         Document = EditorDocument.Open(path);
+        Document.ItemDefaultCount = ItemDefaultCount;
         BrushEditor = new BrushEditor(Document);
         ClearBuildOverlays();
         return BuildScene();
     }
 
-    /// <summary>Creates an empty document with sensible defaults.</summary>
+    /// <summary>Creates a new document from the shared Core new-level template
+    /// (<see cref="LevelTemplates.CreateNew"/>) and builds its scene.</summary>
     public RenderScene NewLevel()
     {
-        var rfl = new RflFile();
-        rfl.Header.Version = 0x12C; // Alpine baseline (v300)
-        rfl.Header.LevelName = "untitled.rfl";
-
-        // A fresh level opens in RED with initialized level_properties + level_info (the
-        // Level Properties dialog and the metadata / editor view configs). Emit both with
-        // researched defaults so New → Save produces a level RED reads as authored, not one
-        // missing its property/info sections.
-        // Emit the sections in RED's canonical on-disk order (see RflSectionOrder):
-        // level_properties, then player_start, then level_info near the tail. The
-        // geometry/lightmaps sections a build later creates slot in canonically
-        // (lightmaps before static_geometry) via GeometryBuildService, so a
-        // from-scratch level saves in the same order RED writes and never hits the
-        // lightmaps-after-geometry black-render defect.
-        rfl.Sections.Add(new RflSection((uint)SectionType.LevelProperties, Array.Empty<byte>())
-        {
-            Content = LevelPropertiesSection.CreateDefault(),
-            Dirty = true,
-        });
-
-        // Author a single-player start so a from-scratch level has somewhere for RF to spawn
-        // the player. Without one the header's player_start_offset stays 0 and RF drops the
-        // player into the void outside every room — the camera resolves to no room and the
-        // portal renderer draws nothing (a fully black screen in-game). The start sits one
-        // unit above the grid origin (identity orientation → facing +Z), i.e. the centre of
-        // the default working volume: a floor built on the grid plane (y=0) leaves the spawn
-        // just above it. The writer recomputes player_start_offset from this section on save.
-        rfl.Sections.Add(new RflSection((uint)SectionType.PlayerStart, Array.Empty<byte>())
-        {
-            Content = new PlayerStartSection { Position = new Vec3(0f, 1f, 0f), Rotation = Mat3.Identity },
-            Dirty = true,
-        });
-        rfl.Sections.Add(new RflSection((uint)SectionType.LevelInfo, Array.Empty<byte>())
-        {
-            Content = LevelInfoSection.CreateDefault(DateTime.Now),
-            Dirty = true,
-        });
-        rfl.Sections.Add(new RflSection((uint)SectionType.End, Array.Empty<byte>()));
-        Document = new EditorDocument(rfl);
+        Document = LevelTemplates.CreateNew();
+        Document.ItemDefaultCount = ItemDefaultCount;
         BrushEditor = new BrushEditor(Document);
         ClearBuildOverlays();
         return BuildScene();
@@ -1645,11 +1611,22 @@ public sealed class EditorSession : IDisposable
 
     private void LoadCatalogs()
     {
-        _entities = TryLoad("entity.tbl", EntityCatalog.Load);
-        _clutter = TryLoad("clutter.tbl", ClutterCatalog.Load);
-        _items = TryLoad("items.tbl", ItemCatalog.Load);
+        // The object class tables load through the shared Core loader so the palette, the Properties
+        // panel and the script `catalog` all see the same class lists.
+        _catalogs = Vfs is { } vfs ? GameCatalogs.Load(vfs) : GameCatalogs.Empty;
+        _entities = _catalogs.Entities;
+        _clutter = _catalogs.Clutter;
+        _items = _catalogs.Items;
         _glares = TryLoad("effects.tbl", GlareCatalog.Load);
     }
+
+    private GameCatalogs _catalogs = GameCatalogs.Empty;
+
+    /// <summary>A new item's default count: its items.tbl Count from the install mounted at placement time.</summary>
+    internal int? ItemDefaultCount(string className) => _catalogs.ItemCount(className);
+
+    /// <summary>The loaded object class tables (<see cref="GameCatalogs.Empty"/> when no install is mounted).</summary>
+    public GameCatalogs Catalogs => _catalogs;
 
     /// <summary>Class names from the .tbl catalogs for palette dropdowns (empty when no VFS/catalog).</summary>
     public IReadOnlyList<string> ClassNames(Ged.Core.Editor.LevelObjectKind kind) => kind switch

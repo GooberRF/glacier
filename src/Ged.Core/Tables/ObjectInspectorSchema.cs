@@ -55,6 +55,47 @@ public sealed class InspectorField
 
     public string? Note { get; init; }
 
+    /// <summary>
+    /// An explicit field key for scripts (snake_case). When null the key is derived from the label
+    /// (<see cref="InspectorKeys.FromLabel"/>); see <see cref="EffectiveKey"/>.
+    /// </summary>
+    public string? Key { get; init; }
+
+    /// <summary>The script-facing key: <see cref="Key"/> when set, else derived from <see cref="Label"/>.</summary>
+    public string EffectiveKey => Key ?? InspectorKeys.FromLabel(Label);
+
+    /// <summary>Inclusive lower bound for numeric fields (null = only the storage type's range).</summary>
+    public double? Min { get; init; }
+
+    /// <summary>Inclusive upper bound for numeric fields (null = only the storage type's range).</summary>
+    public double? Max { get; init; }
+
+    /// <summary>A display-only field: shown, never written through an inspector or a script.</summary>
+    public bool ReadOnly { get; init; }
+
+    /// <summary>
+    /// The raw stored value of <see cref="Path"/> (the whole property — the full bitfield for a
+    /// masked field), or null when the path does not resolve. Pairs with <see cref="SetRaw"/> so an
+    /// undo can restore the exact prior bytes regardless of the field's editor conversion.
+    /// </summary>
+    public object? GetRaw(object model) =>
+        TryResolve(model, Path, out object owner, out PropertyInfo prop) ? prop.GetValue(owner) : null;
+
+    /// <summary>Writes a raw value captured by <see cref="GetRaw"/> back verbatim.</summary>
+    public void SetRaw(object model, object? raw)
+    {
+        if (TryResolve(model, Path, out object owner, out PropertyInfo prop) && prop.CanWrite)
+        {
+            prop.SetValue(owner, raw);
+        }
+    }
+
+    /// <summary>The (non-nullable) CLR storage type behind <see cref="Path"/> on <paramref name="model"/>, or null.</summary>
+    public Type? StorageType(object model) =>
+        TryResolve(model, Path, out _, out PropertyInfo prop)
+            ? Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType
+            : null;
+
     public object? Get(object model)
     {
         if (Virtual)
@@ -174,23 +215,34 @@ public sealed class InspectorField
         }
     }
 
-    private (object, PropertyInfo)? Resolve(object model)
+    private (object, PropertyInfo)? Resolve(object model) =>
+        TryResolve(model, Path, out object owner, out PropertyInfo prop) ? (owner, prop) : null;
+
+    /// <summary>Resolves a dotted property path (e.g. "Header.ClassName") to its owner + property.</summary>
+    internal static bool TryResolve(object model, string path, out object owner, out PropertyInfo prop)
     {
-        object owner = model;
-        string[] parts = Path.Split('.');
+        owner = model;
+        prop = null!;
+        string[] parts = path.Split('.');
         for (int i = 0; i < parts.Length - 1; i++)
         {
             PropertyInfo? p = owner.GetType().GetProperty(parts[i]);
             if (p?.GetValue(owner) is not { } next)
             {
-                return null;
+                return false;
             }
 
             owner = next;
         }
 
         PropertyInfo? final = owner.GetType().GetProperty(parts[^1]);
-        return final is null ? null : (owner, final);
+        if (final is null)
+        {
+            return false;
+        }
+
+        prop = final;
+        return true;
     }
 
     private static bool ToBool(object? v) => v switch
@@ -241,6 +293,18 @@ public static class ObjectInspectorCatalog
 
     private static IReadOnlyList<InspectorField> L(params InspectorField[] fields) => fields;
 
+    /// <summary>A display-only schema: every field read-only (objects the editor cannot author yet).</summary>
+    private static IReadOnlyList<InspectorField> RO(params InspectorField[] fields) =>
+        fields.Select(f => new InspectorField(f.Label, f.Path, f.Editor)
+        {
+            Mask = f.Mask,
+            Shift = f.Shift,
+            Options = f.Options,
+            Key = f.Key,
+            Note = f.Note,
+            ReadOnly = true,
+        }).ToList();
+
     private static Dictionary<Editor.LevelObjectKind, IReadOnlyList<InspectorField>> Build()
     {
         var m = new Dictionary<Editor.LevelObjectKind, IReadOnlyList<InspectorField>>();
@@ -285,7 +349,7 @@ public static class ObjectInspectorCatalog
             Flag("Dynamic", "Flags", 0x1), Flag("Fade", "Flags", 0x2), Flag("Shadow Casting", "Flags", 0x4),
             Flag("Enabled", "Flags", 0x8), Flag("Runtime Shadows", "Flags", 0x40),
             Flag("Always Show Range", "Flags", 0x80, editorOnly: true), Flag("Dropoff", "Flags", 0x1000),
-            new InspectorField("Editor Only", "ClassName", InspectorEditor.Bool) { EditorOnly = true, Virtual = true, Note = "Section membership (editor_only_lights)." },
+            new InspectorField("Editor Only", "ClassName", InspectorEditor.Bool) { EditorOnly = true, Virtual = true, ReadOnly = true, Note = "Section membership (editor_only_lights)." },
             F("On Intensity", "OnIntensity"), F("On Time", "OnTime"), F("On Time Var", "OnTimeVariation"),
             F("Off Intensity", "OffIntensity"), F("Off Time", "OffTime"), F("Off Time Var", "OffTimeVariation"));
 
@@ -374,6 +438,73 @@ public static class ObjectInspectorCatalog
             T("Volumetric Bitmap", "VolumetricBitmap"), F("Volumetric Height", "VolumetricHeight"), F("Volumetric Length", "VolumetricLength"));
 
         m[Editor.LevelObjectKind.BagObject] = L();
+
+        // Alpine Faction 1.5 objects: read-only until their authoring lands (values as stored in the file).
+        m[Editor.LevelObjectKind.WeatherRegion] = RO(
+            T("Script", "ScriptName"), E("Shape", "Shape", "Box", "Cylinder"), E("Weather", "WeatherType", "Rain", "Snow"),
+            F("Width", "Width"), F("Height", "Height"), F("Depth", "Depth"), F("Radius", "Radius"), F("Density Scale", "DensityScale"),
+            C("Rain Color", "RainColor"), F("Rain Fall Speed", "RainFallSpeed"), F("Rain Wind X", "RainWindX"), F("Rain Wind Z", "RainWindZ"),
+            F("Rain Streak Seconds", "RainStreakSeconds"), C("Snow Color", "SnowColor"), F("Snow Fall Speed", "SnowFallSpeed"),
+            F("Snow Sway Amplitude", "SnowSwayAmplitude"), F("Snow Sway Speed", "SnowSwaySpeed"), F("Snow Sprite Radius", "SnowSpriteRadius"),
+            T("Snow Bitmap", "SnowBitmap"), B("Always Show Range", "AlwaysShowRange"), B("Initially Enabled", "InitiallyEnabled"),
+            F("Active Distance", "ActiveDistance"), F("Visible Distance", "VisibleDistance"), B("Block By Geometry", "BlockByGeometry"),
+            F("Column Width", "ColumnWidth"));
+
+        m[Editor.LevelObjectKind.VehicleFactory] = RO(
+            T("Script", "ScriptName"), T("Vehicle Class", "VehicleClass"), F("Respawn Delay", "RespawnDelaySeconds"),
+            I("Team (0 red, 1 blue, 255 none)", "Team"), I("Turret Yaw Limit", "TurretYawLimitDegrees"),
+            B("Lock To Team", "LockToTeam"), B("Active By Default", "ActiveByDefault"));
+
+        m[Editor.LevelObjectKind.ProjectionCamera] = RO(T("Script", "ScriptName"));
+
+        m[Editor.LevelObjectKind.RopeEmitter] = RO(
+            T("Script", "ScriptName"), U("Target", "TargetUid"), F("Dangle Length", "DangleLength"), F("Slack", "Slack"),
+            F("Weight", "Weight"), F("Thickness", "Thickness"), I("Segments", "Segments"), F("UV Tiles Per Meter", "UvTilesPerMeter"),
+            I("Packed Color (RGBA)", "PackedColor"), T("Bitmap", "Bitmap"), F("Sway Amplitude", "SwayAmplitude"), F("Sway Speed", "SwaySpeed"),
+            Flag("Zipline", "Flags", 0x8), B("Initially On", "InitiallyOn"), F("Zip Down Speed", "ZipDownSpeed"),
+            F("Zip Up Speed", "ZipUpSpeed"), I("Zip Direction", "ZipDirection"));
+
+        m[Editor.LevelObjectKind.DirectionalLight] = RO(
+            T("Script", "ScriptName"), C("Color", "Color"), F("Intensity", "Intensity"), B("Initially On", "InitiallyOn"),
+            E("Shape", "Shape", "None", "Box", "Sphere", "Cylinder"), F("Extent X", "ExtentX"), F("Extent Y", "ExtentY"),
+            F("Extent Z", "ExtentZ"), F("Box Yaw", "BoxYaw"), F("Feather", "Feather"), F("Spread", "Spread"),
+            B("Cast Baked Shadows", "CastBakedShadows"), B("Liquid Occludes", "LiquidOccludes"), B("Sky Passes", "SkyPasses"),
+            B("Outside Casts", "OutsideCasts"), B("Affects Meshes", "AffectsMeshes"),
+            E("Mesh Mode", "MeshMode", "Scaled By Lightmap", "Everywhere"), B("Always Show Range", "AlwaysShowRange"));
+
+        m[Editor.LevelObjectKind.WaypointHelper] = RO(
+            E("Helper Type", "HelperType", "Air", "Water", "Ground"), Flag("Landing", "Flags", 0x1),
+            E("Size Class", "SizeClass", "Jeep", "APC", "Driller"), F("Radius", "Radius"));
+
+        m[Editor.LevelObjectKind.Terrain] = RO(
+            T("Script", "ScriptName"), F("Cell Size", "CellSize"), I("Vertices X", "Nx"), I("Vertices Z", "Nz"),
+            F("Height Min", "HeightMin"), F("Height Range", "HeightRange"), I("Chunk Cells", "ChunkCells"),
+            I("Weight Resolution", "WeightResolutionMultiplier"), I("Lightmap Density", "LightmapDensity"), I("Terrain Flags", "Flags"),
+            F("Thickness", "Thickness"), F("Skirt Depth", "SkirtDepth"), T("Underside Texture", "UndersideTexture"),
+            T("Crater Texture", "CraterTexture"));
+
+        // Room effects (room_effects): the type picks which block the section stores — the ambient colour
+        // for Ambient Light, the liquid block for Liquid Room (InspectorPresence provisions it). The liquid
+        // texture scroll rate stays a Properties-panel field (a nested UV pair).
+        m[Editor.LevelObjectKind.RoomEffect] = L(
+            T("Script", "Header.ScriptName"),
+            new InspectorField("Effect Type", "EffectType", InspectorEditor.Enum)
+            {
+                Options = new[] { "(unused)", "Sky Room", "Liquid Room", "Ambient Light", "None" }, Key = "type",
+                Note = "Sky Room renders this room's view as the sky seen through show-sky faces; Liquid Room fills the room with liquid; Ambient Light overrides the room's ambient light.",
+            },
+            B("Room Is Cold", "RoomIsCold"), B("Room Is Outside", "RoomIsOutside"), B("Room Is Air Lock", "RoomIsAirLock"),
+            C("Ambient Color", "AmbientLightColor"),
+            E("Waveform", "LiquidProperties.Waveform", "(unused)", "None", "Calm", "Choppy"),
+            F("Liquid Depth", "LiquidProperties.Depth"),
+            T("Liquid Surface Texture", "LiquidProperties.SurfaceTexture"),
+            C("Liquid Color", "LiquidProperties.LiquidColor"),
+            F("Liquid Visibility", "LiquidProperties.Visibility"),
+            E("Liquid Type", "LiquidProperties.LiquidType", "(unused)", "Water", "Lava", "Acid"),
+            B("Contains Plankton", "LiquidProperties.ContainsPlankton"),
+            I("Liquid Pixels Per Meter U", "LiquidProperties.TexturePixelsPerMeterU"),
+            I("Liquid Pixels Per Meter V", "LiquidProperties.TexturePixelsPerMeterV"),
+            F("Liquid Texture Angle", "LiquidProperties.TextureAngleDegrees"));
 
         return m;
     }

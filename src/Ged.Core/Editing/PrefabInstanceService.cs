@@ -52,13 +52,6 @@ public sealed class PrefabInstanceService
         return null;
     }
 
-    private (GedPrefabInstancesSection Section, RflSection Host) EnsureSection()
-    {
-        // Only create the section on first real use, so untouched levels stay byte-identical.
-        RflSection host = _doc.Rfl.GetOrCreateSection(SectionType.GedPrefabInstances, () => new GedPrefabInstancesSection());
-        return ((GedPrefabInstancesSection)host.Content!, host);
-    }
-
     private int AllocateInstanceId()
     {
         int max = 0;
@@ -97,7 +90,10 @@ public sealed class PrefabInstanceService
     /// </summary>
     public PrefabInstanceRecord RecordInstance(string prefabName, string sourceHash, IReadOnlyList<int> memberUids, Vec3 pivot, Mat3 rotation)
     {
-        (GedPrefabInstancesSection section, RflSection host) = EnsureSection();
+        // A missing section is prepared detached and inserted by the command (removed again on undo),
+        // so undoing the first placement on a level leaves the file byte-identical.
+        RflSection host = _doc.Rfl.FindOrPrepareSection(SectionType.GedPrefabInstances, () => new GedPrefabInstancesSection(), out bool created);
+        var section = (GedPrefabInstancesSection)host.Content!;
         var record = new PrefabInstanceRecord
         {
             InstanceId = AllocateInstanceId(),
@@ -111,7 +107,17 @@ public sealed class PrefabInstanceService
 
         _doc.Undo.Execute(new RelayCommand($"Record prefab instance '{prefabName}'",
             () => { EnsurePresent(host); if (!section.Instances.Contains(record)) { section.Instances.Add(record); } host.Dirty = true; InstancesChanged?.Invoke(); },
-            () => { section.Instances.Remove(record); host.Dirty = true; InstancesChanged?.Invoke(); }));
+            () =>
+            {
+                section.Instances.Remove(record);
+                host.Dirty = true;
+                if (created)
+                {
+                    _doc.Rfl.Sections.Remove(host);
+                }
+
+                InstancesChanged?.Invoke();
+            }));
         return record;
     }
 

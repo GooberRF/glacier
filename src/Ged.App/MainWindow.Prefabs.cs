@@ -244,12 +244,11 @@ public sealed partial class MainWindow
 
         try
         {
-            PrefabPackage pkg = PrefabPackage.Load(path);
+            (PrefabPackage pkg, RfgFile payload, string hash) = PrefabPackage.LoadBased(path);
             string name = string.IsNullOrWhiteSpace(pkg.Manifest.Name) ? Path.GetFileNameWithoutExtension(path) : pkg.Manifest.Name;
-            RfgFile payload = BasedPayload(pkg);
 
             PrefabInstanceRecord rec = _prefabInstances.PlaceInstance(
-                payload, name, PrefabHash(path), pivotPosition, Ged.Core.Model.Mat3.Identity);
+                payload, name, hash, pivotPosition, Ged.Core.Model.Mat3.Identity);
 
             InvalidatePrefabBrushGeometry(payload); // imported brushes bypass BrushEditor — invalidate CSG
             AfterMutation();
@@ -363,7 +362,7 @@ public sealed partial class MainWindow
 
         // The SOURCE instance (if the selection belongs to one of this prefab's instances) fixes the
         // prefab-local frame: capturing the new content through its pose keeps every untouched member's
-        // local coords byte-identical, so nothing shifts across propagation (defect 1).
+        // local coords byte-identical, so nothing shifts across propagation.
         PrefabInstanceRecord? source = _prefabInstances.Instances.FirstOrDefault(r =>
             string.Equals(r.PrefabName, name, StringComparison.OrdinalIgnoreCase) && r.MemberUids.Any(selected.Contains));
         await OverwriteAndPropagateAsync(name, source);
@@ -403,7 +402,7 @@ public sealed partial class MainWindow
             var objectUids = Document.Selection.Select(o => o.Uid).ToList();
             RfgFile rfg = RfgInterop.Export(Document, brushUids, objectUids, alpine: true, groupName: name);
 
-            // Re-base into fixed prefab-local space (defect 1).
+            // Re-base into fixed prefab-local space.
             if (source is not null)
             {
                 Ged.Core.Model.Mat3 rInv = source.PivotRotation.Transpose();
@@ -437,7 +436,7 @@ public sealed partial class MainWindow
             }
 
             int done = _prefabInstances.Propagate(name, rfg, PrefabHash(path), force);
-            InvalidatePrefabBrushGeometry(rfg); // propagation deleted/re-imported brushes outside BrushEditor (defect 2)
+            InvalidatePrefabBrushGeometry(rfg); // propagation deleted/re-imported brushes outside BrushEditor
             _prefabUnit?.ValidateExisting();     // propagated instances were re-created with fresh UIDs
             AfterMutation();
             _linkGraph.Refresh();
@@ -451,45 +450,24 @@ public sealed partial class MainWindow
     }
 
     /// <summary>The (possibly legacy) package payload normalized to FIXED prefab-local space (origin == pivot).</summary>
-    private static RfgFile BasedPayload(PrefabPackage pkg)
-    {
-        RfgFile payload = pkg.Payload;
-        if (!pkg.Manifest.PivotBased)
-        {
-            // Legacy v1 package: establish the pivot once (bbox centre) and re-base in memory, then
-            // treat it as fixed for this placement (no per-propagation re-derivation).
-            RfgInterop.TransformInPlace(payload, Ged.Core.Model.Mat3.Identity, RfgInterop.ComputePivot(payload).Scale(-1f));
-        }
-
-        return payload;
-    }
+    private static RfgFile BasedPayload(PrefabPackage pkg) => PrefabPackage.BasedPayload(pkg);
 
     /// <summary>
-    /// After a prefab placement/propagation that imported brushes (which bypass <c>BrushEditor</c>,
-    /// so its <c>BrushesChanged</c> invalidation never fired), invalidates the compiled geometry
-    /// exactly like a structural brush edit: marks it dirty, drops the merged-brush stash wholesale,
-    /// and kicks the live-CSG preview — no-op when the payload carried no brushes (defect 2).
+    /// After a prefab placement/propagation that imported brushes (which bypass <c>BrushEditor</c>'s
+    /// own commands), raises the brush editor's structural change notification — the same one every
+    /// host (and a scripted <c>prefab.place</c>) uses — so compiled geometry is marked dirty, the
+    /// merged-brush stash is dropped wholesale and the live-CSG preview re-arms. No-op when the
+    /// payload carried no brushes.
     /// </summary>
     private void InvalidatePrefabBrushGeometry(RfgFile payload)
     {
         if (payload.Groups.Any(g => g.Brushes.Brushes.Count > 0))
         {
-            _buildController?.InvalidateBrushGeometry();
+            BrushEd?.NotifyExternalBrushChange();
         }
     }
 
-    private static string PrefabHash(string path)
-    {
-        try
-        {
-            using System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create();
-            return Convert.ToHexString(sha.ComputeHash(File.ReadAllBytes(path)))[..16];
-        }
-        catch (Exception)
-        {
-            return string.Empty;
-        }
-    }
+    private static string PrefabHash(string path) => PrefabPackage.FileHash(path);
 
     private void OpenPrefabFolder()
     {

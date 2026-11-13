@@ -38,6 +38,24 @@ public sealed class V3dFile
     public List<V3dBone> Bones { get; } = new();
 
     public bool IsCharacter => Signature == V3dSignature.V3c;
+
+    /// <summary>
+    /// True for an in-memory adapter whose vertices are already in model space (a VFX effect read through
+    /// <c>VfxToV3d</c>), so its submesh offsets are only bounding metadata.
+    /// </summary>
+    public bool VerticesInModelSpace { get; set; }
+
+    /// <summary>
+    /// Where the game draws a submesh's stored vertices: a static mesh's vertices are stored around their bounding-box
+    /// centre and the engine adds the submesh <see cref="V3dSubmesh.Offset"/> (model-space vertex = stored vertex +
+    /// offset). The stock levels confirm it: their plastic crates, cable spools and generators stand with the origin
+    /// where vertex + offset puts the mesh on the floor. Zero for character meshes and model-space adapters.
+    /// </summary>
+    public Vec3 ModelOffset(V3dSubmesh submesh)
+    {
+        ArgumentNullException.ThrowIfNull(submesh);
+        return Signature == V3dSignature.V3m && !VerticesInModelSpace ? submesh.Offset : Vec3.Zero;
+    }
 }
 
 /// <summary>One 3ds-max object; the engine renders all submeshes of a file.</summary>

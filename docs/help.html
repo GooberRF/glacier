@@ -125,6 +125,8 @@
     font-size: .88em; background: var(--code-bg); color: var(--code-text);
     padding: 1.5px 6px; border-radius: 5px;
   }
+  pre { margin: 10px 0; overflow-x: auto; }
+  pre code { display: block; padding: 10px 12px; line-height: 1.5; white-space: pre; }
 
   kbd {
     font-family: "SF Mono", "Cascadia Code", Consolas, monospace; font-size: .82em;
@@ -188,7 +190,8 @@
       <li><a href="#textures">Textures &amp; UV</a></li>
       <li><a href="#build">Geometry building</a></li>
       <li><a href="#lighting">Lighting</a></li>
-      <li><a href="#scripting">Scripting (Lua)</a></li>
+      <li><a href="#scripting">Scripting (Lua)</a> · <a href="#cli">Command line</a></li>
+      <li><a href="#ai">AI-assisted level design</a></li>
       <li><a href="#playtest">Playtesting</a></li>
       <li><a href="#io">Import &amp; export</a></li>
       <li><a href="#hotkeys">Keyboard shortcuts</a></li>
@@ -381,6 +384,14 @@
       faces, in every editing mode. A <strong>solid</strong> portal brush's faces instead follow the
       per-pane <em>View ▸ Portal Faces</em> option (don't draw / see-thru / non-see-thru). Either
       way, a portal brush is always selectable in every mode.</div>
+      <div class="note"><strong>How an air portal brush builds.</strong> An air portal brush that
+      cuts a doorway through a wall builds that doorway as a room of its own, with a portal at
+      each end where it meets the rooms on either side — the same result RED gives. Portal brushes
+      are applied after every other brush, whatever their place in the brush order. RED builds no
+      portal from an air portal brush placed in an opening that is already carved; Glacier gives it one
+      portal across its middle, and the linter warns about it (fit the portal brush through the wall
+      instead, or make it solid). A <strong>solid</strong> portal brush carves nothing: its faces that
+      lie in open space become a portal, as in RED.</div>
       <p>Boolean and construction operators available on brushes and selections include
       <strong>boolean</strong> (subtract / intersect), <strong>clip</strong>, <strong>carve</strong>,
       <strong>fuse</strong>, <strong>stretch</strong>, <strong>bend</strong>, <strong>twist</strong>,
@@ -392,7 +403,14 @@
       <div class="note"><strong>Increment-based transforms.</strong> Move (<kbd>M</kbd>), rotate
       (<kbd>R</kbd>) and scale (<kbd>S</kbd>) work by the grid / rotation / scale increment for
       RED-parity precision. Hold <kbd>Alt</kbd> during a mouse drag to temporarily invert the magnet
-      snap state (snap ↔ free).</p></div>
+      snap state (snap ↔ free).</div>
+      <div class="note"><strong>Air brushes are stored the way RED stores them.</strong> RED keeps an air
+      brush's faces facing into the brush and a solid brush's faces facing out, and rebuilds a level from
+      them as stored; Glacier does the same, so a level made or edited in Glacier rebuilds correctly in RED.
+      Switching a brush between Air and Solid turns its faces around, as in RED; this does not change a
+      brush's textures or what Glacier builds from it. A level saved by an older version of Glacier (or by
+      another tool) can have air brushes facing out: the linter warns about each one, and saving the level
+      in Glacier turns them around and says so in the save log.</div>
     </section>
 
     <!-- 6 -->
@@ -496,7 +514,9 @@
       <strong>Force Orient</strong>, <strong>No Player Collide</strong>, the starting keyframe, and all
       four movement sounds — start, looping, stop and close — each with its own volume. Every keyframe
       carries its own travel, return-travel, pause, accel and decel times, a triggered-event UID, two
-      item UIDs and a script name. A <strong>path preview</strong> ghost can be scrubbed along the path
+      item UIDs and a script name; a new keyframe starts with 1-second travel and return-travel times,
+      as in RED. Moving or rotating a whole mover in Object mode moves its brush with it as one undo
+      step; its keyframes stay where they are. A <strong>path preview</strong> ghost can be scrubbed along the path
       to check the motion.</p>
       <p><strong>Driving a mover.</strong> Link a trigger or event to the mover to set it moving; the
       link attaches to the mover's <strong>start keyframe</strong>, which is the connection the game
@@ -582,10 +602,32 @@
         and selectable from <em>Geometry ▸ Build Method</em> — nothing is removed.</p></div>
       </div>
 
+      <h3>Repair Holes When Building</h3>
+      <p><em>Geometry ▸ Repair Holes When Building</em> (on by default) repairs the small holes a build
+      can leave, the same way Alpine Faction's level editor does: where brushes sit flush against each
+      other or a portal is cut along a wall. With it on, every full build:</p>
+      <ul>
+        <li>welds the ends of open edges that lie within 1&nbsp;mm of each other, and splits an edge
+        where another face's corner lies on it;</li>
+        <li>removes zero-area faces and zero-width portal strips left along seams;</li>
+        <li>puts a portal face back in the room it faces, restores a lost portal face, and joins rooms
+        that were split apart without a portal between them;</li>
+        <li>fills small flat gaps in a wall (up to 1 square unit, at most 16 corners, convex, flush with
+        the wall around them, and never in a doorway) with a new face that continues the wall's
+        texture. A filled face has no lightmap.</li>
+      </ul>
+      <p>Detail brushes and movers are never changed. The live preview skips the hole repair (it is
+      unsealed anyway); the full build, saving, <strong>Check for Holes</strong>, scripts, and the
+      command-line tools all use the setting. The repair's figures appear in the build report under
+      <em>Repairing holes</em>.</p>
+
       <h3>Check for Holes &amp; the build report</h3>
-      <p><strong>Check for Holes</strong> looks for leaks — gaps where the world is not sealed. The
+      <p><strong>Check for Holes</strong> looks for leaks — gaps where the world is not sealed. It
+      always checks a full build, so with <em>Repair Holes When Building</em> on it reports what is
+      left after the repair; it never repairs anything itself. The
       <strong>build report</strong> (Build Output panel) lists rooms, sub-rooms, portals, faces,
-      vertices, surfaces, lightmap pages, UIDs, elapsed time and any <strong>warnings</strong>. The
+      vertices, surfaces, lightmap pages, UIDs, elapsed time, the hole-repair figures and any
+      <strong>warnings</strong>. The
       warnings are textual; <strong>hole-leak findings are click-to-navigate</strong> — click one to
       frame the leak in the viewport.</p>
 
@@ -657,7 +699,10 @@
       <ul>
         <li><strong>One run = one undo step.</strong> The whole run is a single undo transaction:
         success commits one undo node; an error or a Dry-Run rolls everything back, so a failed
-        script leaves the level untouched.</li>
+        script leaves the level untouched. To recover from an error inside a script, call
+        <code>local ok, result = ged.try(fn, ...)</code>: when <code>fn</code> fails, everything it changed is undone
+        and <code>result</code> holds the error (<code>message</code>, <code>hint</code>), so the script can try
+        again, for example with another seed. Time limits and Stop still end the whole run.</li>
         <li><strong>Auto-registered commands.</strong> A user script with a
         <code>--@name</code>/<code>--@id</code> header registers itself as a command in the palette
         and Scripts menu, optionally bindable to a key with <code>--@key</code>.</li>
@@ -665,16 +710,542 @@
         bounded by an instruction budget and a timeout; destructive operations require an explicit
         allow-destructive opt-in and are disabled in Dry-Run.</li>
       </ul>
-      <div class="note"><strong>Lua <code>ops.playtest</code> is editor-only.</strong> It drives the
-      interactive editor's Alpine launch flow, so it is a no-op outside a running editor session.
-      The full API — <code>level</code>, <code>selection</code>, <code>assets</code>,
-      <code>ops</code>, <code>lint</code>, <code>log</code>, <code>rng</code> — is documented in
-      <code>docs/SCRIPTING-API.md</code>, also reachable from the Scripts menu.</div>
+      <ul>
+        <li><strong>Builds match the editor.</strong> <code>ops.build()</code> and
+        <code>ops.light()</code> use your Geometry ▸ Build method, Repair Holes When Building setting
+        and Lightmap Method, exactly like the toolbar commands, and the viewport shows the result when
+        the script finishes; the returned report's <code>repair</code> holds the hole-repair figures.
+        <code>ops.check_holes()</code> returns the leak count and <code>ops.holes()</code> returns
+        their positions, always measured on a sealed build.</li>
+      </ul>
+      <div class="note"><strong>Lua <code>ops.playtest</code> is editor-only.</strong> In the editor it
+      saves the level and launches it through the same flow as <em>Play Level</em> once the script
+      finishes (it needs the allow-destructive opt-in, like <code>ops.save</code>); outside a running
+      editor session it raises an error.
+      The full API — <code>ged</code>, <code>level</code>, <code>selection</code>, <code>assets</code>,
+      <code>ops</code>, <code>lint</code>, <code>log</code>, <code>rng</code>, <code>catalog</code>,
+      <code>prefab</code> and the design kit — is documented in the <em>Scripting API Reference</em>
+      (Scripts menu), generated from the API itself so it always matches your build.</div>
+
+      <h3 id="scripting-api">Building levels from scripts</h3>
+      <p>Scripts that declare <code>--@api 2</code> (or call <code>ged.require_api(2)</code>) can build and
+      edit a level with table arguments; older scripts keep working unchanged. Units are metres and
+      degrees; +X is right, +Y up, +Z forward; <code>print(ged.conventions)</code> lists every rule.</p>
+      <ul>
+        <li><strong>Brushes.</strong> <code>level.brush{shape = "box", pos = {0, 2, 0}, size = {8, 4, 8}, air = true}</code>
+        creates any primitive (box, cylinder, cone, sphere, wedge, quad) at the end of the CSG time
+        order. Remember the world starts solid: an air brush carves a room, a solid brush adds
+        geometry, and later brushes win. Brush handles move, rotate, scale, clip, carve, copy and
+        re-order, and map UVs (<code>box_map</code>, <code>planar_map</code>, <code>fit</code>, …); without a <code>ppm</code> value the
+        mapping functions tile one repeat per 4 m, like a brush drawn in the editor (<code>box_map(256)</code> maps at RED's 256 pixels per metre).
+        <code>textures = {floor =, wall =, ceiling =}</code> are as the player sees them.
+        To line textures up, <code>face:align_to_edge("bottom")</code> stands a face's texture on its lowest
+        edge (<code>"top"</code> hangs it from the highest; an edge number or <code>"+x"</code> … <code>"-z"</code>
+        picks another), <code>face:wrap_from(other_face)</code> continues a neighbouring face's texture around
+        the corner, and <code>brush:fit_faces()</code> fits one texture repeat to every face of a crate, panel or
+        door however it is rotated (<code>fit_faces{axes = "v"}</code> fits only the height, for a trim strip).</li>
+        <li><strong>Objects.</strong> <code>level.place{kind = "item", class = "Medical Kit", pos = {0, 0.5, 4}}</code>
+        places any placeable kind with a name, rotation (<code>yaw</code> or <code>rot = {yaw, pitch, roll}</code>),
+        properties and links in one call. Every object, brush and mover reads and writes its
+        Properties-panel fields with <code>get</code> / <code>set</code> / <code>set_many</code>;
+        <code>fields()</code> lists them. <code>level.player_start{…}</code> places or moves the Player Start.</li>
+        <li><strong>Links, movers, groups, prefabs.</strong> <code>link_to</code> / <code>link_many</code> /
+        <code>back_link</code> follow the editor's link rules (a link to a mover is stored on its start
+        keyframe); <code>level.create_mover{…}</code> and <code>mover:add_keyframe{…}</code> build movers;
+        <code>level.create_group{…}</code> groups parts; <code>prefab.list()</code> and
+        <code>prefab.place{…}</code> use your prefab library.</li>
+        <li><strong>Level properties.</strong> <code>level.props</code> (name, author, multiplayer, ambient
+        light, fog…) and <code>level.alpine</code> (Alpine Faction level options, including the
+        <code>payload_*</code> rules).</li>
+        <li><strong>Discovery.</strong> <code>catalog.kinds()</code>, <code>catalog.classes("Item")</code>,
+        <code>catalog.describe("Event", "Explode")</code> and <code>catalog.textures("rock")</code> list
+        what can be placed and how to configure it (entity, item and clutter classes need an RF install
+        mounted); <code>ged.describe("brush")</code> lists a type's members, including every key a
+        table argument such as <code>level.brush{…}</code> accepts, with its type and default. Unknown
+        names and keys are errors that suggest the nearest valid one; every error names the line of your
+        script that made the call. <code>catalog.norms("opening.width")</code> gives the typical range of a
+        measurement across released levels (see <code>glacier-cli norms</code>; <code>catalog.norm_metrics()</code> lists them);
+        <code>catalog.norms_for{metric = "lights.per_100m2", gametype = "dm", players = 16}</code> picks the numbers
+        for a kind of level (deathmatch maps are also measured by size), falling back to the general ones.</li>
+        <li><strong>Tags.</strong> <code>b:tag("area", "arena")</code> attaches your own labels to brushes
+        and objects (saved with the level); <code>level.brushes_tagged("area")</code> finds them again.</li>
+      </ul>
+      <div class="note"><strong>Movers keep their own brush copy.</strong> A mover copies its member
+      brushes when it is created; the build and the game use that copy. Whenever a mover's brush is edited
+      afterwards — in the viewport or by a script — the copy is refreshed automatically before the level
+      is built, saved, packaged, or playtested, as part of the edit's undo step (scripts also refresh it
+      before <code>ops.build</code>, <code>ops.light</code>, <code>ops.save</code> or
+      <code>ops.package</code> and when the script finishes; the Script Log notes it).
+      <code>mover:sync()</code> refreshes it at any other point. Movers whose brushes you did not edit
+      are left exactly as they are.</div>
+
+      <h3 id="scripting-kit">Modules and the design kit</h3>
+      <p><code>ged.import(name)</code> loads a Lua module once per run (once per session in the Script
+      Console) and returns it. Glacier ships the
+      <strong>design kit</strong>; your own modules go in the scripts library's <code>lib\</code> folder
+      as <code>&lt;name&gt;.lua</code> (module files are libraries, so they do not appear in the Scripts
+      menu). A module runs in the same sandbox, limits and undo step as the script that imports it.</p>
+<pre><code>local kit = ged.import("kit")
+local hall  = kit.room{ name = "hall",  pos = {0, 0, 0},  size = {16, 6, 16} }
+local annex = kit.room{ name = "annex", pos = {15, 0, 0}, size = {12, 6, 12} }
+local way   = kit.doorway{ name = "annex_way", a = hall, b = annex }
+kit.door{ name = "annex_door", opening = way, buttons = { {7.5, 1.5, 2.5} } }
+kit.light_room{ room = hall }
+kit.spawn_points{ room = hall, count = 2 }</code></pre>
+      <ul>
+        <li><strong>Functions.</strong> <code>kit.room</code>, <code>kit.corridor</code> (between two rooms or
+        along a path), <code>kit.doorway</code> (optionally a portal doorway: the opening becomes a portal brush
+        that cuts the wall, as RED builds portals), <code>kit.stairs</code>,
+        <code>kit.ramp</code>, <code>kit.door</code> (a sliding mover door with use-key buttons or an
+        automatic trigger), <code>kit.platform</code>, <code>kit.pillar_row</code>, <code>kit.light_room</code>
+        (each light hangs under a visible fixture, a corridor gets a single row, and lights never land
+        inside a pillar or other solid in the room), <code>kit.spawn_points</code> (spawns spread at least
+        8 m apart beside cover, clear of doorways and facing the way out) and
+        <code>kit.sky_room</code> (an outdoor sky: a small sealed sky box with a Sky Room effect, and
+        show-sky ceilings over the rooms you list — the way the stock levels build their skies), and the
+        organic functions <code>kit.cave</code>, <code>kit.canyon</code>, <code>kit.passage</code>,
+        <code>kit.rock_wall</code>, <code>kit.boulders</code>, <code>kit.pit</code> and
+        <code>kit.light_path</code> (see <a href="#ai-organic">Caves, canyons and rocks</a>). Stairs
+        come with an invisible collision ramp over the step edges so players walk up them smoothly.
+        <code>print(kit.help())</code> lists every function with its options.</li>
+        <li><strong>Textures.</strong> Kit brushes are box-mapped in world space at 64 pixels per metre of
+        each texture's real size, the texel density of Red Faction's own levels: a 256 px texture repeats
+        every 4 m, a 128 px one every 2 m. Rock is mapped the same way. Without an RF install mounted every
+        texture counts as 256 px (one repeat per 4 m). Change <code>kit.defaults.ppm</code>, or set it to
+        <code>nil</code> to tile every texture at <code>kit.defaults.tile_metres</code>. Kit stairs start
+        each tread's texture at its nosing, and ramps run theirs up the slope without stretching.</li>
+        <li><strong>Palettes and trims.</strong> <code>kit.palette{theme = "industrial"}</code> (also
+        <code>"bunker"</code>, <code>"admin"</code>, <code>"cave"</code>, <code>"marsbase"</code>) returns a
+        coherent set of stock textures for a zone; pass its <code>textures</code> to <code>kit.room</code>,
+        use <code>variant</code> so neighbouring rooms differ, and <code>team = "red"</code> or
+        <code>"blue"</code> for team-coloured frames and accents. <code>kit.trim{room = hall}</code> gives a
+        room a base band, a top band, posts every few metres, frames around every doorway and window
+        through its walls, and hazard stripes along the open edges of kit platforms. Build it after the
+        room's openings and the solids standing in it.</li>
+        <li><strong>Spaces and set pieces.</strong> <code>kit.space{archetype = "atrium", pos = {0, 0, 0}}</code>
+        builds a complete space at the proportions of well-liked multiplayer levels: a hall, atrium, arena,
+        ring, sunken court, stair hall, courtyard, canyon with a bridge, cave chamber, pit room, control
+        room or storage hall; an open-air platform, sky bridge or open deck; or a Payload cart road,
+        overlook, gate or finale. <code>kit.archetypes{}</code> lists them with their sizes. A
+        <code>kit.room</code> whose size leaves out the height (<code>size = {16, nil, 12}</code>) gets the
+        height <code>kit.proportion</code> gives for its footprint. <code>kit.shaped_room</code> makes rooms
+        that are not boxes (octagon, L, T, U, cross or any polygon, with chamfered corners and stepped,
+        gabled, shed, coffered or beamed ceilings), and <code>kit.alcoves</code>, <code>kit.pilasters</code>
+        and <code>kit.floor_section</code> add wall insets, piers and raised or sunken floors.
+        <code>kit.bridge</code>, <code>kit.truss</code>, <code>kit.beam</code> and <code>kit.landmark</code>
+        make structures at landmark scale (a bridge warns when its span is under 12 m or its drop under 6 m),
+        <code>kit.opening</code> cuts windows, arches and rough mouths between two spaces, and
+        <code>kit.road</code> lays a wide, graded Payload cart road with level turns and tunnel legs.</li>
+        <li><strong>Population.</strong> <code>kit.dress{room = "hall", theme = "industrial"}</code> fills a
+        room, corridor, cave or canyon with props, cover, overhead beams and pipes, decals and (with the game
+        tables loaded) stock clutter for a theme: <code>"industrial"</code>, <code>"construction"</code>,
+        <code>"storage"</code>, <code>"control"</code>, <code>"mine"</code> or <code>"canyon"</code>. Props come
+        in groups (crates with barrels or a toolbox beside them, a barrier with crates at its end), gather in
+        corners and along walls, and frame each doorway; no decal goes where it would touch a compiled face
+        with more than 19 vertices, which crashes the game and the editor when the level loads (the linter
+        reports any such decal as an error).
+        <code>kit.spawn_points{rooms = {hall, annex}, count = 8}</code> places sheltered spawns that few others can
+        see, and <code>kit.items{gametype = "ctf"}</code> places weapons, ammo, health, armour and powerups
+        for <code>dm</code>, <code>tdm</code>, <code>ctf</code>, <code>koth</code>, <code>cp</code> or
+        <code>payload</code> (place the spawns first): about 1.6 items per 100 m² on a deathmatch-sized level,
+        fewer per area on large levels, and never bunched. <code>kit.light_room</code> hangs its ceiling fixtures from the
+        ceiling over each one; a room open to the sky gets a few strong lights on its edges instead (lamps on
+        the walls, a lamp post beside each doorway, none standing on the way between doorways), and
+        <code>kit.light_path</code> mounts each light on a wall lamp. All three take a <code>seed</code>, accept a room by
+        its name, and keep walking routes, doorways and spawns clear.</li>
+        <li><strong>Floor-anchored.</strong> Every kit <code>pos</code> is a point on the floor, and a
+        room's <code>size</code> is its clear interior. Openings meet rooms exactly, so the result is
+        watertight and stays grid-clean for hand editing. Walkable openings narrower than 1.8 m or lower
+        than 2 m are refused unless you pass <code>allow_tight = true</code>.</li>
+        <li><strong>Easy to keep editing.</strong> Kit output is ordinary editor content: plain brushes
+        tagged with what made them (<code>kit</code>, <code>kit.name</code>, <code>kit.part</code>), named
+        objects, and named groups for multi-brush parts such as stairs.</li>
+        <li><strong>Customising.</strong> Change <code>kit.defaults</code> (corridor and door sizes, step
+        size, light spacing, …) from your script, or copy <code>lib\kit.lua</code> to
+        <code>lib\mykit.lua</code> and <code>ged.import("mykit")</code>. The name <code>kit</code> always
+        loads the version built into Glacier.</li>
+        <li><strong>Example.</strong> <em>Example: tiny deathmatch level (design kit)</em> in the example
+        gallery builds three rooms, a corridor, a button door, stairs, pillars, lights, spawns and items
+        on a new level, and checks it is watertight. <em>Example: textured zones (palettes, trims, aligned
+        UVs)</em> shows palettes, trims and the texture tools.</li>
+      </ul>
+
+      <h3 id="cli">Command line &amp; AI agents (glacier-cli)</h3>
+      <p><code>glacier-cli</code> ships beside the Glacier executable and runs the same operations from a
+      terminal — or from an AI agent such as Claude Code (see <a href="#ai">AI-assisted level design</a>). It works two ways: on a level file
+      (nothing else needs to be running), or with <code>--attach</code> on the level open in the
+      editor, so you can watch every change happen and undo it.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>info &lt;level&gt;</code></td><td>Name, version, brush/object/link counts, geometry state.</td></tr>
+          <tr><td><code>new --out &lt;path&gt;</code></td><td>A new level from the File ▸ New template.</td></tr>
+          <tr><td><code>run &lt;script.lua&gt; [&lt;level&gt;]</code></td><td>Runs a Lua script as one undo step labelled <em>CLI: &lt;script&gt;</em>.
+            <code>--save</code> saves in place, <code>--out &lt;path&gt;</code> saves elsewhere, <code>--dry-run</code> previews.
+            Everything the run creates is tagged <code>ai.script</code> (the script file) and <code>ai.session</code>
+            (one id per <code>glacier-cli</code> invocation) so it can be found again with <code>level.objects_tagged</code> /
+            <code>level.brushes_tagged</code>, and the created UIDs are listed; <code>--no-tag</code> turns tagging off.
+            <code>--build</code> compiles a sealed build after the run (before any save), <code>--light</code> also bakes lighting.
+            <code>--timeout &lt;s&gt;</code> limits the script's running time (default 30 s; builds and saves do not count) and
+            <code>--budget &lt;n&gt;</code> the Lua instructions it may execute (default 200,000,000; <code>0</code> = unlimited) —
+            raise it when a heavy run stops with <em>Instruction budget exceeded</em>. <code>--timeout 0</code> lifts both
+            limits unless <code>--budget</code> is given. A dry run saves nothing, so <code>--dry-run</code> cannot be combined
+            with <code>--save</code> or <code>--out</code>.</td></tr>
+          <tr><td><code>build &lt;level&gt;</code></td><td>Geometry ▸ Build (<code>--sealed</code> for the full sealed build, <code>--light</code> to bake lighting).</td></tr>
+          <tr><td><code>light &lt;level&gt;</code></td><td>A sealed build plus lighting, like Calculate Lighting (the same as <code>build --sealed --light</code>).</td></tr>
+          <tr><td><code>holes &lt;level&gt;</code></td><td>Leak check on a sealed build, with positions.</td></tr>
+          <tr><td><code>lint &lt;level&gt;</code></td><td>Linter findings with locations, plus info hints where the level's proportions fall outside the corpus norms (skipped on an unsealed preview build).
+            On a built level it also warns about faces the player can see that still have the placeholder texture every new brush starts
+            with (<code>Rck_Default.tga</code>) or no texture, one warning per brush (or per kit piece, naming the kit call to give a texture);
+            portal, sky, invisible and hidden faces are left out.</td></tr>
+          <tr><td><code>summary &lt;level&gt;</code></td><td>A structured level summary (<code>--detail brief|normal|full</code>): bounds, brushes, objects, links, rooms, lint counts and tags.</td></tr>
+          <tr><td><code>analyze &lt;level&gt;</code></td><td>Measures the level from its compiled geometry (floor area, headroom, corridor and doorway sizes, stairs, room graph, lighting, spawn and item spacing) without opening it for editing.</td></tr>
+          <tr><td><code>norms</code></td><td>The corpus norms built into Glacier: how released levels are typically proportioned (doorway and corridor widths and heights, headroom, light density, texture tiling), as percentiles over many levels, aggregates only. <code>--metric opening.width</code> shows one measurement per group of levels (a curated reference set, all levels, deathmatch, CTF, single-player, …); <code>--compare &lt;level&gt;</code> shows where a level sits (below, within or above the typical range). The design kit's default sizes follow the reference set, and the linter adds info hints (never errors) when a level falls outside the typical range. Needs no level except with <code>--compare</code>.</td></tr>
+          <tr><td><code>grade &lt;level&gt;</code></td><td>The design grader: measures the level and checks its scale, shape, flow (loops, chokepoints, dead ends), population (items, dressing, spawns, cover, sightlines) and texturing against limits calibrated on well-regarded levels, with CTF, King of the Hill and Payload rules and their own limits for open-air / floating-platform maps. Prints the verdict — <em>PASS</em> (at most 2 failing checks), <em>REVIEW</em> (3–4) or <em>FAIL</em> (5 or more, or a hard check) — and each failing check with the measured values, a fix hint and the places to act on, followed by the player-class targets as <em>advisories</em> (playable area, floor per spawn, loops, floor-height classes: below, within or above the range of well-regarded levels — a Payload map takes the Payload layout budget for playable area and floor per spawn; never counted in the verdict) and the set pieces (the landmark bridge with its span, gap, depth and width, the longest span, the tallest landmark and atrium) (<code>--gametype</code>, <code>--players</code>, <code>--json</code>; <code>--metrics</code> adds the whole metric table; <code>--fail-on review|fail</code> exits 6). Read-only; a level with missing or out-of-date geometry is measured on a private preview build.</td></tr>
+          <tr><td><code>spatial &lt;op&gt; &lt;level&gt;</code></td><td>Spatial queries on the compiled geometry: <code>raycast</code>, <code>los</code>, <code>point_info</code>, <code>clearance</code>, <code>walk</code> (floor reachable on foot, by lift, jump pad or teleport; spawns and items off the floor), <code>routes</code>, <code>graph</code> (loops, chokepoints, pockets), <code>sightlines</code>, <code>cover</code>, <code>cells</code>, <code>area_report</code>, <code>spawn_report</code>, <code>item_report</code>, <code>locations</code> and <code>setpieces</code> (bridges with their span — the deck end to end — width, free length over the gap and its depth; walkways that are not bridges, with the reason; free-standing landmarks with their height; atria; the largest spaces; <code>--max</code> caps each list). Every result says which build it measured. The same queries are the Lua <code>spatial</code> global and the MCP tool <code>spatial_query</code>.</td></tr>
+          <tr><td><code>save &lt;level&gt;</code></td><td>Saves with the editor's save rules (<code>--out &lt;path&gt;</code> to save a copy). A level whose geometry is missing or out of date is built first (sealed, unlit), because the game cannot load a level with brushes and no compiled geometry; <code>--no-build</code> skips that with a warning. <code>run --save</code> does the same. Every save also writes the
+            level's sidecar (see below).</td></tr>
+          <tr><td><code>open &lt;level&gt; --attach</code></td><td>Opens a level in the running editor.</td></tr>
+          <tr><td><code>undo --attach</code></td><td>Undoes the editor's latest command-line run (<code>--steps &lt;n&gt;</code> for several). It only ever
+            undoes runs labelled <em>CLI: …</em> or <em>AI: …</em>: if you have edited the level since, it refuses and leaves your work alone.</td></tr>
+          <tr><td><code>redo --attach</code></td><td>Re-applies what <code>undo --attach</code> took back (<code>--steps &lt;n&gt;</code> for several); it refuses anything you undid yourself.</td></tr>
+          <tr><td><code>inspect &lt;uid&gt; &lt;level&gt;</code></td><td>Everything about one object or brush: kind, class, name, position, rotation, every property with its value, links in and out, tags; for a brush its flags, faces, size, bounds and textures.</td></tr>
+          <tr><td><code>query &lt;level&gt;</code></td><td>Finds objects (or brushes, <code>--what brushes</code>) by <code>--kind</code>, <code>--class</code>, <code>--name</code> (both accept <code>*</code> wildcards), <code>--tag key[=value]</code> and <code>--region</code>, sorted by UID and paged with <code>--limit</code> / <code>--offset</code>.</td></tr>
+          <tr><td><code>catalog kinds|classes|describe|textures</code></td><td>What can be placed: the placeable kinds, a kind's class names (<code>--kind Item</code>), a kind's or class's properties (<code>describe --kind Event --class Message</code>), texture names (<code>textures --filter rock</code>). Needs no level.</td></tr>
+          <tr><td><code>checkpoint &lt;name&gt; --attach</code></td><td>Remembers the structure of the editor's open level under a name, without changing it.</td></tr>
+          <tr><td><code>diff --since &lt;name&gt; --attach</code></td><td>Lists what was added, removed and changed since a checkpoint, by UID, with each changed property's old and new value.</td></tr>
+          <tr><td><code>mcp</code></td><td>Runs a Model Context Protocol server on standard input/output, so an AI assistant that supports MCP can open, script, build, check, render and save levels through typed tools (<code>glacier-cli help mcp</code> lists its options; see <a href="#ai-mcp">Connecting Claude Code (MCP)</a>).</td></tr>
+          <tr><td><code>api</code></td><td>Prints the Lua scripting reference generated from this build (<code>--member level.brush</code> for one entry,
+            <code>--lua</code> for the completion stub). Needs no level.</td></tr>
+          <tr><td><code>render &lt;level&gt; --out &lt;image.png&gt;</code></td><td>Draws the level to a PNG — by default a
+            floor plan of one storey with a metric grid, scale bar, object symbols, UID labels, links and a legend — so you
+            (or an AI agent) can check the layout. See <a href="#cli-render">Rendering images</a>.</td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li><strong>Same results as the editor.</strong> Builds use your Geometry ▸ Build method and
+        Lightmap Method from Settings, and saves follow File ▸ Save exactly (Alpine v306, a re-seal
+        of preview geometry first, the level's sidecar). Textures and game tables come from a Red
+        Faction install: <code>--rf-dir &lt;dir&gt;</code> first, then the <code>GED_RF_DIR</code>
+        environment variable, then the install configured in Glacier's settings (the
+        <code>settings.cfg</code> beside <code>glacier-cli</code>, else the one in your profile).
+        <code>--verbose</code> reports which install was mounted and where it came from; without one,
+        renders use flat colours and class and texture names cannot be checked.</li>
+        <li><strong>The level's sidecar.</strong> Every save — File ▸ Save in the editor,
+        <code>save</code>, <code>run --save</code>/<code>--out</code>, <code>build --save</code> — also
+        writes <code>&lt;level&gt;.gedlayout.json</code> beside the <code>.rfl</code>. It holds editor-only
+        data: Link Graph node positions, measurement annotations, and the level's own lightmap method
+        when it overrides the global one in Settings. The game never reads it, packfiles leave it out,
+        and the level works without it; keep it next to the level to keep those editor settings, or
+        delete it to drop them.</li>
+        <li><strong>Attach mode.</strong> With <em>Settings ▸ General ▸ Allow command-line tools and AI
+        agents to control the open level</em> on (the default), <code>--attach</code> sends the
+        command to the open editor: script output appears in the Script Log, the viewport updates,
+        and each run is one undo step. Leave out the level argument to use the open level. Nothing
+        ever shows a dialog; replacing a level with unsaved changes needs
+        <code>--allow-destructive</code>. The connection is local to your user account — never a
+        network port. Only one Glacier window accepts connections at a time.</li>
+        <li><strong>Where files may be written.</strong> Under the level's folder, your install's
+        <code>user_maps</code>, the scripts library, or — without <code>--attach</code> — a path you
+        name on the command line. Scripts run this way follow the same rule for
+        <code>ops.save</code> and <code>ops.package</code>.</li>
+        <li><strong>Output and exit codes.</strong> Output is readable text; <code>--json</code> prints
+        <code>{"ok", "command", "result", "error"}</code> for tools. Exit codes: 0 success, 1 the
+        command failed (or an undo was refused), 2 usage error, 3 no running editor accepted <code>--attach</code>, 4 file
+        error, 5 leaks found with <code>holes --fail-on-holes</code>, 6 a verdict at least as bad as <code>grade --fail-on review|fail</code> asks. <code>glacier-cli help</code>
+        lists every option.</li>
+      </ul>
+      <h4 id="cli-render">Rendering images</h4>
+      <p><code>glacier-cli render</code> never changes the level. It draws the level's compiled geometry;
+      if the level has never been built, or its brushes changed since the last build, it makes a quick
+      preview build for the image only and says so. <code>--rebuild</code> or <code>--sealed</code> force
+      a fresh preview or sealed build. With <code>--attach</code> it draws the level open in the editor,
+      unsaved edits included — the editor hands glacier-cli a copy, so rendering never slows down or
+      alters your session. The image is written wherever <code>--out</code> points.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--plan</code> (default)</td><td>A top-down slice of one storey: everything more than
+            <code>--thickness</code> (default 2 m) above the floor height <code>--y</code> is cut away, and
+            everything more than <code>--below</code> (default 1 m) under it is hidden. Without <code>--y</code>
+            the floor under the Player Start is used (else the first multiplayer spawn, else the lowest floor).
+            Walls are dark outlines where they cross the cut, solid space is hatched, and openings down to a
+            lower floor show that floor dimmed. Image right is +X, image up is +Z.</td></tr>
+          <tr><td><code>--view top|bottom|front|back|left|right</code></td><td>An orthographic view of the whole level (no slicing).</td></tr>
+          <tr><td><code>--view iso</code></td><td>A three-quarter perspective from above (<code>--fov</code>, default 45°), framed on the level's geometry
+            (its sky room left out).</td></tr>
+          <tr><td><code>--camera x,y,z --look x,y,z</code></td><td>A perspective view from any point (<code>--fov</code>, default 60°). Show-sky faces
+            show the level's sky room as the game draws it — from the sky room's centre, turned with the camera — or a
+            plain sky colour when the level has no sky room.</td></tr>
+          <tr><td><code>--region minx,miny,minz,maxx,maxy,maxz</code>, <code>--room &lt;index&gt;</code>, <code>--uid &lt;uid&gt;</code></td><td>Frame a box, a compiled room, or one object / brush instead of the whole level. A plan of a region frames the
+            part of it that has geometry in the slice; an iso view of a region shows only what lies inside it.</td></tr>
+          <tr><td><code>--mode lit|textured|lightmaps|rooms|wireframe|seethrough</code></td><td>Shading, as in the View menu. <code>lit</code> (default)
+            uses the baked lightmaps; on a level that is not lit yet it shows textures, and without a Red Faction
+            install it shows each room in its own colour.</td></tr>
+          <tr><td><code>--size WxH</code></td><td>Image size (up to 4096 on each side). Without it the longest side is 1024 and plans and other
+            orthographic views take the proportions of what they frame (the storey's geometry, the region or the room);
+            iso and camera views are 1024x1024.</td></tr>
+          <tr><td><code>--icons</code>, <code>--no-icons</code></td><td>The editor's 3-D object icons (lights, spawns, events, triggers, keyframes
+            and facing arrows) in a view other than a plan. Iso and camera views leave them out by default — a clean view of
+            the level as a player sees it, with clutter and items drawn as their meshes when an RF install is mounted — and
+            so does <code>--no-overlays</code>; the other orthographic views show them.</td></tr>
+          <tr><td><code>--overlays grid,scale,objects,labels,links,holes</code></td><td>Choose the overlays (<code>--no-overlays</code> for a
+            clean image). Plans show all but <code>holes</code> by default; other views show none. A legend
+            explaining every symbol comes with any overlay (<code>nolegend</code> hides it); it sits in a corner the
+            level leaves empty when there is one. <code>holes</code> marks leaks found by a sealed hole check.
+            <code>icons</code> / <code>noicons</code> in the list work like <code>--icons</code> / <code>--no-icons</code>.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Object symbols: Player Start green (with an arrow for its facing), multiplayer spawns red, blue,
+      purple (both teams) or white (any team), items yellow diamonds, triggers cyan squares with their
+      extent, events orange triangles, keyframes and movers magenta, lights pale stars, clutter grey
+      squares. Labels show the UID and a short script name. With <code>--json</code>, the result
+      also lists every symbol's pixel position and gives the exact pixel-to-world mapping (and the
+      camera's view-projection matrix for perspective views). Rendering needs a graphics device:
+      Direct3D 11 (or its software fallback) on Windows, OpenGL 3.3 on Linux; without one the command
+      fails with exit code 1.</p>
+      <div class="note">On Linux, <code>glacier-cli</code> is included in the tar.gz package (the
+      AppImage starts the editor).</div>
     </section>
 
     <!-- 13 -->
+    <section id="ai">
+      <h2>13. AI-assisted level design</h2>
+      <p>An AI agent that can run command-line programs, such as <strong>Claude Code</strong>, can build
+      and edit levels for you through <a href="#cli"><code>glacier-cli</code></a> and the
+      <a href="#scripting-kit">design kit</a>. You describe what you want; the agent writes a Lua
+      script, runs it, draws the result as a floor plan, checks it, and reports back. It assists — it
+      does not replace you. You direct it, review what it made, and keep shaping the level with further
+      requests, by hand, or both.</p>
+      <div class="grid2">
+        <div class="tile"><h4>Block out</h4><p>Rooms, corridors, doorways, stairs, ramps, platforms,
+          pillars, sliding doors and outdoor skies, built from plain brushes on a clean grid; whole spaces
+          from an archetype library, bridges, landmarks, and textured walls with trims.</p></div>
+        <div class="tile"><h4>Populate</h4><p>Lights under fixtures, props, cover and decals, multiplayer
+          spawns, items, the Player Start, triggers and links, level properties.</p></div>
+        <div class="tile"><h4>Check</h4><p>Sealed builds, hole checks, the linter, floor-plan images and
+          structured level summaries, so the agent can verify its own work.</p></div>
+        <div class="tile"><h4>Edit</h4><p>Find and change existing objects and brushes — by name, tag,
+          area or your current selection.</p></div>
+      </div>
+      <p>Everything the agent makes is ordinary editor content: simple brushes, named objects, and named
+      groups for multi-part pieces such as stairs. Nothing is locked away; you can select, move,
+      re-texture or delete any of it as usual.</p>
+
+      <h3 id="ai-connect">Connecting an agent</h3>
+      <p>Glacier includes the instructions an agent needs in the <code>ai</code> folder beside the
+      executable: <code>AGENT-GUIDE.md</code> (how to drive Glacier: the build-and-check loop, the
+      design kit, the checks to run before handing a level back), a ready-made Claude Code skill in
+      <code>ai\claude-skill</code>, and a <code>README.md</code>.</p>
+      <ul>
+        <li><strong>Claude Code.</strong> Copy the <code>ai\claude-skill</code> folder to
+        <code>%USERPROFILE%\.claude\skills\glacier-level-design\</code> (on Linux,
+        <code>~/.claude/skills/glacier-level-design/</code>) to use it in every project, or to a project's
+        <code>.claude\skills\</code> folder for that project only. The folder already contains a copy of
+        the guide. Claude Code then uses it whenever you ask for Red Faction level work.</li>
+        <li><strong>Other agents.</strong> Any agent that can run programs on your computer and look at
+        image files can use Glacier: give it <code>ai\AGENT-GUIDE.md</code> and tell it where
+        <code>glacier-cli</code> is. An assistant that supports MCP can use Glacier's tools instead (see
+        <a href="#ai-mcp">Connecting Claude Code (MCP)</a>). Chat apps that can neither run programs nor
+        connect MCP servers on your computer cannot drive Glacier.</li>
+        <li><strong>Tell it where things are.</strong> The first time, tell the agent the Glacier folder
+        (or put it on your <code>PATH</code>). Textures and item/entity names come from the Red Faction
+        install configured in Settings, or <code>--rf-dir</code> / <code>GED_RF_DIR</code>.</li>
+      </ul>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Mode</th><th>How it works</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr><td class="key"><strong>Attach</strong></td><td>The agent sends its commands to the level open
+            in Glacier (<code>--attach</code>). You see every change in the viewport as it happens.</td>
+            <td>Working together on a level you are editing.</td></tr>
+          <tr><td class="key"><strong>Headless</strong></td><td>The agent works on <code>.rfl</code> files
+            without the editor and saves only where you tell it to.</td>
+            <td>Generating a first blockout, batch jobs, trying ideas on a copy.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Attach mode needs <em>Settings ▸ General ▸ Allow command-line tools and AI agents to control the
+      open level</em> switched on (the default). Switch it off to make sure no tool can change the level
+      you have open. An assistant connected through <code>glacier-cli mcp</code> labels its undo steps
+      <em>AI: &lt;script name&gt;</em>, and it can discard unsaved changes or overwrite other files only when
+      <em>Settings ▸ General ▸ Allow destructive AI actions</em> is on and the server was started with
+      <code>--allow-destructive</code> (both are off by default).</p>
+
+      <h3 id="ai-mcp">Connecting Claude Code (MCP)</h3>
+      <p><code>glacier-cli mcp</code> runs Glacier as a Model Context Protocol (MCP) server. An assistant that
+      supports MCP — Claude Code, Claude Desktop and others — then gets Glacier's operations as tools: it
+      can open, script, build, check, render and save levels and look at the floor plans it draws, without
+      typing commands into a terminal. The assistant starts the server itself and talks to it over
+      standard input/output; nothing listens on a network port.</p>
+      <p><strong>Claude Code.</strong> Run this once in a terminal, with your Glacier folder in place of
+      <code>C:\Games\Glacier</code>:</p>
+<pre><code>claude mcp add glacier -- "C:\Games\Glacier\glacier-cli.exe" mcp</code></pre>
+      <p>On Linux use the <code>glacier-cli</code> from the tar.gz package. <code>claude mcp list</code> shows the
+      server; inside Claude Code, <code>/mcp</code> shows whether it is connected. Other assistants take the same
+      command in their MCP settings — for example Claude Desktop's <code>claude_desktop_config.json</code>, here
+      working on level files in a chosen folder:</p>
+<pre><code>{ "mcpServers": { "glacier": {
+    "command": "C:\\Games\\Glacier\\glacier-cli.exe",
+    "args": ["mcp", "--headless", "--allow-write", "C:\\Games\\RedFaction\\user_maps\\multi"] } } }</code></pre>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Option (after <code>mcp</code>)</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td>(none)</td><td>If Glacier is running when the assistant starts the server, the tools work on the level
+            open in the editor; otherwise on level files. The choice holds until the server restarts.</td></tr>
+          <tr><td><code>--attach</code></td><td>Always the open editor. If Glacier is not running yet, the tools say so and
+            connect as soon as it is.</td></tr>
+          <tr><td><code>--headless</code></td><td>Always level files, without the editor. Nothing is saved until the assistant saves.</td></tr>
+          <tr><td><code>--read-only</code></td><td>Only the tools that look and check; nothing can change a level or write a file.</td></tr>
+          <tr><td><code>--allow-destructive</code></td><td>Lets the assistant discard unsaved changes, overwrite other existing
+            files, and run scripts that delete or save. In the editor this also needs the setting below.</td></tr>
+          <tr><td><code>--allow-write &lt;folder&gt;</code></td><td>Another folder it may save to (the level's folder, your install's
+            <code>user_maps</code> and the scripts library always are).</td></tr>
+          <tr><td><code>--tools</code> / <code>--deny-tools</code></td><td>Offer only, or never, the named tools.</td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li><strong>Destructive actions need two switches in the editor.</strong> With the assistant attached to Glacier,
+        discarding your unsaved changes, overwriting another file or deleting through a script is allowed only while
+        <em>Settings ▸ General ▸ Allow destructive AI actions</em> is on <em>and</em> the server was started with
+        <code>--allow-destructive</code>. Both are off by default; leave them off unless you want the assistant to do
+        those things. The assistant cannot turn either on.</li>
+        <li><strong><em>AI:</em> entries in the history.</strong> Each script the assistant runs is one undo step named
+        <em>AI: &lt;script name&gt;</em> (followed by a short description when the assistant gives one). Command-line runs
+        are named <em>CLI: …</em> instead, and your own edits keep their usual names.</li>
+        <li><strong>Undoing AI work.</strong> <kbd>Ctrl+Z</kbd> (Edit ▸ Undo) removes the latest step, a whole script run
+        at a time, and <kbd>Ctrl+Y</kbd> brings it back. You can also ask the assistant to undo: its undo tool only
+        removes <em>AI:</em> and <em>CLI:</em> steps and refuses when your own edit is the latest one, so it never
+        takes back your work. To find everything it made, see <a href="#ai-find">Finding what the agent made</a>.</li>
+        <li><strong>Pictures come from a copy.</strong> The plans the assistant looks at are drawn by
+        <code>glacier-cli</code> from a copy of the level, so rendering never changes your level or slows the editor.</li>
+        <li><strong>One connection at a time.</strong> While an assistant is attached, it holds the editor's only
+        automation connection: <code>glacier-cli … --attach</code> commands from a terminal cannot connect until that
+        assistant session ends.</li>
+      </ul>
+
+      <h3 id="ai-watch">Watching and undoing</h3>
+      <ul>
+        <li><strong>One run, one undo step.</strong> Each script the agent runs in the editor is a single
+        undo step labelled <em>CLI: &lt;script name&gt;</em> (<em>AI: &lt;script name&gt;</em> through the MCP tools).
+        <kbd>Ctrl+Z</kbd> removes the whole run; a script that fails changes nothing.</li>
+        <li><strong>The agent can take back its own runs.</strong> <code>glacier-cli undo --attach</code>
+        undoes the latest command-line run, and refuses when your own edit is the latest step — an agent
+        never undoes your work.</li>
+        <li><strong>Live output.</strong> The agent's messages appear in the Script Log, and the viewport
+        updates when each run finishes.</li>
+        <li><strong>Pictures it can read.</strong> The agent checks layouts with floor-plan images
+        (<a href="#cli-render">Rendering images</a>). Ask it to show you the image it looked at.</li>
+      </ul>
+
+      <h3 id="ai-find">Finding what the agent made</h3>
+      <p>Everything an agent's run creates is tagged <code>ai.script</code> (the script's file name) and
+      <code>ai.session</code> (one id per command it ran). Design-kit parts are also tagged
+      <code>kit</code>, <code>kit.name</code> (the name of the room, door, stairs…) and
+      <code>kit.part</code>. <code>glacier-cli summary</code> counts the tags; in the Script Console:</p>
+<pre><code>level.brushes_tagged("ai.session"):select()        -- every brush an agent created
+level.objects_tagged("ai.session"):select()        -- every object an agent created
+level.brushes_tagged("kit.name", "hall"):select()  -- the parts of the room named "hall"</code></pre>
+      <p>Tags are saved with the level and do nothing in the game.</p>
+
+      <h3 id="ai-organic">Caves, canyons and rocks</h3>
+      <p>Besides rooms on a grid, the design kit builds natural spaces along a floor path on any
+      heading: <code>kit.cave</code> (a rough rock tunnel), <code>kit.canyon</code> (open to the sky, with
+      leaning walls and basins where you widen it) and <code>kit.passage</code> (a clean, level corridor at
+      any angle), plus <code>kit.rock_wall</code>, <code>kit.boulders</code> and <code>kit.pit</code> for
+      rock dressing and drops, and <code>kit.light_path</code> to light a route. Ask an agent for “a cave
+      that climbs from the hub to a gallery” or “a canyon with two basins and some boulders” and it uses
+      these.</p>
+      <ul>
+        <li><strong>Walkable by construction.</strong> Every cave and canyon keeps a 1.8 m wide, 2 m high
+        walkway along its path. Floors are level or a smooth slope of at most 45° on each stretch — no
+        steps — with a short level landing where a climbing stretch turns.</li>
+        <li><strong>Watertight and editable.</strong> Each space is a chain of plain convex brushes that
+        meet on identical faces, grouped and tagged under the name the script gave it. Boulders and rock
+        walls are detail brushes unless the script asks for a structural ridge. Change a generated space
+        by running its script again with new options rather than moving its vertices by hand.</li>
+        <li><strong>Repeatable.</strong> Each piece takes a <code>seed</code>: the same options and seed
+        always give the same rocks; a new seed gives new shapes in the same layout.</li>
+        <li><strong>Keep it central.</strong> Keep large caves and canyons within about 200 m of the
+        level's origin; geometry far from it is compiled less precisely.</li>
+      </ul>
+      <p>Two complete examples ship in the scripts library's <code>examples</code> folder and appear under
+      <em>Scripts ▸ Examples</em>: <strong>snaking canyon</strong> (<code>kit-canyon.lua</code>, a 240 m outdoor
+      canyon with basins, a descent, rock outcrops, a walkable ledge, boulders, lights, spawns and items)
+      and <strong>cave network</strong> (<code>kit-cave.lua</code>, a hub with a cave climbing to a
+      gallery, a passage to an armoury, and a loop down a pit and back up an underpass). Run either on a
+      new level, then build, light and play it.</p>
+
+      <h3 id="ai-layout">Planning a whole level first</h3>
+      <p>For a whole level, an agent following the guide starts from a <strong>layout plan</strong> rather
+      than from rooms: <code>kit.layout</code> turns a request (game mode, number of players, indoor or
+      floating platforms, a one-line brief, a seed) into a list of areas — each with its kind of space, size,
+      floor level and texture palette — the connections between them (corridors, doorways, stairs, ramps,
+      drops, bridges, windows, lifts) and where the spawns, flags, hill or payload track go. The agent can
+      show you the plan as a text drawing, change it, and check it against the layout rules before
+      anything is built; <code>kit.build_layout</code> then builds it watertight, with lights, spawns and the
+      game-mode setup (CTF flags, a King of the Hill capture point, or a Payload cart with its checkpoints and
+      spawn hand-off) in place.</p>
+      <ul>
+        <li><strong>Sized for the players.</strong> A 2–4 player arena is about 1,500–3,000 m² of floor;
+        8 players about 3,300–4,900 m²; 16 players up to about 6,400 m². CTF and King of the Hill maps are
+        larger, and Payload maps are three to five legs long. A Payload cart route can run and turn on any
+        heading and cross a chasm on a cart bridge.</li>
+        <li><strong>Loops, not dead ends.</strong> Every area has at least two ways in and out (one small
+        reward room at most), routes loop, the level spans at least three storeys, CTF bases have three
+        exits on two heights with three lanes between them, a King of the Hill hill is sunken or raised
+        with five to eight approaches, and every Payload checkpoint has three routes into the next leg.</li>
+        <li><strong>Repeatable.</strong> The same request and seed give the same level; a new seed gives
+        another layout. Everything built is ordinary, tagged, hand-editable brushes and objects.</li>
+        <li><strong>Not yet dressed.</strong> The layout places spawns and the game-mode objects but no
+        items, crates or decals; ask the agent to populate it afterwards. Every area of the plan keeps its
+        name, so the dressing, item and spawn helpers can be pointed at it by that name.</li>
+      </ul>
+
+      <h3 id="ai-safety">Safety</h3>
+      <ul>
+        <li><strong>Destructive operations need your permission.</strong> Deleting content, overwriting
+        another file, or discarding unsaved changes in the editor is refused unless the command carries
+        <code>--allow-destructive</code>. Agents following the guide only use it when you asked for that
+        change. Through the MCP tools in the editor, the server must be started with <code>--allow-destructive</code>
+        and <em>Settings ▸ General ▸ Allow destructive AI actions</em> must be on.</li>
+        <li><strong>Limited places to write.</strong> Files are written only under the level's folder,
+        your install's <code>user_maps</code>, the scripts library, or — for headless work — paths named
+        on the command line. Scripts have no file, network or process access.</li>
+        <li><strong>Local only.</strong> The editor connection belongs to your user account on this
+        computer; it is never a network port.</li>
+      </ul>
+
+      <h3 id="ai-prompts">Example requests</h3>
+      <ul>
+        <li>“Block out a small deathmatch level: two 14 m rooms joined by a corridor, two pillars, eight
+        spawns, a shotgun and a medkit. Show me the floor plan, then build it, check it for holes, light it
+        and save it.”</li>
+        <li>“In the open editor, add a raised platform with stairs in the corner of the room I have
+        selected, and light it.”</li>
+        <li>“Summarise this level: which rooms have no lights, and which spawns are too close to a
+        wall? Don't change anything yet.”</li>
+        <li>“Add a sliding door with Use buttons on both sides to the doorway between hall and
+        annex.”</li>
+        <li>“Run a cave from the west wall of the hub up to a new room 6 m higher, scatter a few
+        boulders in it, check it for holes, and light it.”</li>
+        <li>“Dress the hall and the yard as an industrial area, then place eight spawns and the items
+        for team deathmatch.”</li>
+      </ul>
+
+      <h3 id="ai-limits">Limitations</h3>
+      <ul>
+        <li><strong>Check in the game.</strong> The agent verifies geometry, holes, the linter and the
+        layout, but not how the level plays. Play-test it — especially doors: a design-kit door's timing
+        and blocking are only confirmed by playing.</li>
+        <li><strong>Portals are opt-in.</strong> The agent adds visibility portals only where you ask for
+        them; small levels play fine without.</li>
+        <li><strong>Spatial judgement.</strong> Agents reason about space from plans and numbers. Review
+        the floor plan of every storey, and say exactly what you want moved and where.</li>
+      </ul>
+    </section>
+
+    <!-- 14 -->
     <section id="playtest">
-      <h2>13. Playtesting</h2>
+      <h2>14. Playtesting</h2>
       <p>Launch straight into your level through Alpine Faction. <em>Play Level</em> (<kbd>F7</kbd>)
       and <em>Play Level from Camera</em> (<kbd>F8</kbd>) start single-player; <em>Play in Multi</em>
       (<kbd>F9</kbd>) and <em>Play in Multi from Camera</em> (<kbd>F10</kbd>) start a multiplayer
@@ -690,9 +1261,9 @@
       runs under Wine or Proton; staging paths flow through the VFS mount unchanged.</p>
     </section>
 
-    <!-- 14 -->
+    <!-- 15 -->
     <section id="io">
-      <h2>14. Import &amp; export</h2>
+      <h2>15. Import &amp; export</h2>
       <h3>Importing meshes</h3>
       <p><em>File ▸ Import Mesh</em> brings in <strong>OBJ</strong>, <strong>FBX</strong>,
       <strong>glTF/GLB</strong> and <strong>DAE</strong> geometry, with a scale/axis/winding wizard.
@@ -705,13 +1276,35 @@
       your level and its referenced assets into a distributable <code>.vpp</code>, using the
       dependency scan to find what the level needs.</p>
       <div class="note"><strong>RFL versions.</strong> Glacier loads <code>.rfl</code> files from
-      versions <strong>180–305</strong> and always <strong>saves version 305</strong> (Alpine RED
-      format). Opening a pre-Alpine (&lt;300) level shows a non-blocking informational notice.</div>
+      versions <strong>180–306</strong> and always <strong>saves version 306</strong> (the Alpine
+      Faction 1.5 format). Opening a pre-Alpine (&lt;300) level shows a non-blocking informational
+      notice; an older level is upgraded when saved, and the Log panel lists anything the upgrade
+      changed (for example a fog near clip reset to 0, or Looping sound events that now loop). A level
+      saved by a newer Alpine Faction opens read-only — Glacier shows a notice, marks the window title,
+      and refuses to save it so its newer content is not lost.</div>
+      <div class="note"><strong>Alpine Faction 1.5 objects.</strong> Weather regions, vehicle
+      factories, projection cameras, rope emitters, directional lights, vehicle waypoint helpers and
+      terrain from Alpine Faction 1.5 levels appear in the Outliner and can be inspected and read from
+      scripts. Glacier keeps them exactly as they were saved; edit them in Alpine RED.</div>
+      <div class="note"><strong>Alpine lightmaps.</strong> A level lit in Alpine RED can carry Alpine
+      Faction's Direct3D 11 lightmaps alongside (or, with "D3D11-only lightmaps", instead of) the stock
+      lightmaps. Glacier keeps them unchanged until it rebuilds the geometry or recalculates the
+      lighting; after that they no longer match the level, so saving drops them with a note in the Log
+      panel, the game uses the stock lightmaps Glacier wrote, and the level's D3D11-only and Require
+      Direct3D 11 flags are updated to match. To get Alpine lighting back, re-bake the level in Alpine
+      RED. A D3D11-only level gets stock lightmaps from its next Calculate Lighting.</div>
+      <div class="note"><strong>New levels</strong> start with Alpine RED's new-level settings: Legacy
+      Cyclic Timers and Legacy Movers off, every other Alpine level property at Alpine's defaults.
+      Levels you open keep their own settings; one without Alpine level properties keeps the stock
+      behaviour (legacy timers and movers on) until you change one. The Alpine group of Level Properties
+      also holds the Payload rules (push speed, rollback, acceleration, checkpoint bonus, heal and ammo,
+      overtime grace, respawn delay modifiers); a Payload cart needs Legacy Movers off, and the linter
+      checks everything else Alpine Faction requires of the cart and its checkpoints.</div>
     </section>
 
-    <!-- 15 -->
+    <!-- 16 -->
     <section id="hotkeys">
-      <h2>15. Keyboard shortcuts</h2>
+      <h2>16. Keyboard shortcuts</h2>
       <p>Two presets ship: <strong>RED Classic</strong> (stock RED keys plus the Alpine additions)
       and <strong>Modern</strong>. Every binding is rebindable in <em>Settings ▸ Input</em> — the one
       exception is continuous camera movement, which uses fixed held keys (see
@@ -1010,9 +1603,9 @@
       </table></div>
     </section>
 
-    <!-- 16 -->
+    <!-- 17 -->
     <section id="faq">
-      <h2>16. Troubleshooting &amp; FAQ</h2>
+      <h2>17. Troubleshooting &amp; FAQ</h2>
 
       <h4>Textures and meshes show as missing / pink</h4>
       <p>The Red Faction install folder is not set or does not contain the expected VPPs. Set it in
@@ -1035,8 +1628,9 @@
       shell is sealed.</p>
 
       <h4>An old level won't save the way it loaded</h4>
-      <p>Glacier loads RFL versions 180–305 and always saves version 305 (Alpine RED format). Opening
-      a pre-Alpine level is fine — it is upgraded on save.</p>
+      <p>Glacier loads RFL versions 180–306 and always saves version 306 (Alpine Faction 1.5 format).
+      Opening a pre-Alpine level is fine — it is upgraded on save. Levels from a newer Alpine Faction open
+      read-only.</p>
 
       <h4>A camera key won't rebind</h4>
       <p>Continuous camera movement (pitch / heading / slide / move / zoom / ortho zoom) uses fixed

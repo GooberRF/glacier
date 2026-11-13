@@ -159,6 +159,12 @@ public sealed class BuildReport
     /// <summary>Wall-clock milliseconds of the CSG solve alone (subset of <see cref="ElapsedMs"/>).</summary>
     public double SolveMs { get; set; }
 
+    /// <summary>
+    /// Alpine RED's eleven build-repair counters (<see cref="CompileOptions.AlpineRepair"/>); all zero and
+    /// <see cref="BuildRepairStats.Ran"/> false when repair was off.
+    /// </summary>
+    public BuildRepairStats Repair { get; } = new();
+
     /// <summary>True when a hole/leak (room reaching the void) was detected.</summary>
     public bool HasLeak { get; set; }
 

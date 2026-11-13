@@ -47,9 +47,22 @@ public sealed class Geometry
     /// <summary>Legacy face-scroll table written after surfaces (version &lt;= 0xB4).</summary>
     public List<FaceScrollData> LegacyFaceScrollData { get; set; } = new();
 
-    public static Geometry Parse(RfReader r, RflContext ctx)
+    /// <summary>
+    /// True when this geometry was loaded from a file that stores lightmap UVs on every face whose
+    /// surface index's low word is not 0xFFFF — including surfaces 32768–65534, which the engine
+    /// treats as "no lightmap" (see <see cref="FaceHasLightmapUvs"/>). Some levels with more than
+    /// 32767 surfaces were saved that way (and earlier Glacier versions read and wrote it), so it is
+    /// still read, and re-serialized the same way to keep such files byte-identical. Freshly built
+    /// geometry never uses it.
+    /// </summary>
+    public bool UsesWideSurfaceLightmapUvs { get; private set; }
+
+    public static Geometry Parse(RfReader r, RflContext ctx) => Parse(r, ctx, wideSurfaceLightmapUvs: false);
+
+    /// <summary>Parses with the engine's lightmap-UV test, or with the wide variant (<see cref="UsesWideSurfaceLightmapUvs"/>).</summary>
+    public static Geometry Parse(RfReader r, RflContext ctx, bool wideSurfaceLightmapUvs)
     {
-        var g = new Geometry();
+        var g = new Geometry { UsesWideSurfaceLightmapUvs = wideSurfaceLightmapUvs };
 
         if (ctx.GeometryHasNewModifiability)
         {
@@ -124,7 +137,7 @@ public sealed class Geometry
         int numFaces = r.ReadI32();
         for (int i = 0; i < numFaces; i++)
         {
-            g.Faces.Add(ReadFace(r));
+            g.Faces.Add(ReadFace(r, wideSurfaceLightmapUvs));
         }
 
         int numSurfaces = r.ReadI32();
@@ -215,7 +228,7 @@ public sealed class Geometry
         w.WriteI32(Faces.Count);
         foreach (Face f in Faces)
         {
-            WriteFace(w, f);
+            WriteFace(w, f, UsesWideSurfaceLightmapUvs);
         }
 
         w.WriteI32(Surfaces.Count);
@@ -341,13 +354,18 @@ public sealed class Geometry
 
     /// <summary>
     /// Per-vertex lightmap UVs are present only for faces that bind a real
-    /// lightmap surface. The "no surface" sentinel appears as both -1
-    /// (0xFFFFFFFF) and 0xFFFF in the corpus, so the low 16 bits are tested:
-    /// a surface index whose low word is 0xFFFF carries no lightmap UVs.
+    /// lightmap surface. The engine keeps a face's surface index as a signed
+    /// 16-bit value and reads the lightmap UVs only when that short is
+    /// non-negative (RF.exe geo_load_static_geometry_section @ 0x004ED520: the
+    /// i32 is narrowed into a short, then <c>if (-1 &lt; *(short*)(face+0x36))</c>
+    /// reads the extra UV pair). So the "no surface" sentinel is any index whose
+    /// low word has bit 15 set — -1 (0xFFFFFFFF) and 0xFFFF in practice, but also
+    /// 0x8000–0xFFFE, which levels with more than 32767 surfaces store on the
+    /// faces past that point without lightmap UVs.
     /// </summary>
-    private static bool FaceHasLightmapUvs(Face f) => (f.SurfaceIndex & 0xFFFF) != 0xFFFF;
+    public static bool FaceHasLightmapUvs(Face f) => (short)(f.SurfaceIndex & 0xFFFF) >= 0;
 
-    private static Face ReadFace(RfReader r)
+    private static Face ReadFace(RfReader r, bool wideSurfaceLightmapUvs)
     {
         var f = new Face
         {
@@ -365,7 +383,7 @@ public sealed class Geometry
         };
 
         int numVertices = r.ReadI32();
-        bool hasLightmap = FaceHasLightmapUvs(f);
+        bool hasLightmap = wideSurfaceLightmapUvs ? (f.SurfaceIndex & 0xFFFF) != 0xFFFF : FaceHasLightmapUvs(f);
         for (int i = 0; i < numVertices; i++)
         {
             var fv = new FaceVertex
@@ -384,7 +402,7 @@ public sealed class Geometry
         return f;
     }
 
-    private static void WriteFace(RfWriter w, Face f)
+    private static void WriteFace(RfWriter w, Face f, bool wideSurfaceLightmapUvs)
     {
         w.WritePlane(f.Plane);
         w.WriteI32(f.Texture);
@@ -399,7 +417,7 @@ public sealed class Geometry
         w.WriteI32(f.RoomIndex);
 
         w.WriteI32(f.Vertices.Count);
-        bool hasLightmap = FaceHasLightmapUvs(f);
+        bool hasLightmap = wideSurfaceLightmapUvs ? (f.SurfaceIndex & 0xFFFF) != 0xFFFF : FaceHasLightmapUvs(f);
         foreach (FaceVertex fv in f.Vertices)
         {
             w.WriteI32(fv.Index);

@@ -1,0 +1,269 @@
+{
+  "schema": "glacier.design-grader/1",
+  "version": 1,
+  "source": "DESIGN-QUALITY-SPEC §(d), calibrated on the exemplar study (44 exemplars, 6 counter-examples, 2 generated levels): every base threshold below is the study's own (research/exemplar-study/tools/grader.py), reproduced exactly by the grader calibration test. Class thresholds (§(h)) relax only the checks sky, open edges or a payload layout distort; re-calibrate by re-running the study tools and this test.",
+  "verdict": {
+    "doc": "PASS: at most pass_max failures. REVIEW: at most review_max. FAIL: more, or any hard check failing. A generated level should reach PASS; every remaining REVIEW item goes in the hand-off with its reason.",
+    "pass_max": 2,
+    "review_max": 4
+  },
+  "classes": {
+    "open_air": {
+      "doc": "Open-air / floating-platform maps: most of the walkable floor is under sky or a ceiling at least 20 m up, and a real share of it sits at open edges that drop more than 8 m. Sky and void distort headroom, ceiling variety, clear width, space size, sightlines and exposure, and bridges between platforms read as chokepoints, so those checks use the class limits (the class exemplars' range with a margin); the too-big-and-open signature keeps failing.",
+      "detect": { "all": [ { "metric": "open_air_fraction", "min": 0.5 }, { "metric": "falloff_edge_fraction", "min": 0.04 } ] }
+    },
+    "payload": {
+      "doc": "Payload maps (gametype payload, or a Payload_Handler event): a cart track through 3-5 checkpoints, each segment a fight area with its own loops and population, at least 3 routes into every next segment and no single cell carrying most of the crossing, and spawns switched over at every checkpoint. Thresholds come from the owner's payload direction (§(h)) and the per-area density of the closest exemplars (E20, E23), until real payload maps exist. The DM no-chokepoint check is replaced by the boundary check P05.",
+      "detect": "payload"
+    }
+  },
+  "players": {
+    "doc": "Player class by spawn count (or the stated player count): S <= 10 spawns, M 11-18, L > 18. The targets are exemplar p25-p75 (§(a)), reported with the grade; the checks do not depend on the class.",
+    "advisory": "Advisory, not counted in the verdict: each player-class target (exemplar p25-p75) compared with the level (below / within / above). They stay advisory because the calibration cannot carry them as checks: by definition half the exemplars sit outside a p25-p75 range, and any limit tight enough to matter fails exemplars that pass today (dm03 has 1,300 m2 of floor for class S, dm01 and ctf02 have 5 floor-height classes, ctf01 and dm16 have 0.73 and 0.61 loops per 1000 m2), while the loose study limits stay checked (G01 floor per spawn, G08 >= 5 floor-height classes, G14 loops).",
+    "S": { "playable_area": [3300, 4900], "area_per_spawn": [430, 610], "loops8_per1000": [0.75, 1.85], "floor_height_classes": [6.75, 11] },
+    "M": { "playable_area": [4400, 6400], "area_per_spawn": [300, 510], "loops8_per1000": [0.75, 1.85], "floor_height_classes": [6.75, 11] },
+    "L": { "playable_area": [4600, 8000], "area_per_spawn": [165, 265], "loops8_per1000": [1.4, 2.3], "floor_height_classes": [10, 15] },
+    "payload": { "doc": "Payload maps take the kit's payload layout budget (kit.layout{gametype = \"payload\"}: 3-4x the DM-M / CTF floor, floor per spawn as G01) for these targets, and their player class's row for the rest.", "playable_area": [12000, 24000], "area_per_spawn": [180, 800] }
+  },
+  "checks": [
+    {
+      "id": "G01", "group": "scale", "doc": "Playable floor per spawn 180-800 m2.",
+      "rule": { "metric": "area_per_spawn", "min": 180, "max": 800 },
+      "open_air": { "metric": "area_per_spawn", "min": 180, "max": 1000 },
+      "locate": [ "spaces" ],
+      "fix": "Size the layout from the player class (kit.layout{players}, §(a) row): add spawns (kit.spawn_points) or tighten the footprint; too little floor per spawn needs more space."
+    },
+    {
+      "id": "G02", "group": "scale", "doc": "Typical engagement distance p50 <= 24 m and longest sightline p50 <= 45 m.",
+      "rule": { "all": [ { "metric": "engagement_p50", "max": 24 }, { "metric": "longest_sight_p50", "max": 45 } ] },
+      "open_air": { "metric": "engagement_p50", "max": 50 },
+      "locate": [ "sightlines" ],
+      "fix": "Break long sightlines: one sightline breaker per 24 m along any axis (kit.dress cover, pillars, a turn in the corridor, kit.opening instead of open walls)."
+    },
+    {
+      "id": "G03", "group": "scale", "doc": "Headroom p50 3-10.5 m (levels under 50% sky).",
+      "rule": { "na_if": { "metric": "outdoor_fraction", "ge": 0.5, "default": 0 }, "then": { "metric": "headroom_p50", "min": 3.0, "max": 10.5 } },
+      "open_air": "na",
+      "locate": [ "spaces" ],
+      "fix": "Apply the proportion rules (kit.space / kit.room without size[2]): rooms under 100 m2 3.5-6 m high, halls 6-9 m, atria 12 m or more with catwalks."
+    },
+    {
+      "id": "G04", "group": "scale", "doc": "Corridor height p50 <= 8.5 m (open-air levels with headroom p50 > 20 m exempt).",
+      "rule": { "na_if": { "metric": "headroom_p50", "gt": 20, "default": 0 }, "then": { "metric": "corridor_height_p50", "max": 8.5 } },
+      "open_air": "na",
+      "locate": [ "spaces" ],
+      "fix": "Corridors 4-5.5 m wide and 4-5 m high (the kit's corridor defaults); a hub at least 2x the height of the corridors feeding it."
+    },
+    {
+      "id": "G05", "group": "scale", "doc": "Clear width p50 5.5-20 m.",
+      "rule": { "metric": "clear_width_p50", "min": 5.5, "max": 20 },
+      "open_air": { "metric": "clear_width_p50", "min": 5.5, "max": 32 },
+      "locate": [ "spaces" ],
+      "fix": "Widen cramped spaces (target 8-10 m) or subdivide open floor with cover and structure (kit.space archetypes, kit.dress)."
+    },
+    {
+      "id": "G06", "group": "scale", "doc": "Median space <= 260 m2 (a hierarchy of small and medium spaces).",
+      "rule": { "metric": "space_area_p50", "max": 260 },
+      "open_air": { "metric": "space_area_p50", "max": 1000 },
+      "locate": [ "spaces" ],
+      "fix": "Split the largest spaces into a hierarchy (kit.layout zones, kit.space archetypes: alcoves, galleries, side rooms); median space target 55-160 m2."
+    },
+    {
+      "id": "G07", "group": "shape", "doc": "Ceiling variety: headroom IQR/median >= 0.45, or >= 25% of neighbouring 8 m cells change ceiling by >= 1.5 m.",
+      "rule": { "any": [ { "metric": "headroom_iqr_rel", "min": 0.45 }, { "metric": "ceiling_change_edges", "min": 0.25 } ] },
+      "open_air": "na",
+      "locate": [ "spaces" ],
+      "fix": "Vary ceilings within spaces: stepped, coffered or beamed ceilings, sloped sections, a taller hub (kit.room ceiling options, kit.space)."
+    },
+    {
+      "id": "G08", "group": "shape", "doc": "Verticality: >= 5 floor-height classes and vertical span >= 8 m.",
+      "rule": { "all": [ { "metric": "floor_height_classes", "min": 5 }, { "metric": "vertical_span", "min": 8 } ] },
+      "locate": [ "spaces" ],
+      "fix": "At least 3 floor levels 4.5-10 m apart, with stairs, ramps and drops of different kinds between them (kit.layout levels, kit.stairs, raised and sunken floor sections)."
+    },
+    {
+      "id": "G09", "group": "shape", "doc": "Room variety: >= 4 space archetypes, entropy >= 0.6.",
+      "rule": { "all": [ { "metric": "archetypes", "min": 4 }, { "metric": "archetype_entropy", "min": 0.6 } ] },
+      "locate": [ "spaces" ],
+      "fix": "Use distinct archetypes (kit.space: hall, atrium, arena, sunken court, tower, courtyard, canyon, cave, pit room); never more than two copies of one in a row."
+    },
+    {
+      "id": "G10", "group": "shape", "doc": "Organic noise in moderation: wall planes <= 45 per 100 m2 or sloped area <= 0.30.",
+      "rule": { "any": [ { "metric": "wall_planes_per100", "max": 45 }, { "metric": "sloped_area", "max": 0.30 } ] },
+      "locate": [ "spaces" ],
+      "fix": "Moderate organic shaping: sloped area <= 0.30 or wall planes <= 45 per 100 m2; give organic zones 30% flat fighting floor and built elements (walkways, supports)."
+    },
+    {
+      "id": "G11", "group": "shape", "doc": "Not all-box: off-axis wall share >= 0.03 or area-weighted rectangularity <= 0.9.",
+      "rule": { "any": [ { "metric": "wall_offaxis", "min": 0.03 }, { "metric": "rectangularity", "max": 0.9 } ] },
+      "locate": [ "spaces" ],
+      "fix": "Shape footprints: L/T/U/octagon or polygon footprints, 1-3 m corner chamfers, alcoves (kit.room footprint options); off-axis wall share 0.08-0.35."
+    },
+    {
+      "id": "G12", "group": "flow", "doc": "At most one 8 m cell whose removal cuts off >= 10% of the playable area.",
+      "rule": { "metric": "chokes_cell8", "max": 1 },
+      "open_air": { "metric": "chokes_cell8", "max": 3 },
+      "payload": "na",
+      "locate": [ "chokepoints" ],
+      "fix": "Add a second route around each chokepoint cell (a flank corridor, a drop, a window link) so no single cell cuts off the floor behind it (kit.layout links)."
+    },
+    {
+      "id": "G13", "group": "flow", "doc": "Dead-end pockets <= 12% of playable area.",
+      "rule": { "metric": "pocket_area_cell8", "max": 0.12 },
+      "locate": [ "pockets" ],
+      "fix": "Connect each pocket back into the layout with a second exit (corridor, stair, drop), or cut it; at most one reward nook per 1,500 m2."
+    },
+    {
+      "id": "G14", "group": "flow", "doc": "Route loops: >= 0.5 per 1000 m2 around 8 m-scale obstacles, or >= 1.5 around 4 m-scale obstacles.",
+      "rule": { "any": [ { "metric": "loops8_per1000", "min": 0.5 }, { "metric": "loops4_per1000", "min": 1.5 } ] },
+      "locate": [ "dead_ends" ],
+      "fix": "Close the route tree into loops: link dead-end spaces back to the network (cycle rank >= 1 per 1000 m2; kit.layout links, flank corridors)."
+    },
+    {
+      "id": "G15", "group": "pop", "doc": "Items: >= 0.8 per 100 m2, weapon/powerup nearest-neighbour p50 <= 14 m, spawn-to-item p50 <= 8 m.",
+      "rule": { "all": [ { "metric": "items_per100", "min": 0.8 }, { "metric": "major_item_nn_p50", "max": 14 }, { "metric": "spawn_to_item_p50", "max": 8 } ] },
+      "locate": [ "items", "spawns_far_from_items" ],
+      "fix": "Place the item economy (kit.items): 1.2-2.0 items per 100 m2, weapons 7-10 m apart across zones, every spawn within 3.5-6 m of an item."
+    },
+    {
+      "id": "G16", "group": "pop", "doc": "Dressing: >= 2.5 elements per 100 m2, and clutter (>= 0.3 per 100 m2) or decals (>= 0.05 per 100 m2) present.",
+      "rule": { "all": [ { "metric": "dressing_per100", "min": 2.5 }, { "any": [ { "metric": "clutter_per100", "min": 0.3 }, { "metric": "decals_per100", "min": 0.05 } ] } ] },
+      "locate": [ "undressed_cells" ],
+      "fix": "Dress the level by 8 m cells (kit.dress{theme}): 5-10 dressing elements per 100 m2, clutter from the theme's classes, a few decals."
+    },
+    {
+      "id": "G17", "group": "pop", "doc": "Undressed area (8 m cells with no dressing) <= 45% and bare area (no dressing and <= 5 visible planes) <= 20%.",
+      "rule": { "all": [ { "metric": "undressed_area", "max": 0.45 }, { "metric": "bare_area", "max": 0.20 } ] },
+      "open_air": { "all": [ { "metric": "undressed_area", "max": 0.55 }, { "metric": "bare_area", "max": 0.30 } ] },
+      "locate": [ "bare_cells", "undressed_cells" ],
+      "fix": "Give every walkable 8 m cell at least one dressing element (kit.dress fills the listed cells); bare cells also need structure (pilasters, trims, beams)."
+    },
+    {
+      "id": "G18", "group": "pop", "doc": "Lights >= 1.0 per 100 m2.",
+      "rule": { "metric": "lights_per100", "min": 1.0 },
+      "locate": [ "undressed_cells" ],
+      "fix": "Light every space (kit.light_room with fixtures): 1.7-4.5 lights per 100 m2, about one every 4 m in corridors."
+    },
+    {
+      "id": "G19", "group": "pop", "doc": "Spawn safety: <= 35% of spawn pairs within 30 m see each other; spawn exposure p50 <= 0.25.",
+      "rule": { "all": [ { "metric": "spawn_los30", "max": 0.35 }, { "metric": "spawn_exposure_p50", "max": 0.25 } ] },
+      "open_air": { "all": [ { "metric": "spawn_los30", "max": 0.55 }, { "metric": "spawn_exposure_p50", "max": 0.65 } ] },
+      "locate": [ "exposed_spawns" ],
+      "fix": "Move spawns beside cover or into alcoves, facing along a route out (kit.spawn_points v2): nearest neighbour 8-15 m, at most 20% of pairs within 30 m in sight, exposure <= 0.2."
+    },
+    {
+      "id": "G20", "group": "pop", "doc": "Exposure: <= 12% of the area sees > 35% of the area within 50 m; visible pair share within 40 m <= 0.26.",
+      "rule": { "all": [ { "metric": "exposed_area_fraction", "max": 0.12 }, { "metric": "visible_within40", "max": 0.26 } ] },
+      "open_air": "na",
+      "locate": [ "exposed_spots", "sightlines" ],
+      "fix": "Add cover 1.2-2.5 m tall every 5-6 m in open spaces and sightline breakers (kit.dress cover); distance-to-cover p90 <= 4.5 m."
+    },
+    {
+      "id": "G21", "group": "tex", "doc": "Texture scale: metres per texture tile p50 <= 6.",
+      "rule": { "metric": "metres_per_tile_p50", "max": 6 },
+      "locate": [],
+      "fix": "Map at 4 m per tile (64 px/m for 256 px textures) or by real texture size (ppm = 64); never more than 6 m per tile."
+    },
+    {
+      "id": "G22", "group": "tex", "doc": "Palette: >= 10 textures, >= 2 families, >= 3 wall and >= 2 ceiling textures needed to cover 90% of their area.",
+      "rule": { "all": [ { "metric": "textures", "min": 10 }, { "metric": "families", "min": 2 }, { "metric": "wall_tex90", "min": 3 }, { "metric": "ceiling_tex90", "min": 2 } ] },
+      "locate": [],
+      "fix": "Give each zone its own palette (kit.palette): 2 or more ceiling and 6-14 wall textures per zone, 20-45 textures in 2-4 families per level."
+    },
+    {
+      "id": "G23", "group": "tex", "doc": "Floor/wall separation: floor-wall texture overlap <= 0.25.",
+      "rule": { "metric": "floor_wall_overlap", "max": 0.25 },
+      "locate": [],
+      "fix": "Keep floor and wall textures apart (kit.palette floor vs wall roles; overlap <= 0.15), except deliberate tread plate on lower walls."
+    },
+    {
+      "id": "G24", "group": "shape", "hard": true, "doc": "Not too simple: fewer than 4 of {<= 5 floor-height classes, <= 4 archetypes, <= 2 vertical layers, <= 16 textures, < 2 solid brushes per 100 m2, <= 5 spaces >= 30 m2}.",
+      "rule": { "fewer_than": 4, "of": [
+        { "metric": "floor_height_classes", "le": 5, "default": 0 },
+        { "metric": "archetypes", "le": 4, "default": 0 },
+        { "metric": "vertical_layers", "le": 2, "default": 0 },
+        { "metric": "textures", "le": 16, "default": 0 },
+        { "metric": "solid_per100", "lt": 2, "default": 0 },
+        { "metric": "spaces_ge30", "le": 5, "default": 0 } ] },
+      "locate": [ "spaces" ],
+      "fix": "The level is too simple: more floor levels, distinct space archetypes, more textures and structure (kit.layout, kit.space, kit.palette)."
+    },
+    {
+      "id": "G25", "group": "shape", "hard": true, "doc": "Not samey-confusing: fewer than 4 of {headroom IQR/median < 0.4, boxy area >= 0.6, >= 6 dead-end spaces, < 3 textures per 1000 m2, >= 20 space loops, >= 10 archetypes with entropy < 1.2}.",
+      "rule": { "fewer_than": 4, "of": [
+        { "metric": "headroom_iqr_rel", "lt": 0.4, "default": 0 },
+        { "metric": "boxy_area_fraction", "ge": 0.6, "default": 0 },
+        { "metric": "dead_end_spaces", "ge": 6, "default": 0 },
+        { "metric": "textures_per1000", "lt": 3, "default": 0 },
+        { "metric": "space_loops", "ge": 20, "default": 0 },
+        { "all": [ { "metric": "archetypes", "ge": 10, "default": 0 }, { "metric": "archetype_entropy", "lt": 1.2, "default": 0 } ] } ] },
+      "locate": [ "spaces" ],
+      "fix": "Loops without variety confuse: vary ceilings and footprints, give zones landmarks and their own palettes, and remove dead-end spaces."
+    },
+    {
+      "id": "G26", "group": "scale", "hard": true, "doc": "Not too big and open: not (playable floor per spawn > 800 m2 and (engagement p50 > 24 m or clear width p50 > 14 m)).",
+      "rule": { "na_if_missing": "area_per_spawn", "then": { "not": { "all": [
+        { "metric": "area_per_spawn", "gt": 800, "default": 0 },
+        { "any": [ { "metric": "engagement_p50", "gt": 24, "default": 0 }, { "metric": "clear_width_p50", "gt": 14, "default": 0 } ] } ] } } },
+      "open_air": { "na_if_missing": "area_per_spawn", "then": { "not": { "all": [
+        { "metric": "area_per_spawn", "gt": 1000, "default": 0 },
+        { "any": [ { "metric": "longest_sight_p50", "gt": 40, "default": 0 }, { "metric": "clear_width_p50", "gt": 32, "default": 0 } ] } ] } } },
+      "locate": [ "sightlines", "spaces" ],
+      "fix": "The level is too big and open for its spawns: shrink the footprint or add spawns, and subdivide the open floor (kit.layout size budget, kit.space, kit.dress)."
+    },
+    {
+      "id": "C01", "group": "ctf", "doc": "CTF: >= 2 node-disjoint base-to-base routes, spawn-to-enemy-flag balance >= 0.85, flags 30-170 m apart.",
+      "rule": { "all": [ { "metric": "ctf_cell_routes", "min": 2 }, { "metric": "ctf_balance", "min": 0.85 }, { "metric": "ctf_flag_euclid", "min": 30, "max": 170 } ] },
+      "locate": [ "flags" ],
+      "fix": "Three lanes between the bases (one on another height or a flank tunnel), balanced spawn-to-enemy-flag walks, flags 50-115 m apart (kit.layout{gametype = \"ctf\"})."
+    },
+    {
+      "id": "K01", "group": "koth", "doc": "KOTH: hill reachable by >= 4 independent approaches, hill cover >= 0.15.",
+      "rule": { "all": [ { "metric": "hill_approaches_p50", "min": 4 }, { "metric": "hill_cover_p50", "min": 0.15 } ] },
+      "locate": [ "hills" ],
+      "fix": "5-8 approaches into the hill hub and cover 1.2-2.5 m tall every 5-6 m on the hill floor (kit.layout{gametype = \"koth\"}, kit.dress cover)."
+    },
+    {
+      "id": "P01", "group": "payload", "class": "payload", "doc": "Payload: a cart track with 3-5 checkpoints.",
+      "rule": { "metric": "payload_checkpoints", "min": 3, "max": 5, "default": 0 },
+      "locate": [ "segments" ],
+      "fix": "Configure the cart (agent guide, Payload setup): a One Way mover linked by the Payload_Handler, 3-5 Payload_Checkpoint events named by its keyframes."
+    },
+    {
+      "id": "P02", "group": "payload", "class": "payload", "doc": "Payload: segment size balance (smallest segment's floor >= 0.35 of the largest's).",
+      "rule": { "metric": "payload_segment_balance", "min": 0.35 },
+      "locate": [ "segments" ],
+      "fix": "Balance the legs: each segment a mid-size DM area in its own right; move checkpoints or grow the small legs."
+    },
+    {
+      "id": "P03", "group": "payload", "class": "payload", "doc": "Payload: every segment has route loops (G14 per segment) and dead-end pockets <= 12% of its floor (G13 per segment).",
+      "rule": { "all": [ { "metric": "payload_segment_loop_score_min", "min": 1 }, { "metric": "payload_segment_pocket_max", "max": 0.12 } ] },
+      "locate": [ "segment_pockets", "segments" ],
+      "fix": "Give every leg 2-3 routes besides the cart spine (a flank and high ground) that loop back; flank loops of 1 per 30-40 m of track."
+    },
+    {
+      "id": "P04", "group": "payload", "class": "payload", "doc": "Payload: every segment populated: >= 0.8 items and >= 2.5 dressing elements per 100 m2 (G15/G16 per segment; E20/E23 run 1.5-1.9 items and 5.5-7.2 dressing).",
+      "rule": { "all": [ { "metric": "payload_segment_items_min", "min": 0.8 }, { "metric": "payload_segment_dressing_min", "min": 2.5 } ] },
+      "locate": [ "segments" ],
+      "fix": "Populate each leg on its own (kit.items, kit.dress per zone): health and ammo on the flanks and at defender holds."
+    },
+    {
+      "id": "P05", "group": "payload", "class": "payload", "doc": "Payload: every segment boundary has >= 3 entry routes and no single 8 m cell carries > 50% of the crossing (replaces G12).",
+      "rule": { "all": [ { "metric": "payload_boundary_routes_min", "min": 3 }, { "metric": "payload_boundary_cell_share_max", "max": 0.5 } ] },
+      "locate": [ "boundaries" ],
+      "fix": "Every checkpoint gate needs the main track plus at least one flank and one high route into the next leg, never a single door."
+    },
+    {
+      "id": "P06", "group": "payload", "class": "payload", "doc": "Payload: spawn hand-off at every checkpoint (it links playable respawn points of both teams, live while the cart heads for it).",
+      "rule": { "metric": "payload_handoff_coverage", "min": 1 },
+      "locate": [ "boundaries" ],
+      "fix": "Link each Payload_Checkpoint to the respawn points that are live while the cart heads for it, for both teams (the first checkpoint takes the starting spawns; later ones the attackers' advance and the defenders' next hold), on walkable floor."
+    },
+    {
+      "id": "P07", "group": "payload", "class": "payload", "doc": "Payload: overall size >= 10,000 m2 of playable floor (owner: about 3-4x an average DM/CTF map; this lower bound is 2x the DM-M median until real payload maps exist).",
+      "rule": { "metric": "playable_area", "min": 10000 },
+      "locate": [ "segments" ],
+      "fix": "Payload maps are long: 3-5 segments, each a mid-size DM area (kit.layout{gametype = \"payload\"})."
+    }
+  ]
+}

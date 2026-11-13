@@ -12,7 +12,7 @@ namespace Ged.Core.Tests;
 
 /// <summary>
 /// The parity backbone: place one object of every type and one event of
-/// every placeable class (145) into a copy of dm01 through the editor APIs with
+/// every placeable class (154) into a copy of dm01 through the editor APIs with
 /// representative field values, save, reload, and assert every placed
 /// object/event reads back structurally identical while every untouched section
 /// stays byte-identical.
@@ -42,7 +42,7 @@ public class PlacementRoundTripTests
             touched.Add((uint)ObjectFactory.Build(kind, 0, Vec3.Zero).Section);
         }
 
-        // ---- place one event of every placeable class (145) --------------------
+        // ---- place one event of every placeable class (154) --------------------
         var placedEvents = new List<RflEvent>();
         int n = 0;
         foreach (EventSchema schema in EventSchemaCatalog.Placeable)
@@ -53,7 +53,7 @@ public class PlacementRoundTripTests
             n++;
         }
 
-        Assert.Equal(145, placedEvents.Count);
+        Assert.Equal(154, placedEvents.Count);
 
         // ---- place one object of every type -----------------------------------
         var placedObjects = new List<(int Uid, LevelObjectKind Kind, Vec3 Pos)>();

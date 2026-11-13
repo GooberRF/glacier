@@ -7,7 +7,7 @@ using Ged.Core.Input;
 namespace Ged.Core.Scripting;
 
 /// <summary>
-/// The portable scripts library (plan §6.4/§6.5): enumerates <c>*.lua</c> under
+/// The portable scripts library: enumerates <c>*.lua</c> under
 /// <see cref="AppPaths.ScriptsDirectory"/>, parses each file's <c>--@</c> header metadata, and
 /// projects the ones that declare a command into <see cref="CommandDefinition"/>s so the App can
 /// register them in the palette + keymap. Pure data — no engine dependency — so it is testable
@@ -23,8 +23,17 @@ public sealed class ScriptLibrary
     /// <summary>The library root (the <c>scripts\</c> folder).</summary>
     public string Root { get; }
 
-    /// <summary>The scripts found by the last <see cref="Rescan"/> (empty until scanned).</summary>
+    /// <summary>
+    /// The files found by the last <see cref="Rescan"/> (empty until scanned), modules under
+    /// <c>lib/</c> included — use <see cref="Scripts"/> for what a user can run.
+    /// </summary>
     public IReadOnlyList<ScriptLibraryEntry> Entries { get; private set; } = Array.Empty<ScriptLibraryEntry>();
+
+    /// <summary>
+    /// The runnable scripts: every entry except <c>ged.import</c> modules (<see cref="ScriptLibraryEntry.IsModule"/>),
+    /// which are libraries, not scripts — the script menus and the command palette list only these.
+    /// </summary>
+    public IEnumerable<ScriptLibraryEntry> Scripts => Entries.Where(e => !e.IsModule);
 
     /// <summary>Enumerates <c>*.lua</c> recursively, parsing metadata. Missing root ⇒ empty (no throw).</summary>
     public void Rescan()
@@ -72,7 +81,7 @@ public sealed class ScriptLibrary
     public IEnumerable<CommandDefinition> CommandDefinitions()
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (ScriptLibraryEntry e in Entries)
+        foreach (ScriptLibraryEntry e in Scripts)
         {
             if (!e.Metadata.IsCommand || !seen.Add(e.CommandId))
             {
@@ -118,6 +127,12 @@ public sealed class ScriptLibraryEntry
 
     /// <summary>True for a bundled read-only example (under <c>examples/</c>).</summary>
     public bool IsExample => RelativePath.StartsWith("examples/", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True for a <c>ged.import</c> module under <c>lib/</c> (e.g. the shipped design kit): a library,
+    /// not a runnable script, so it is hidden from the script menus and the command palette.
+    /// </summary>
+    public bool IsModule => RelativePath.StartsWith(ScriptModuleResolver.LibFolder + "/", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The command id for a script that declares one (<c>script.user.&lt;id&gt;</c>).</summary>
     public string CommandId => ScriptLibrary.CommandIdPrefix + (Metadata.Id ?? string.Empty);
