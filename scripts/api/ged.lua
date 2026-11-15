@@ -19,10 +19,12 @@ ged.dry_run = nil  --- boolean
 function ged:fail(message, hint) end  --- returns nil
 --- Runs fn and labels its changes as a named step in the Script Log; they stay part of the run's single undo step.
 function ged:group(name, body) end  --- returns nil
---- Loads a Lua module once per session and returns its value (usually a table): shipped modules (e.g. "kit") first, then <scripts>/lib/<name>.lua.
+--- Loads a Lua module once per session and returns its value: shipped modules ("kit") first, then <name>.lua beside a script run from a file (literal names), then <scripts>/lib/<name>.lua.
 function ged:import(name) end  --- returns any
 --- The open level's file name, or "untitled" for a level that has never been saved.
 ged.level_name = nil  --- string
+--- A list as plain strings for table.concat: strings stay, numbers and booleans are written out, records and handles give their name (class_info its class_name), tables their name field.
+function ged:names(list) end  --- returns string[]
 --- Errors (with an update hint) unless this build supports script API major version n.
 function ged:require_api(major) end  --- returns nil
 --- Constructs a rotation from degrees (pitch and roll default to 0). Returns a rotation record.
@@ -54,6 +56,7 @@ level.alpine = nil  --- props
 ---   life: integer = -1 — Hit points: -1 is infinite; finite life on a detail brush makes it breakable.
 ---   texture: string = the editor's per-role defaults — One texture for every face (give texture or textures, not both).
 ---   textures: {floor=, wall=, ceiling=} = the editor's per-role defaults — Textures by player-relative role (floor = the surface you stand on, for air brushes too); omitted roles use the defaults.
+---   name: string = none — A name for the brush, written as its kit.name tag (as every kit function names its brushes), so level.brushes_tagged("kit.name", name) and the kit's by-name lookups find it.
 ---   tags: {key = value} = none — Provenance tags written on the new brush.
 function level:brush(args) end  --- returns brush
 --- The number of brushes in the level.
@@ -70,6 +73,7 @@ level.brush_count = nil  --- number
 ---   tile: number = 4 — Metres per texture repeat of the world box map (0.25 to 64).
 ---   snap: number = 1/1024 — The grid the points are snapped to: a power of two from 1/1024 to 1 metre.
 ---   strict: boolean = false — true: error when a point is not a corner of the hull (inside it, a repeat after snapping, or removed as a sliver).
+---   name: string = none — A name for the brush, written as its kit.name tag (as every kit function names its brushes), so level.brushes_tagged("kit.name", name) and the kit's by-name lookups find it.
 ---   tags: {key = value} = none — Provenance tags written on the new brush.
 function level:brush_from_points(args) end  --- returns brush
 --- Every brush as brush[], in CSG time order.
@@ -86,6 +90,7 @@ level.brushes = nil  --- brush[]
 ---   tile: number = 4 — Metres per texture repeat of the world box map (0.25 to 64).
 ---   snap: number = 1/1024 — The grid the points are snapped to: a power of two from 1/1024 to 1 metre.
 ---   strict: boolean = false — true: error when a point is not a corner of its hull (inside it, a repeat after snapping, or removed as a sliver).
+---   name: string = none — A name for every brush, written as their kit.name tag (as level.brush).
 ---   tags: {key = value} = none — Provenance tags written on every new brush.
 function level:brushes_from_points(args) end  --- returns brush_query
 --- A brush_query of the brushes whose world bounds intersect the box {min=, max=} (metres, touching counts).
@@ -171,6 +176,22 @@ function level:player_start(args) end  --- returns object
 level.props = nil  --- props
 --- Saves the level (destructive: needs confirmation or --@allow-destructive; refused in Dry-Run). Same as ops.save.
 function level:save(path) end  --- returns nil
+--- Lines textures up like a mapper (default every brush): walls on the floor line, wrapped round corners, never mirrored; slopes and rock at true length; girders run up posts. Returns uv_align_report.
+---   brushes: brush | brush[] | uid[] | brush_query = every brush — The brushes to align (groups never reach outside them).
+---   selection: boolean = false — Align the selected brushes instead.
+---   ppm: number = 64 — Texel density: pixels of each texture per metre (RED's stock density).
+---   fit: boolean = true — Scale each wall group so its height spans whole repeats when that changes the density by at most fit_tolerance.
+---   fit_tolerance: number = 0.15 — Largest density change a height fit may make (0 to 0.5).
+---   keep_fitted: boolean = true — Leave faces already fitted to whole tiles (crate sides, panels: both axes span whole repeats from a tile corner).
+---   max_fold: number = 100 — Largest angle in degrees between two faces' normals for the texture to continue around their shared edge.
+---   max_twist: number = 30 — Largest turn away from upright (degrees) a texture folded around an edge may take before the face is set upright again.
+---   members: string = "auto" — Thin members (beams, posts, pilasters, rails: at least 3 times longer than their widest side, at most 1.25 m wide): "auto" lays a grained texture (girder, trim strip, post) along each member, one repeat at most across it, and leaves members already laid that way; "only" does just that and leaves every other face; "off" aligns members like walls.
+function level:uv_align(options) end  --- returns table
+--- Measures texture alignment on brush faces (default every brush): seams, density, stretch, mirrored walls, tile lines, thin members, the worst places (issues). Read-only; grader G21 checks the same.
+---   brushes: brush | brush[] | uid[] | brush_query = every brush — The brushes to measure.
+---   selection: boolean = false — Measure the selected brushes instead.
+---   issues: integer = 20 — List at most this many worst problems (0 to 500), worst first.
+function level:uv_report(options) end  --- returns table
 
 --- Query and mutate the current selection (objects, brushes, faces).
 selection = {}
@@ -335,6 +356,55 @@ function prefab:list() end  --- returns prefab_info[]
 ---   tags: {key = value} = none — Provenance tags written on every placed member.
 function prefab:place(args) end  --- returns prefab_instance
 
+--- The detail module library (library/modules): architectural and set-dressing modules harvested from approved levels — pilasters, base/top trims, bands, wall panels, recesses, door and window frames, beams, trusses, columns, railings, catwalks, pipes, machinery, consoles, rocks — each with its local frame, stretch slices and repeating units. list{…} filters them (best score first), fit{…} previews a size, place{…} instances one as detail brushes tagged kit.module / kit.role / kit.part. An absent library is normal: available = false, reason says why, lists are empty. The kit's detailing functions (kit.wall_detail, kit.detail …) build on it.
+modules = {}
+--- True when a module library with at least one module was found.
+modules.available = nil  --- boolean
+--- The number of modules in the library (0 when absent).
+modules.count = nil  --- number
+--- The size a module would get for the requested length / height / depth, and which axes cannot stretch — without changing the level. Returns {ok, size, tile_counts, fixed = {axis…}, message}.
+---   id: string — Required: the module id.
+---   length: number = natural — Wanted size on local x (metres).
+---   height: number = natural — Wanted size on local y (metres).
+---   depth: number = natural — Wanted size on local z (metres).
+function modules:fit(args) end  --- returns table
+--- The module with this id (case-insensitive), or nil. A module the mapper rejected is returned too (its verdict says so); fit and place refuse it.
+function modules:get(id) end  --- returns module_info
+--- The modules matching the filters, best score first (then id): module_info[]. An absent library gives an empty list.
+---   category: string = any — Only this category (pilaster, base_trim, top_trim, band, wall_panel, recess, door_frame, beam, truss, column, railing, catwalk, pipe, machinery, console, rock, …).
+---   attach: string = any — Only this attachment kind: wall, corner, floor, ceiling, column, span, edge, opening or free.
+---   role: string = any — Only this role: cover, route, landmark, theme_detail or fixture.
+---   style: string = any — Only modules listing this style family (industrial, bunker, admin, mine, cave, canyon, mars_base, lab, tech, generic).
+---   group: string = any — Only this library group (e.g. "stock").
+---   stock_only: boolean = false — Only modules whose every texture is stock.
+---   resolvable: boolean = true — Only modules whose every texture resolves in the mounted assets (stock textures when no assets are mounted).
+---   min_size: {x, y, z} = none — Smallest natural size per local axis (metres).
+---   max_size: {x, y, z} = none — Largest natural size per local axis (metres).
+---   stretch: string = any — Only modules that can stretch on this axis: "x", "y" or "z".
+---   source: string = any — Only modules found in a level whose path contains this text.
+---   include_rejected: boolean = false — Also modules the mapper rejected in the library's curation.json.
+---   limit: integer = all — At most this many results.
+function modules:list(args) end  --- returns module_info[]
+--- The library folder (…/library/modules), or nil when none was located.
+modules.path = nil  --- string
+--- Places a module: local origin at pos, turned by yaw (local +Z = the room side), stretched to length/height/depth; brushes are tagged kit.module, kit.role, kit.part. Returns {brushes, size, id, role}.
+---   id: string — Required: the module id (modules.list / modules.get).
+---   pos: vec — Required: the world point the module's local origin lands on (module_info.anchor says what it is).
+---   yaw: number = 0 — Heading in degrees about +Y: 0 keeps local +Z on world +Z, 90 turns it onto world +X.
+---   length: number = natural — Size on local x (metres; the module must stretch on x).
+---   height: number = natural — Size on local y (metres; the module must stretch on y).
+---   depth: number = natural — Size on local z (metres; the module must stretch on z).
+---   mirror: boolean = false — Flip local x (faces stay outward, textures readable).
+---   detail: boolean = true — Make every solid member a detail brush, so a placed module never unseals the level (air members stay air).
+---   textures: {old = new} = none — Texture replacements by name.
+---   tags: {key = value} = none — Extra tags on every brush (kit.module, kit.role and kit.part are always set).
+---   name: string = none — Tags every brush kit.name = name.
+function modules:place(args) end  --- returns table
+--- Why the library is unavailable (nil when it is available).
+modules.reason = nil  --- string
+--- The mean brightness (0-1) of a texture as the mounted assets decode it, or nil without assets or when it cannot be decoded (for matching module materials to a room's).
+function modules:texture_brightness(texture) end  --- returns number?
+
 --- Geometry tools: check, roughen and deform brushes (results stay convex and planar), extrude/bevel faces, weld/snap vertices, and builders for organic brush chains (tube, passage, rock_row, scatter, pit). Build convex shapes with level.brush_from_points{…}.
 geo = {}
 --- Bends brushes: their extent along axis wraps into an arc of degrees curling toward toward; cut into pieces that meet on exact shared faces. Returns brush_query.
@@ -416,6 +486,7 @@ function geo:rock_row(args) end  --- returns rocks
 ---   size: number | {min, max} = {0.6, 2} — Rock diameter in metres, or the range it is drawn from.
 ---   margin: number = 0.5 (area) / 0.25 (along) — Area: how far every rock stays inside the rectangle's edges. Along: how far a rock's centre stays inside the floor's edge (rocks may lean into the wall foot), metres.
 ---   gap: number = 0.25 — Extra clearance between neighbouring rocks, metres.
+---   band: number = none — Along only: keep each rock's centre within this many metres of the floor's edge (rubble at the wall foot, the open middle left clear); none = anywhere outside the walkway.
 ---   roughness: number = 0.2 — Jitter as a fraction of the rock size (0.05 to 0.5).
 ---   points: integer = 12 — Samples per rock (8 to 24).
 ---   seed: integer = 1 — The random stream (an integer); the same options and seed give the same brushes. Every brush is tagged geo.seed.
@@ -477,9 +548,9 @@ function geo:twist(args) end  --- returns brush_query
 ---   tolerance: number = 0.001 — Vertices closer than this on every axis merge (metres, 0.00001 to 1); faces that collapse are removed.
 function geo:weld(args) end  --- returns brush_query
 
---- Spatial queries on the compiled geometry (build first): raycast, los, point_info and clearance (instant), and the measurements behind the design grader: walk (reachable floor, movement links), routes (k node-disjoint routes), graph (cell / space graphs with loops, chokepoints, pockets), sightlines and exposure, cover, cells (undressed / bare), area_report (vs the exemplar targets), spawn_report, item_report, locations, setpieces (bridge spans, landmark heights, atria). Every result carries geometry freshness; measurements are cached and budgeted (max_samples, timeout_s).
+--- Spatial queries on the compiled geometry (build first): raycast, los, point_info and clearance (instant), and the measurements behind the design grader: walk (reachable floor, movement links), routes (k node-disjoint routes), graph (cell / space graphs with loops, chokepoints, pockets), sightlines and exposure, cover, cells (undressed / bare), area_report (vs the exemplar targets), spawn_report, item_report, locations, setpieces (bridge spans, landmark heights, atria), purpose (the function checks: bridges that serve no route, misplaced rocks, orphan cover, hidden landmarks). Every result carries geometry freshness; measurements are cached and budgeted (max_samples, timeout_s).
 spatial = {}
---- An area report (region, around + radius, or the level): floor area, widths, headroom, ceilings, walls, spaces, dressing, textures, items, spawns, with the exemplar targets.
+--- An area report (region, around + radius, or the level): floor, widths, headroom, sky (outdoor_fraction counts sky faces), ceilings, walls, spaces, dressing, textures, items, spawns vs targets.
 ---   region: list of 6 numbers = nil — Only this box: {minx, miny, minz, maxx, maxy, maxz} in metres.
 ---   around: vec | {x, y, z} | handle = nil — Instead of region: everything within radius metres of this point.
 ---   radius: number = nil — With around: the radius (m).
@@ -522,6 +593,12 @@ function spatial:locations(kind, max) end  --- returns table
 function spatial:los(a, b) end  --- returns boolean
 --- What is at a point: {in_solid, floor{y, distance}, ceiling{y, distance}, headroom, open_sky, room, geometry}. Instant.
 function spatial:point_info(pos) end  --- returns table
+--- Function checks (grader G27-G31): bridges and stair flights with the route each serves or its fault, route ledges, area ways out, misplaced rocks, orphan cover, landmarks. Seconds, then cached.
+---   max: integer = 20 — At most this many entries per list (bridges, mismatched, orphans, landmarks).
+---   build: string = "none" — "sealed" runs ops.build() first (applied, like ops.build; not in a dry run) so the current brushes are measured; "none" measures the stored geometry.
+---   max_samples: integer = 600000 — Floor-lattice sample budget; above it the 0.5 m pitch doubles (coarser, faster).
+---   timeout_s: number = 60 — Measurement time limit in seconds; past it the call fails with a hint (raise it or lower max_samples).
+function spatial:purpose(args) end  --- returns table
 --- The first face along a ray: {hit, distance, pos, normal, back_face, face, room, texture, sky, geometry}. Instant.
 ---   from: vec | {x, y, z} | handle — Required: the ray origin (m).
 ---   dir: vec | {x, y, z} — Required: the direction (any length).

@@ -95,6 +95,51 @@ public sealed class ScriptGed
         return _ctx.RunRecoverable(fn, ex => ex is ScriptApiException, out _);
     }
 
+    /// <summary>
+    /// Lua: <c>ged.names(list)</c> — a list as plain strings, so <c>table.concat</c> and string functions work on lists of
+    /// records and handles (texture_info, field_info, class_info, objects, ...), which Lua cannot concatenate: a string
+    /// stays itself, a number or boolean is written out, a record or handle gives its <c>name</c> (a class_info its
+    /// <c>class_name</c>), a table its <c>name</c> field, anything else its <c>tostring</c> text.
+    /// </summary>
+    [ScriptDoc("A list as plain strings for table.concat: strings stay, numbers and booleans are written out, records and handles give their name (class_info its class_name), tables their name field.",
+        Example = "print(table.concat(ged.names(catalog.textures{filter = \"rock\", stock = true}), \", \"))", Since = 2)]
+    public string[] Names(ScriptArgs list)
+    {
+        if (list is null)
+        {
+            throw new ScriptApiException("ged.names: a list is required.", "For example ged.names(o:fields()).");
+        }
+
+        return list.Items.Select(NameOf).ToArray();
+    }
+
+    private static string NameOf(object? v)
+    {
+        switch (v)
+        {
+            case null:
+                return "nil";
+            case string s:
+                return s;
+            case double d:
+                return d == Math.Floor(d) && Math.Abs(d) < 1e15 ? ((long)d).ToString(System.Globalization.CultureInfo.InvariantCulture) : d.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            case bool b:
+                return b ? "true" : "false";
+            case ScriptArgs t:
+                return t.Named.TryGetValue("name", out object? n) && n is string ns ? ns : "table";
+        }
+
+        foreach (string prop in new[] { "Name", "ClassName" })
+        {
+            if (v.GetType().GetProperty(prop, typeof(string)) is { CanRead: true } p && p.GetValue(v) is string s && s.Length > 0)
+            {
+                return s;
+            }
+        }
+
+        return v.ToString() ?? string.Empty;
+    }
+
     /// <summary>Lua: <c>ged.confirm("message")</c> — asks the confirmation gate (true/false).</summary>
     [ScriptDoc("Asks the user to confirm message and returns true or false; always false in Dry-Run, always true with --@allow-destructive.", Example = "if ged.confirm(\"Delete all lights?\") then log.info(\"ok\") end")]
     public bool Confirm(string message) => _ctx.Confirmation.Confirm("Script", message ?? string.Empty);
@@ -113,10 +158,11 @@ public sealed class ScriptGed
 
     /// <summary>
     /// Lua: <c>ged.import(name)</c> — loads a Lua module: a module shipped with Glacier
-    /// (e.g. <c>kit</c>), else <c>&lt;scripts&gt;/lib/&lt;name&gt;.lua</c>. The module runs once per session in the
+    /// (e.g. <c>kit</c>), else a module beside the script when it was run from a file, else
+    /// <c>&lt;scripts&gt;/lib/&lt;name&gt;.lua</c>. The module runs once per session in the
     /// same sandbox, budget and undo step as the script; later imports return the cached value.
     /// </summary>
-    [ScriptDoc("Loads a Lua module once per session and returns its value (usually a table): shipped modules (e.g. \"kit\") first, then <scripts>/lib/<name>.lua.",
+    [ScriptDoc("Loads a Lua module once per session and returns its value: shipped modules (\"kit\") first, then <name>.lua beside a script run from a file (literal names), then <scripts>/lib/<name>.lua.",
         Example = "local kit = ged.import(\"kit\")", Since = 2)]
     public object? Import(string name)
     {
@@ -145,7 +191,7 @@ public sealed class ScriptGed
 
         IScriptModuleHost host = _ctx.ModuleHost
             ?? throw new ScriptApiException("ged.import: this script host cannot load modules.");
-        ScriptModuleSource module = ScriptModuleResolver.Resolve(name, _ctx.Services.ModuleDirectory);
+        ScriptModuleSource module = ScriptModuleResolver.Resolve(name, _ctx.Services.ModuleDirectory, _ctx.Services.LocalModules);
 
         _ctx.ImportStack.Add(name);
         object? value;

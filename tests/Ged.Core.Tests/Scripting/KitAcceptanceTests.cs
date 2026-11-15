@@ -669,7 +669,7 @@ public sealed class KitAcceptanceTests
         IReadOnlyList<ScriptApiReference.KitFunctionDoc> docs = ScriptApiReference.ParseKitDocs(source);
         string[] functions = System.Text.RegularExpressions.Regex.Matches(source, @"^function kit\.([a-z_]+)\(", System.Text.RegularExpressions.RegexOptions.Multiline)
             .Select(m => m.Groups[1].Value).ToArray();
-        Assert.Equal(45, functions.Length); // kit 17 + kit_dress 2 + kit_items 2 + kit_layout 5 + kit_space 9 + kit_struct 8 + kit_uv 2
+        Assert.Equal(56, functions.Length); // kit 17 + kit_dress 2 + kit_items 2 + kit_layout 5 + kit_modules 10 + kit_space 9 + kit_struct 9 + kit_uv 2
         Assert.Equal(functions, docs.Select(d => d.Name).ToArray());
         Assert.All(docs, d =>
         {

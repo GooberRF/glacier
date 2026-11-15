@@ -285,7 +285,8 @@ internal sealed class KitDressSpace
         var coverList = new List<int>();
         var colTop = new Dictionary<int, double>();
         var colBot = new Dictionary<int, double>();
-        var world = new List<(double, double, double, double, double, double, double)>();
+        var colCap = new Dictionary<int, double>();
+        var world =new List<(double, double, double, double, double, double, double)>();
         double ux = -vz, uz = vx;
         foreach (var p in parts)
         {
@@ -315,6 +316,12 @@ internal sealed class KitDressSpace
 
                         colBot[id] = Math.Min(colBot.GetValueOrDefault(id, 99), p.Y0);
                         colTop[id] = Math.Max(colTop.GetValueOrDefault(id, -99), p.Y1);
+                    }
+                    else
+                    {
+                        // A part over the standing height (a shelf's top board, a beam) caps the headroom above the
+                        // stack under it.
+                        colCap[id] = Math.Min(colCap.GetValueOrDefault(id, double.MaxValue), p.Y0);
                     }
 
                     if (_l.Top[id] < ay + p.Y1 + 0.05)
@@ -364,12 +371,14 @@ internal sealed class KitDressSpace
             }
         }
 
-        // Walkable area this prop takes: columns whose stack does not start on the floor, or tops out above a walk
-        // step (1.45 m, under the 1.5 m step), lose their standing node.
+        // Walkable area this prop takes: columns whose stack does not start on the floor, tops out above a walk
+        // step (1.45 m, under the 1.5 m step), or leaves less than standing headroom between its top and the part
+        // or ceiling above it, lose their standing node.
         double lost = 0;
         foreach (int id in coverList)
         {
-            if (colBot[id] > 0.05 || colTop[id] > 1.45)
+            double cap = Math.Min(colCap.GetValueOrDefault(id, double.MaxValue), _l.Top[id] - ay);
+            if (colBot[id] > 0.05 || colTop[id] > 1.45 || cap - colTop[id] < KitProbe.Headroom - 1e-9)
             {
                 lost += KitProbe.Pitch * KitProbe.Pitch;
             }

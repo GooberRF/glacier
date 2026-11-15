@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Ged.Core.Editing;
 using Ged.Core.Model;
 
@@ -584,9 +585,39 @@ internal sealed class KitProbe
     /// <summary>True when some brush's bounds cover the 4 m bucket holding (x, z).</summary>
     public bool Covered(double x, double z) => _buckets.ContainsKey(BKey(x, z));
 
-    /// <summary>The floor lattice over a box (see <see cref="KitLattice"/>).</summary>
-    public KitLattice Lattice(double x0, double z0, double x1, double z1, double ylo, double yhi, double headroom, int stride) =>
-        new(this, x0, z0, x1, z1, ylo, yhi, headroom, stride);
+    /// <summary>
+    /// The floor lattice over a box (see <see cref="KitLattice"/>); <paramref name="keep"/>, when given, admits a
+    /// standing node by its column centre and floor (x, y, z).
+    /// </summary>
+    public KitLattice Lattice(double x0, double z0, double x1, double z1, double ylo, double yhi, double headroom, int stride,
+        Func<double, double, double, bool>? keep = null) =>
+        new(this, x0, z0, x1, z1, ylo, yhi, headroom, stride, keep);
+
+    /// <summary>
+    /// A node test for the floor inside one of the brushes <paramref name="uids"/> (half a metre above the floor
+    /// point, inside the brush's convex volume), or null when none of them is in the probe.
+    /// </summary>
+    public Func<double, double, double, bool>? InsideAny(IReadOnlyCollection<int> uids)
+    {
+        Rec[] recs = Records.Where(r => uids.Contains(r.Uid)).ToArray();
+        if (recs.Length == 0)
+        {
+            return null;
+        }
+
+        return (x, y, z) =>
+        {
+            foreach (Rec r in recs)
+            {
+                if (Inside(r, x, y + 0.5, z))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+    }
 }
 
 /// <summary>
@@ -604,7 +635,8 @@ internal sealed class KitLattice
     public int[][] Nb4 = Array.Empty<int[]>();
     public int[][] Nb8 = Array.Empty<int[]>();
 
-    public KitLattice(KitProbe probe, double x0, double z0, double x1, double z1, double ylo, double yhi, double headroom, int stride)
+    public KitLattice(KitProbe probe, double x0, double z0, double x1, double z1, double ylo, double yhi, double headroom, int stride,
+        Func<double, double, double, bool>? keep = null)
     {
         Probe = probe;
         X0 = x0;
@@ -630,7 +662,7 @@ internal sealed class KitLattice
                 for (int q = 0; q < c.Length; q += 2)
                 {
                     double y = c[q];
-                    if (y >= ylo - 0.05 && y <= yhi && c[q + 1] - y >= headroom)
+                    if (y >= ylo - 0.05 && y <= yhi && c[q + 1] - y >= headroom && (keep is null || keep(x, y, z)))
                     {
                         int id = X.Count;
                         I.Add(i);
@@ -796,6 +828,74 @@ internal sealed class KitLattice
         return c;
     }
 
+    /// <summary>
+    /// The route a crossing from node <paramref name="a"/> to node <paramref name="b"/> would serve (a bridge measured
+    /// before it is built, on the grader's rule): the walk distance from every node to each end (drops one way, never
+    /// over the crossing), the floor (m²) on each side that reaches the far end at least <paramref name="margin"/> sooner
+    /// across it (<paramref name="cross"/> metres) than any other way, and the walk between the ends without it
+    /// (∞ = none in the lattice).
+    /// </summary>
+    public (double CatchA, double CatchB, double Detour) RouteCatchment(int a, int b, double cross, double margin)
+    {
+        int n = Count;
+        var rev = new List<int>?[n + 1];
+        var buf = new int[8];
+        for (int id = 1; id <= n; id++)
+        {
+            int c = WalkEdges(id, buf);
+            for (int e = 0; e < c; e++)
+            {
+                (rev[buf[e]] ??= new List<int>(4)).Add(id);
+            }
+        }
+
+        double[] To(int t)
+        {
+            var d = new double[n + 1];
+            Array.Fill(d, double.PositiveInfinity);
+            var pq = new PriorityQueue<int, double>();
+            d[t] = 0;
+            pq.Enqueue(t, 0);
+            while (pq.TryDequeue(out int u, out double du))
+            {
+                if (du > d[u] || rev[u] is not { } into)
+                {
+                    continue;
+                }
+
+                foreach (int v in into)
+                {
+                    double dx = X[u] - X[v], dy = Y[u] - Y[v], dz = Z[u] - Z[v];
+                    double nd = du + Math.Sqrt((dx * dx) + (dy * dy) + (dz * dz));
+                    if (nd < d[v])
+                    {
+                        d[v] = nd;
+                        pq.Enqueue(v, nd);
+                    }
+                }
+            }
+
+            return d;
+        }
+
+        double[] da = To(a), db = To(b);
+        int na = 0, nb = 0;
+        for (int id = 1; id <= n; id++)
+        {
+            if (double.IsFinite(da[id]) && da[id] + cross + margin <= db[id])
+            {
+                na++;
+            }
+            else if (double.IsFinite(db[id]) && db[id] + cross + margin <= da[id])
+            {
+                nb++;
+            }
+        }
+
+        double cell = KitProbe.Pitch * KitProbe.Pitch;
+        return (na * cell, nb * cell, Math.Min(db[a], da[b]));
+    }
+
     /// <summary>Foot neighbours (steps up to 0.6 m with standing headroom over both).</summary>
     public int FootEdges(int id, int[] o)
     {
@@ -815,6 +915,78 @@ internal sealed class KitLattice
         }
 
         return c;
+    }
+
+    /// <summary>
+    /// The route a flight of stairs from node <paramref name="foot"/> up to node <paramref name="top"/> would serve (measured
+    /// before it is built, on the grader's rule, SpatialAnalysis.Flights): the walk from the foot to the top on foot (steps
+    /// up to 0.6 m, drops one way; ∞ beyond <paramref name="limit"/> metres or none) and the floor (m², up to
+    /// <paramref name="cap"/>) each end leads on to by two-way walking (steps up to 1.5 m, no drops).
+    /// </summary>
+    public (double Detour, double TopArea, double FootArea) FlightRoute(int foot, int top, double limit, double cap)
+    {
+        var d = new Dictionary<int, double> { [foot] = 0 };
+        var pq = new PriorityQueue<int, double>();
+        pq.Enqueue(foot, 0);
+        var buf = new int[8];
+        double detour = double.PositiveInfinity;
+        while (pq.TryDequeue(out int u, out double du))
+        {
+            if (u == top)
+            {
+                detour = du;
+                break;
+            }
+
+            if (du > d[u] || du > limit)
+            {
+                continue;
+            }
+
+            int c = WalkEdges(u, buf);
+            for (int e = 0; e < c; e++)
+            {
+                int v = buf[e];
+                double dy = Y[v] - Y[u];
+                if (dy > KitProbe.FootStep)
+                {
+                    continue; // a hop up: not on foot
+                }
+
+                double dx = X[v] - X[u], dz = Z[v] - Z[u];
+                double nd = du + Math.Sqrt((dx * dx) + (dy * dy) + (dz * dz));
+                if (nd < d.GetValueOrDefault(v, double.PositiveInfinity))
+                {
+                    d[v] = nd;
+                    pq.Enqueue(v, nd);
+                }
+            }
+        }
+
+        double Area(int start)
+        {
+            var seen = new HashSet<int> { start };
+            var q = new Queue<int>();
+            q.Enqueue(start);
+            double cell = KitProbe.Pitch * KitProbe.Pitch;
+            while (q.Count > 0 && seen.Count * cell < cap)
+            {
+                int u = q.Dequeue();
+                int c = WalkEdges(u, buf);
+                for (int e = 0; e < c; e++)
+                {
+                    int v = buf[e];
+                    if (Math.Abs(Y[v] - Y[u]) <= KitProbe.Step && seen.Add(v))
+                    {
+                        q.Enqueue(v);
+                    }
+                }
+            }
+
+            return Math.Min(cap, seen.Count * cell);
+        }
+
+        return (detour, Area(top), Area(foot));
     }
 
     /// <summary>Nodes reachable from the seeds along walk edges (drops one way).</summary>

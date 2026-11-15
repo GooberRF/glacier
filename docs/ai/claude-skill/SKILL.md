@@ -38,7 +38,8 @@ version-exact Lua API reference; `glacier-cli help` lists every command.
 
 1. **The designer directs; you assist.** Leave the level easy to edit by hand: prefer the design kit
    (`ged.import("kit")`), give every object and kit part a unique name, keep brushes simple.
-2. **Never claim it works without checking.** Finish in this order: a sealed build, a hole check
+2. **Never claim it works without checking.** Finish in this order: line the textures up
+   (`level.uv_align{}` / `align_textures`; the kit does its own parts), a sealed build, a hole check
    until it is watertight (`glacier-cli holes` / `check_holes`; holes only count on a sealed build),
    `lint`, then bake the lighting and save; and look at a plan render of every storey.
 3. **The world starts solid and CSG is time-ordered.** Rooms are air brushes; create the air before
@@ -51,3 +52,8 @@ version-exact Lua API reference; `glacier-cli help` lists every command.
    changes unless the user asked (`--allow-destructive`). In attach mode each run is one undo step
    (`glacier-cli undo --attach` takes back your own latest run); iterate headless on a scratch file
    and apply the finished script once.
+
+When the brief comes with concept art (screenshots of areas), compare every area against its screenshot
+from a matched camera while you build, not only at the start: register the crop, set the camera, render
+the comparison sheet and write a difference list (`reference_view` / `reference_edit` /
+`reference_compare`, or `glacier-cli ref`; the guide's "Match a reference screenshot").

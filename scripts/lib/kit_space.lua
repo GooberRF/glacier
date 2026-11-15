@@ -185,7 +185,7 @@ local function convex_pieces(p)
           for j = 1, #pb do
             if pb[j] == v and pb[j % #pb + 1] == u then
               local m = {}
-              for k = 0, #pa - 2 do m[#m + 1] = pa[(i + k) % #pa + 1] end           -- v ... u (pa without edge)
+              for k = 0, #pa - 1 do m[#m + 1] = pa[(i + k) % #pa + 1] end           -- v ... u (pa without edge)
               for k = 1, #pb - 2 do m[#m + 1] = pb[(j + k) % #pb + 1] end           -- pb's others after u
               local pts = {}
               for k, id in ipairs(m) do pts[k] = p[id] end
@@ -1132,11 +1132,29 @@ local function unpack3(p) return p[1], p[2], p[3] end
 
 local function rect_poly(x0, z0, x1, z1) return { { x0, z0 }, { x1, z0 }, { x1, z1 }, { x0, z1 } } end
 
+-- The stock texture of thin structural members (posts, rails, beams, struts, truss frames) when the call names no
+-- trim texture: a girder, as stock levels texture their steel posts and beams (laid along each member by
+-- level.uv_align); timber in an organic space. A wall panel on a 12 cm post reads as a smear. The girder follows the
+-- space's own material (its wall texture's family): plain grey steel in metal and industrial rooms, a grey ribbed
+-- girder against concrete, chrome in clean admin rooms, timber against rock.
+local MEMBER_TEXTURE = { cave_chamber = "sld_woodpost01.tga", canyon_bridge = "mtl_girder03_dirty01.tga" }
+local MEMBER_BY_FAMILY = { mtl = "mtl_girder07.tga", cem = "mtl_girder03.tga", sld = "mtl_chromegirder01.tga", pls = "mtl_chromegirder01.tga",
+  rck = "sld_woodpost01.tga", cav = "sld_woodpost01.tga" }
+
+local function member_texture(t)
+  if MEMBER_TEXTURE[t.archetype] then return MEMBER_TEXTURE[t.archetype] end
+  local d = kit.defaults
+  local wall = t.texture or (type(t.textures) == "table" and t.textures.wall) or d.texture or (type(d.textures) == "table" and d.textures.wall) or ""
+  local fam = tostring(wall):lower():match("^(%a+)_")
+  return MEMBER_BY_FAMILY[fam or ""] or "mtl_girder07.tga"
+end
+
 -- The context every recipe gets: frame F, size w x d, floor y, textures, the name prefix and collectors.
 local function new_ctx(api, name, F, w, d, t)
   local ctx = { api = api, name = name, F = F, w = w, d = d, y = F.y, t = t, brushes = {}, parts = {}, lights = {}, warnings = {}, anchors = {} }
   ctx.tex = tex_opts(t)
   ctx.trim = t.trim_texture ~= nil and { texture = t.trim_texture } or ctx.tex
+  ctx.member = t.trim_texture ~= nil and { texture = t.trim_texture } or { texture = member_texture(t) }
   function ctx.n(part) return name .. "_" .. part end
   function ctx.add(part, rec)
     ctx.parts[part] = rec
@@ -1224,9 +1242,9 @@ local function edge_treatment(ctx, poly, y, gaps)
         local f = j / k
         local px, pz = ia[1] + ex * f, ia[2] + ez * f
         local p0, p1 = ctx.F.p(px, y + 0.25, pz), ctx.F.p(px, y + 1.1, pz)
-        ctx.add("post" .. n .. "_" .. j, I.member("space", ctx.name, "post" .. n .. "_" .. j, p0, p1, 0.12, 0.12, ctx.trim))
+        ctx.add("post" .. n .. "_" .. j, I.member("space", ctx.name, "post" .. n .. "_" .. j, p0, p1, 0.12, 0.12, ctx.member))
       end
-      ctx.add("rail" .. n, I.member("space", ctx.name, "rail" .. n, ctx.F.p(ia[1], y + 1.05, ia[2]), ctx.F.p(ib[1], y + 1.05, ib[2]), 0.1, 0.1, ctx.trim))
+      ctx.add("rail" .. n, I.member("space", ctx.name, "rail" .. n, ctx.F.p(ia[1], y + 1.05, ia[2]), ctx.F.p(ib[1], y + 1.05, ib[2]), 0.1, 0.1, ctx.member))
     end
   end
 end
@@ -1294,13 +1312,13 @@ archetype("atrium", "indoor", 28, 28, 24, 24,
     for i, q in ipairs(quads) do lprism(c, "gallery" .. i, q, 5.5, 6, { detail = true, texture = c.tex.texture, textures = c.tex.textures }) end
     for i, q in ipairs(inner) do
       local p0, p1 = F.p(q[1], 0, q[2]), F.p(q[1], 5.5, q[2])
-      c.add("post" .. i, I.member("space", c.name, "post" .. i, p0, p1, 0.5, 0.5, c.trim))
+      c.add("post" .. i, I.member("space", c.name, "post" .. i, p0, p1, 0.5, 0.5, c.member))
     end
     local ix = w / 2 - gw
     c.add("stairs", kit.stairs(c.tx{ name = c.n("stairs"), pos = F.p(ix - 12, 0, 0), dir = F.d("+x"), rise = 6, width = 3, group = false }))
     local cz = d / 2 - gw + 0.5
-    c.add("catwalk", kit.bridge{ name = c.n("catwalk"), from = F.p(-4, 6.125, -cz), to = F.p(-4, 6.125, cz), width = 3,
-      style = "truss", depth = 1.6, landmark = false, group = false, texture = c.tex.texture, textures = c.tex.textures, frame_texture = c.trim.texture })
+    c.add("catwalk", kit.bridge{ purpose = "quiet", name = c.n("catwalk"), from = F.p(-4, 6.125, -cz), to = F.p(-4, 6.125, cz), width = 3,
+      style = "truss", depth = 1.6, landmark = false, group = false, texture = c.tex.texture, textures = c.tex.textures, frame_texture = c.member.texture })
     c.anchor("door", -w / 2, 0, 0, "-x", 3, 4)
     c.anchor("door", w / 2, 6, 0, "+x", 3, 4)
     c.light_polys = { { poly = room.outline, h = 10, world = true }, { poly = inner, h = 4.5 } }
@@ -1460,8 +1478,8 @@ archetype("canyon_bridge", "indoor", 20, 72, 16, 60,
       c.anchor("door", sx * (w / 2 + 22), 12, 0, sx < 0 and "-x" or "+x", 3, 4)
       local _ = room
     end
-    c.add("bridge", kit.bridge{ name = c.n("bridge"), from = F.p(-(w / 2 + 4), 12.125, 0), to = F.p(w / 2 + 4, 12.125, 0), width = 4, style = "truss",
-      group = false, texture = c.tex.texture, textures = c.tex.textures, frame_texture = c.trim.texture })
+    c.add("bridge", kit.bridge{ purpose = "quiet", name = c.n("bridge"), from = F.p(-(w / 2 + 4), 12.125, 0), to = F.p(w / 2 + 4, 12.125, 0), width = 4, style = "truss",
+      group = false, texture = c.tex.texture, textures = c.tex.textures, frame_texture = c.member.texture })
     c.add("ledge", kit.rock_wall{ name = c.n("ledge"), from = F.p(w / 2 - 4, 0, -d / 2 + 10), to = F.p(w / 2 - 4, 0, -8), height = 1.5, depth = 3, flat_top = true,
       seed = c.seed + 1, group = false, texture = c.tex.texture, textures = c.tex.textures })
     c.anchor("door", 0, 0, -d / 2, "-z", 6, 5)
@@ -1484,10 +1502,10 @@ archetype("cave_chamber", "indoor", 64, 24, 56, 20,
     local cave = c.add("cave", kit.cave{ name = c.n("cave"), path = { F.p(-hx + 13, 0, 0), F.p(-8, 0, 0), F.p(6, 0, 3), F.p(hx - 13, 0, 0) },
       radii = { 3.5, 9, 9, 3.5 }, heights = { 5, 11, 11, 5 }, seed = c.seed, group = false, texture = c.tex.texture, textures = c.tex.textures })
     for i, x in ipairs({ -6, 0, 6 }) do
-      c.add("beam" .. i, kit.beam{ name = c.n("beam" .. i), from = F.p(x, 7.5, -12), to = F.p(x, 7.5, 12), size = { 0.4, 0.5 }, texture = c.trim.texture, textures = c.trim.textures })
+      c.add("beam" .. i, kit.beam{ name = c.n("beam" .. i), from = F.p(x, 7.5, -12), to = F.p(x, 7.5, 12), size = { 0.4, 0.5 }, texture = c.member.texture })
       for _, sz in ipairs({ -1, 1 }) do
         c.add("post" .. i .. (sz < 0 and "s" or "n"), kit.beam{ name = c.n("post" .. i .. (sz < 0 and "s" or "n")), from = F.p(x, 0, sz * 4.5), to = F.p(x, 7.5, sz * 4.5),
-          size = 0.4, texture = c.trim.texture, textures = c.trim.textures })
+          size = 0.4, texture = c.member.texture })
       end
     end
     c.add("deck", kit.platform(c.trimx{ name = c.n("deck"), pos = F.p(3, 0, -2), size = (F.facing == "+z" or F.facing == "-z") and { 5, 3 } or { 3, 5 }, height = 2.5,
@@ -1502,13 +1520,13 @@ archetype("cave_chamber", "indoor", 64, 24, 56, 20,
   end)
 
 archetype("pit_room", "indoor", 24, 24, 22, 22,
-  "An octagonal 9 m room with a raised 13 m centre bay over a 10 m deep rough pit, a plank bridge across the pit, a 4 m wall ledge with stairs and two raised corner sections.",
+  "An octagonal 9 m room with a raised 13 m centre bay over a 10 m deep rough pit, a plank bridge across the pit, a 4 m wall ledge with stairs up to an upper doorway (a door anchor at 4 m: the ledge is the landing of a second way out) and two raised corner sections.",
   function(c)
     local w, d, F = c.w, c.d, c.F
     local room = c.add("room", kit.shaped_room(c.tx{ name = c.n("room"), pos = F.p(0, 0, 0), size = { w, d }, facing = F.facing, chamfer = 5, height = 9,
       ceiling = "stepped", rise = 4, inset = 6 }))
     c.add("pit", kit.pit{ name = c.n("pit"), pos = F.p(-3, 0, -3), radius = 5, depth = 10, seed = c.seed, group = false, texture = c.tex.texture, textures = c.tex.textures })
-    c.add("bridge", kit.bridge{ name = c.n("bridge"), from = F.p(-11, 0.125, -3), to = F.p(5, 0.125, -3), width = 3, style = "plank", group = false,
+    c.add("bridge", kit.bridge{ purpose = "quiet", name = c.n("bridge"), from = F.p(-11, 0.125, -3), to = F.p(5, 0.125, -3), width = 3, style = "plank", group = false,
       texture = c.trim.texture, textures = c.trim.textures })
     lbox(c, "ledge", -6, 3.5, d / 2 - 3, 6, 4, d / 2, { detail = true, texture = c.tex.texture, textures = c.tex.textures })
     c.add("ledge_stairs", kit.stairs(c.tx{ name = c.n("ledge_stairs"), pos = F.p(6 - 1.5 - 0.25, 0, d / 2 - 11), dir = F.d("+z"), rise = 4, width = 3, group = false }))
@@ -1517,6 +1535,8 @@ archetype("pit_room", "indoor", 24, 24, 22, 22,
     x0, z0, x1, z1 = F.rect(-w / 2 + 2, d / 2 - 9, -w / 2 + 6, d / 2 - 5)
     c.add("raised_nw", kit.floor_section(c.tx{ name = c.n("raised_nw"), room = room, min = { x0, 0, z0 }, max = { x1, 0, z1 }, rise = 0.75 }))
     for _, s in ipairs({ { "-x", -w / 2, 0 }, { "+x", w / 2, 0 }, { "-z", 0, -d / 2 } }) do c.anchor("door", s[2], 0, s[3], s[1], 3, 4) end
+    -- the ledge's stairs serve the upper doorway at its middle (join a corridor there, or the ledge is a dead end)
+    c.anchor("door", 0, 4, d / 2, "+z", 3, 4)
     c.light_poly, c.light_h = room.outline, 7
   end)
 
@@ -1561,12 +1581,12 @@ archetype("storage", "indoor", 20, 14, 18, 12,
       for j, x in ipairs({ x0 + 0.1, (x0 + x1) / 2, x1 - 0.1 }) do
         for _, dz in ipairs({ -0.5, 0.5 }) do
           c.add("rack" .. i .. "_post" .. j .. dz, I.member("space", c.name, "rack" .. i .. "_post" .. j .. (dz < 0 and "a" or "b"),
-            F.p(x, 0, z + dz), F.p(x, 4.6, z + dz), 0.12, 0.12, c.trim))
+            F.p(x, 0, z + dz), F.p(x, 4.6, z + dz), 0.12, 0.12, c.member))
         end
       end
     end
     for i, x in ipairs({ 3.5, 7 }) do
-      c.add("beam" .. i, kit.beam{ name = c.n("beam" .. i), from = F.p(x, 4.2, -d / 2 + 0.75), to = F.p(x, 4.2, d / 2 - 0.75), size = 0.4, texture = c.trim.texture, textures = c.trim.textures })
+      c.add("beam" .. i, kit.beam{ name = c.n("beam" .. i), from = F.p(x, 4.2, -d / 2 + 0.75), to = F.p(x, 4.2, d / 2 - 0.75), size = 0.4, texture = c.member.texture })
     end
     c.anchor("door", -w / 2, 0, 0, "-x", 3, 4)
     c.anchor("door", 0, 0, -d / 2, "-z", 3, 4)
@@ -1595,9 +1615,9 @@ archetype("platform", "open_air", 30, 24, 24, 20,
       return (mx > w / 2 - 0.5 and math.abs(mz) < 3) or (mz < -d / 2 + 0.5 and math.abs(mx) < 4)
     end)
     edge_treatment(c, high, 5, function(_, a, b) return (a[1] + b[1]) / 2 < w / 2 + 18.5 end)
-    c.add("sky_bridge", kit.bridge{ name = c.n("sky_bridge"), from = F.p(w / 2 - 2, 0.125, 0), to = F.p(w / 2 + 20, 5.125, 0), width = 4, style = "truss", group = false,
-      texture = c.tex.texture, textures = c.tex.textures, frame_texture = c.trim.texture })
-    c.add("plank_bridge", kit.bridge{ name = c.n("plank_bridge"), from = F.p(0, 0.125, -d / 2 + 2), to = F.p(0, -5.875, -d / 2 - 12), width = 3, style = "plank",
+    c.add("sky_bridge", kit.bridge{ purpose = "quiet", name = c.n("sky_bridge"), from = F.p(w / 2 - 2, 0.125, 0), to = F.p(w / 2 + 20, 5.125, 0), width = 4, style = "truss", group = false,
+      texture = c.tex.texture, textures = c.tex.textures, frame_texture = c.member.texture })
+    c.add("plank_bridge", kit.bridge{ purpose = "quiet", name = c.n("plank_bridge"), from = F.p(0, 0.125, -d / 2 + 2), to = F.p(0, -5.875, -d / 2 - 12), width = 3, style = "plank",
       landmark = false, group = false, texture = c.trim.texture, textures = c.trim.textures })
     c.light_polys = { { poly = main, h = 6 }, { poly = high, h = 11 }, { poly = rect_poly(-w / 2 + 4, -3, -w / 2 + 12, 3), h = 3.5 } }
     c.light_spacing = 12
@@ -1618,8 +1638,8 @@ archetype("sky_bridge", "open_air", 24, 18, 20, 16,
     floating(c, "deck_low", low, -10, 1.5, 6)
     edge_treatment(c, a, 0, function(_, p, q) return (p[1] + q[1]) / 2 > w / 2 - 0.5 end)
     edge_treatment(c, b, 3, function(_, p, q) return (p[1] + q[1]) / 2 < w / 2 + gap + 0.5 end)
-    c.add("bridge", kit.bridge{ name = c.n("bridge"), from = F.p(w / 2 - 2, 0.125, 0), to = F.p(w / 2 + gap + 2, 3.125, 0), width = 4, style = "truss", group = false,
-      texture = c.tex.texture, textures = c.tex.textures, frame_texture = c.trim.texture })
+    c.add("bridge", kit.bridge{ purpose = "quiet", name = c.n("bridge"), from = F.p(w / 2 - 2, 0.125, 0), to = F.p(w / 2 + gap + 2, 3.125, 0), width = 4, style = "truss", group = false,
+      texture = c.tex.texture, textures = c.tex.textures, frame_texture = c.member.texture })
     c.add("stairs", kit.stairs(c.tx{ name = c.n("stairs"), pos = F.p(w / 2 + 12, -10, 4.5), dir = F.d("-x"), rise = 10, tread = 0.3, width = 3, group = false }))
     c.light_polys = { { poly = a, h = 6 }, { poly = b, h = 9 }, { poly = low, h = -5 } }
     c.light_spacing = 12
@@ -1645,9 +1665,9 @@ archetype("open_deck", "open_air", 32, 20, 24, 16,
     lbox(c, "house", -w / 2 + 3, 0, -d / 2 + 3, -w / 2 + 11, 4.5, -d / 2 + 9, c.tx({}))
     lbox(c, "house_air", -w / 2 + 3.5, 0, -d / 2 + 3.5, -w / 2 + 10.5, 3.5, -d / 2 + 8.5, c.tx({ air = true }))
     lbox(c, "house_door", -w / 2 + 10.25, 0, -d / 2 + 4.5, -w / 2 + 11.5, 3, -d / 2 + 7.5, c.tx({ air = true }))
-    c.add("mast", kit.landmark(c.trimx{ name = c.n("mast"), pos = F.p(w / 2 - 5, 0, d / 2 - 5), height = 30, base = 4, style = "pylon", group = false }))
+    c.add("mast", kit.landmark(c.trimx{ purpose = "quiet", name = c.n("mast"), pos = F.p(w / 2 - 5, 0, d / 2 - 5), height = 30, base = 4, style = "pylon", group = false }))
     for i, q in ipairs({ { -w / 2 + 6, -d / 2 + 6 }, { w / 2 - 6, -d / 2 + 6 } }) do
-      c.add("strut" .. i, kit.beam{ name = c.n("strut" .. i), from = F.p(q[1], -1.5, q[2]), to = F.p(q[1] * 0.6, -14, q[2] * 0.6), size = 0.6, texture = c.trim.texture, textures = c.trim.textures })
+      c.add("strut" .. i, kit.beam{ name = c.n("strut" .. i), from = F.p(q[1], -1.5, q[2]), to = F.p(q[1] * 0.6, -14, q[2] * 0.6), size = 0.6, texture = c.member.texture })
     end
     c.light_polys = { { poly = deck, h = 6 }, { poly = rect_poly(-w / 2 + 4, -d / 2 + 4, -w / 2 + 10, -d / 2 + 8), h = 2.8 } }
     c.light_spacing = 12
@@ -1783,7 +1803,8 @@ archetype("finale", "payload", 44, 44, 40, 40,
 -- The recipe parts kit_layout builds its own zones from (installed after this module).
 I.space_parts = {
   new_ctx = new_ctx, floating = floating, chamfer = chamfer, rect_poly = rect_poly, plan_lights = plan_lights,
-  area2 = area2, bbox = bbox, centroid = centroid, snap16 = snap16,
+  area2 = area2, bbox = bbox, centroid = centroid, snap16 = snap16, convex_pieces = convex_pieces, is_convex = is_convex,
+  inside = inside, inset_convex = inset_convex,
 }
 
 ---@kit kit.archetypes{} → archetype[] — The kit.space archetype library: {name, class ("indoor", "open_air" or "payload"), size = {w, d}, min = {w, d}, summary} for every archetype, in library order.
@@ -1808,7 +1829,7 @@ end
 ---@opt group: boolean = true — Group every brush under the space's name.
 ---@opt texture: string = kit.defaults.texture (nil: textures below) — One texture for every face of the space's structure.
 ---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.textures (stock concrete) — Textures by player-relative role.
----@opt trim_texture: string = the space's textures — The texture of trims, rails, posts, beams and parapets.
+---@opt trim_texture: string = the space's textures; posts, rails, beams and truss frames a stock girder (timber in a cave chamber) — The texture of trims, rails, posts, beams and parapets.
 function kit.space(t)
   local api = "kit.space"
   check_keys(api, t, { "archetype", "name", "pos", "size", "facing", "seed", "lights", "group", "texture", "textures", "trim_texture" })

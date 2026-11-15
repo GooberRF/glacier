@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Ged.Automation;
+using Ged.Automation.Reference;
 using Ged.Automation.Rendering;
 using Ged.Automation.Tools;
 using Ged.Core.Scripting;
@@ -137,6 +138,7 @@ internal sealed class McpToolService : IDisposable
             MaxImageSide = _options.MaxImage,
             DefaultScriptName = () => $"mcp-{Interlocked.Increment(ref _scriptCounter)}.lua",
             RenderOutPath = () => Path.Combine(_scratch, $"render-{Interlocked.Increment(ref _renderCounter)}.png"),
+            ReadScriptFile = ReadScriptFile,
         };
         (AutomationRequest request, List<string> notes) = ToolRequests.Build(spec, arguments, options);
         int budget = OutputBudget.BudgetOf(arguments);
@@ -155,6 +157,11 @@ internal sealed class McpToolService : IDisposable
         if (spec.Command == RenderCommand.Name)
         {
             return await RenderAsync(spec, request, notes, budget, timeout.Token, cancellation, limit).ConfigureAwait(false);
+        }
+
+        if (spec.Command == ReferenceCommand.Name)
+        {
+            return await ReferenceAsync(spec, request, notes, budget, timeout.Token, cancellation, limit).ConfigureAwait(false);
         }
 
         AutomationResponse response = await _backend.ExecuteAsync(request, sink, timeout.Token).ConfigureAwait(false);
@@ -300,6 +307,99 @@ internal sealed class McpToolService : IDisposable
         return outcome with { Png = png };
     }
 
+    // ---- script files -------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The run_lua <c>file</c> argument: a .lua file inside the folders this session may write (the level's folder,
+    /// user_maps, the scripts library, the scratch folder, --allow-write folders), read here with the modules it imports
+    /// from its own folder, so the backend (an attached editor too) receives sources and never a path.
+    /// </summary>
+    private (string Source, string Name, IReadOnlyDictionary<string, string> Modules) ReadScriptFile(string path)
+    {
+        var allow = new PathAllowList(() => _backend.WriteRoots.Append(_scratch).Concat(_options.AllowWrite));
+        string full = allow.Require(path, "read the script");
+        if (!full.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AutomationException(AutomationErrorCodes.Usage, $"run_lua: 'file' must be a .lua script (got '{full}').");
+        }
+
+        try
+        {
+            string source = File.ReadAllText(full);
+            return (source, Path.GetFileName(full), Ged.Core.Scripting.ScriptModuleResolver.CollectLocal(full, source));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new AutomationException(AutomationErrorCodes.Io, $"Could not read script '{full}': {ex.Message}");
+        }
+    }
+
+    // ---- reference matching ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// The reference_* tools: file work in this process (the reference set lives under the session's write folders,
+    /// by default the scratch folder's <c>references</c>), plus, for reference_compare, a render of a private copy of
+    /// the level through the backend exactly like render_view.
+    /// </summary>
+    private async Task<ToolOutcome> ReferenceAsync(ToolSpec spec, AutomationRequest request, List<string> notes, int budget,
+        CancellationToken token, CancellationToken caller, TimeSpan limit)
+    {
+        var allow = new PathAllowList(() => _backend.WriteRoots.Append(_scratch).Concat(_options.AllowWrite));
+        var io = new ReferenceIo
+        {
+            RequireWrite = p => allow.Require(p, "write"),
+            DefaultRefs = Path.Combine(_scratch, "references"),
+            DefaultOut = kind => Path.Combine(_scratch, $"reference-{kind}-{Interlocked.Increment(ref _renderCounter)}.png"),
+        };
+        int cap = Math.Clamp(_options.MaxImage, 200, ToolCatalog.MaxImageSide);
+        AutomationResponse response;
+        if (request.Args["op"]?.GetValue<string>() == "compare")
+        {
+            ComparePlan plan = ReferenceCommand.PlanCompare(request.Args, io, maxSheetWidth: cap);
+            AutomationResponse render = await _backend.RenderAsync(new AutomationRequest(RenderCommand.Name, plan.RenderArgs), token).ConfigureAwait(false);
+            if (!render.Ok && render.Error?.Code == RenderCommand.RenderUnavailable)
+            {
+                _renderAvailable = false;
+                return Error(RenderCommand.RenderUnavailable, render.Error.Message +
+                    " On Windows the WARP software rasterizer needs no GPU; on Linux an OpenGL 3.3 driver (Mesa) is required.");
+            }
+
+            _renderAvailable = render.Ok ? true : _renderAvailable;
+            response = ReferenceCommand.FinishCompare(plan, render);
+        }
+        else
+        {
+            if (request.Args["op"]?.GetValue<string>() == "view")
+            {
+                if (!request.Args.ContainsKey("image") && !request.Args.ContainsKey("id"))
+                {
+                    request.Args["op"] = "list"; // reference_view with neither: the list of references
+                }
+                else if (!request.Args.ContainsKey("size"))
+                {
+                    request.Args["size"] = (double)Math.Max(200, cap - 60); // the view's margins stay within the image cap
+                }
+            }
+
+            response = ReferenceCommand.Execute(request.Args, io);
+        }
+
+        ToolOutcome outcome = Finish(spec, response, notes, budget, caller, limit);
+        if (!spec.ReturnsImage || !response.Ok || response.Result?["path"]?.GetValue<string>() is not { } path)
+        {
+            return outcome;
+        }
+
+        byte[] png = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
+        if (png.Length > MaxImageBytes)
+        {
+            AddNotes(outcome.Structured, new List<string> { $"The image is over {MaxImageBytes / (1024 * 1024)} MB, so it is not returned inline; it was written to {path}. Use a smaller panel or size." });
+            return outcome;
+        }
+
+        return outcome with { Png = png };
+    }
+
     // ---- session_info -------------------------------------------------------------------------------
 
     private async Task<ToolOutcome> SessionInfoAsync(CancellationToken token)
@@ -392,6 +492,7 @@ internal sealed class McpToolService : IDisposable
             case "render_plan":
             case "render_view":
             case "compare_to_norms":
+            case "reference_compare":
                 return TimeSpan.FromSeconds(120);
             default:
                 return TimeSpan.FromSeconds(60);

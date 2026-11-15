@@ -65,7 +65,7 @@ public sealed class McpServerTests
         }
 
         string payload = listed.ToJsonString();
-        Assert.True(payload.Length <= 24 * 1024, $"tools/list is {payload.Length} characters (limit 24 KB).");
+        Assert.True(payload.Length <= 36 * 1024, $"tools/list is {payload.Length} characters (limit 36 KB).");
 
         foreach (ToolSpec spec in ToolCatalog.All)
         {
@@ -149,10 +149,40 @@ public sealed class McpServerTests
         ("compare_to_norms", _ => null),
         ("spatial_query", _ => new { op = "walk" }),
         ("grade_level", _ => null),
+        ("align_textures", _ => null),
         ("render_plan", _ => new { size = "128x128" }),
         ("render_view", _ => new { view = "iso", size = "128x96" }),
+        ("reference_view", s => new { image = ReferenceImage(s) }),
+        ("reference_edit", s => new { op = "add", id = "r", image = ReferenceImage(s) }),
+        ("reference_compare", _ => new { id = "r", camera = new[] { -4.0, 1.7, -5 }, look = new[] { 2.0, 1.2, 5 }, panel = 160 }),
+        ("harvest_modules", s => new
+        {
+            source = ModuleCommandTests.WritePilasterLevel(Path.Combine(s.Dir.Path, "levels", "pilasters.rfl")),
+            group = "test",
+            @out = Path.Combine(s.Scratch, "modules"),
+        }),
+        ("module_library", s => new { library = Path.Combine(s.Scratch, "modules"), category = "pilaster" }),
         ("save_level", _ => null),
     };
+
+    /// <summary>A small picture to register as a reference (written once into the session's folder).</summary>
+    private static string ReferenceImage(McpTestSession s)
+    {
+        string path = s.Dir.File("reference.png");
+        if (!File.Exists(path))
+        {
+            var px = new byte[64 * 32 * 4];
+            for (int i = 0; i < px.Length; i += 4)
+            {
+                px[i] = px[i + 1] = px[i + 2] = (byte)(i % 251);
+                px[i + 3] = 255;
+            }
+
+            File.WriteAllBytes(path, Ged.Core.IO.Tex.PngWriter.Encode(64, 32, px));
+        }
+
+        return path;
+    }
 
     [Fact]
     [Trait("Category", "Mcp")]
@@ -166,7 +196,7 @@ public sealed class McpServerTests
         foreach ((string tool, Func<McpTestSession, object?> args) in plan)
         {
             (bool isError, JsonObject json, CallToolResult result) = await s.CallAsync(tool, args(s));
-            if (!gpu && tool.StartsWith("render_", StringComparison.Ordinal))
+            if (!gpu && (tool.StartsWith("render_", StringComparison.Ordinal) || tool == "reference_compare"))
             {
                 Assert.Equal("render_unavailable", json["code"]?.GetValue<string>());
                 continue;
@@ -199,6 +229,34 @@ public sealed class McpServerTests
     }
 
     [Fact]
+    public async Task Run_Lua_File_Imports_The_Modules_Beside_It()
+    {
+        await using McpTestSession s = await McpTestSession.StartAsync();
+        await s.OkAsync("open_level", new { path = s.WriteRoomLevel() });
+        string folder = Path.Combine(s.Scratch, "build");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "graph.lua"), "return { y = 3 }");
+        string main = Path.Combine(folder, "main.lua");
+        File.WriteAllText(main, "local g = ged.import(\"graph\")\nlevel.place{kind = 'Light', pos = {0, g.y, 0}}\nreturn g.y");
+        JsonObject run = await s.OkAsync("run_lua", new { file = main });
+        Assert.True(run["success"]!.GetValue<bool>(), run.ToJsonString());
+        Assert.Equal("AI: main.lua", run["undoLabel"]!.GetValue<string>());
+
+        await s.FailAsync("run_lua", AutomationErrorCodes.Usage, new { code = "return 1", file = main });
+        await s.FailAsync("run_lua", AutomationErrorCodes.Usage, new { label = "neither" });
+        string outside = Path.Combine(Path.GetTempPath(), "ged-outside-" + Guid.NewGuid().ToString("N") + ".lua");
+        File.WriteAllText(outside, "return 1");
+        try
+        {
+            await s.FailAsync("run_lua", AutomationErrorCodes.PathNotAllowed, new { file = outside });
+        }
+        finally
+        {
+            File.Delete(outside);
+        }
+    }
+
+    [Fact]
     public async Task Run_Lua_Is_One_Ai_Labelled_Undo_Step_And_Read_Tools_Change_Nothing()
     {
         await using McpTestSession s = await McpTestSession.StartAsync();
@@ -222,6 +280,7 @@ public sealed class McpServerTests
             ("checkpoint", new { name = "c" }), ("diff_since", new { checkpoint = "c" }), ("check_holes", null), ("lint", null),
             ("list_classes", new { kind = "Event" }), ("describe_class", new { kind = "Light" }), ("list_textures", null), ("api_reference", null),
             ("norms", null), ("compare_to_norms", null), ("spatial_query", new { op = "point_info", p = new[] { 0.0, 1, 0 } }), ("grade_level", null),
+            ("module_library", null),
         };
         Assert.Equal(
             ToolCatalog.All.Where(t => t.Safety == ToolSafety.Read && !t.ReturnsImage).Select(t => t.Name).OrderBy(n => n),

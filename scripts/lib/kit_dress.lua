@@ -454,6 +454,15 @@ function R.rock_small(st, ctx)
 end
 local SATELLITES = { "crate_single", "barrel_pair", "crate_single" }
 
+-- Theme fit (the intent layer): rocks, boulders and rubble belong in organic spaces (caves, canyons, outdoor ground,
+-- rock-walled yards) and against walls and edges; in a built interior or walled yard a theme's rock pieces become its built
+-- counterparts, and nowhere does a rock stand alone on open floor unless it is cover breaking a lane.
+local ROCK_SWAP = { rocks = "crates", rock_low = "crate_row", rock_tall = "crate_tower", rock_wall_foot = "crate_single", rock_small = "crate_single" }
+local function fit_recipe(sp, recipe)
+  if sp and sp.built and ROCK_SWAP[recipe] then return ROCK_SWAP[recipe] end
+  return recipe
+end
+
 -- Wall-mounted elements (nothing on the floor).
 function R.wall_pipe(st, ctx)
   if ctx.head < 3 then return nil end
@@ -552,7 +561,7 @@ function Space:try(parts, ax, ay, az, vx, vz, wall, pad)
   if r.token == 0 then return nil end
   local world = {}
   for n, b in ipairs(r.world) do
-    world[n] = { p = parts[n], x0 = b[1], y0 = b[2], z0 = b[3], x1 = b[4], y1 = b[5], z1 = b[6], base = b[7], vx = vx, vz = vz }
+    world[n] = { p = parts[n], x0 = b[1], y0 = b[2], z0 = b[3], x1 = b[4], y1 = b[5], z1 = b[6], base = b[7], vx = vx, vz = vz, wall = wall }
   end
   return world, r.token
 end
@@ -567,7 +576,19 @@ end
 -- Emitting.
 -- ---------------------------------------------------------------------------------------------
 
-local function emit_part(ctx, w, sp)
+-- The role tags of every element kit.dress places (kit.role, kit.purpose, kit.theme, kit.space), given at creation.
+local function role_tags(ctx, role, purpose, sp, base)
+  local t = base or {}
+  purpose = purpose or (ctx.theme.label .. " detail")
+  if #purpose > 250 then purpose = purpose:sub(1, 247) .. "..." end
+  t["kit.role"] = role or "theme_detail"
+  t["kit.purpose"] = purpose
+  t["kit.theme"] = ctx.theme_key
+  if sp and sp.s and sp.s.name then t["kit.space"] = sp.s.name end
+  return t
+end
+
+local function emit_part(ctx, w, sp, role, purpose)
   local p = w.p
   local th, st = ctx.theme, ctx.st
   if p.shape == "clutter" then
@@ -581,7 +602,7 @@ local function emit_part(ctx, w, sp)
     local oz = -mx * math.sin(r) + mz * math.cos(r)
     local cx, cz = (w.x0 + w.x1) / 2, (w.z0 + w.z1) / 2
     local o = level.place{ kind = "clutter", class = p.cls, pos = { cx - ox, w.y0 - e[3], cz - oz }, yaw = yaw,
-      name = ctx.name .. "_clutter" .. (ctx.count.clutter + 1), tags = K.tags_for("dress", ctx.name) }
+      name = ctx.name .. "_clutter" .. (ctx.count.clutter + 1), tags = role_tags(ctx, role, purpose, sp, K.tags_for("dress", ctx.name)) }
     o:tag("kit.part", "clutter")
     ctx.objects[#ctx.objects + 1] = o
     if sp then sp.probe:add_block(w.x0, w.y0, w.z0, w.x1, w.y1, w.z1) end
@@ -603,6 +624,7 @@ local function emit_part(ctx, w, sp)
       spec = { shape = "cylinder", pos = { cx, cy, cz }, size = { sx, sz, sy }, sides = 10, detail = true, rot = { pitch = 90 } }
     end
   end
+  spec.extra_tags = role_tags(ctx, role, purpose, sp)
   local b = K.emit("dress", ctx.name, p.part, spec, tex, nil)
   if p.rough then
     local q = geo.jitter{ brushes = { b }, amount = p.rough * min(sx, sz), seed = ctx.st.int(1, 1000000) }
@@ -617,10 +639,19 @@ local function emit_part(ctx, w, sp)
   return b
 end
 
-local function emit_prop(ctx, sp, world, cover_list, gone, lost, role)
+-- Role of each placement kind: cover breaks a measured lane; everything else is the zone's theme detail.
+local ROLE_OF = { cover = "cover", props = "theme_detail", flanks = "theme_detail" }
+
+local function emit_prop(ctx, sp, world, cover_list, gone, lost, role, purpose)
   sp:commit(world, cover_list, gone, lost)
+  local r = ROLE_OF[role or ""] or "theme_detail"
+  if not purpose then
+    local where = sp.s and sp.s.name or "the space"
+    purpose = role == "flanks" and (ctx.theme.label .. " props framing a doorway of " .. where)
+      or (ctx.theme.label .. " dressing of " .. where .. " (" .. (sp.context or "space") .. ")" .. ((world[1] and world[1].wall) and ", against the wall" or ""))
+  end
   for _, w in ipairs(world) do
-    emit_part(ctx, w, sp)
+    emit_part(ctx, w, sp, r, purpose)
     ctx.count.elements = ctx.count.elements + 1
     local c = sp:cell_of((w.x0 + w.x1) / 2, (w.z0 + w.z1) / 2)
     sp.cell_count[c] = (sp.cell_count[c] or 0) + 1
@@ -675,7 +706,7 @@ end
 -- One satellite: a small clutter pair (turned a little each, as if set down by hand) or a crate / barrel piece.
 local function satellite(ctx, st, v0)
   local sc = small_clutter(ctx)
-  if #sc > 0 and not ctx.theme.outdoor and st.next() < 0.6 then
+  if #sc > 0 and not (ctx.theme.outdoor and ctx.organic) and st.next() < 0.6 then
     local cls = sc[st.int(1, #sc)]
     local e = CLUTTER[cls]
     local n = (e[2] - e[1] <= 0.9) and st.int(1, 2) or 1
@@ -689,7 +720,7 @@ local function satellite(ctx, st, v0)
     return parts
   end
   -- Outdoors (rocks in a canyon) a group grows smaller rocks, not crates.
-  local parts = R[ctx.theme.outdoor and "rock_small" or SATELLITES[st.int(1, #SATELLITES)]](st, { head = 9, tall = false })
+  local parts = R[(ctx.theme.outdoor and ctx.organic) and "rock_small" or SATELLITES[st.int(1, #SATELLITES)]](st, { head = 9, tall = false })
   if v0 ~= 0 then for _, p in ipairs(parts) do p.v0, p.v1 = p.v0 + v0, p.v1 + v0 end end
   return parts
 end
@@ -804,16 +835,16 @@ local function spots_for(ctx, sp, spots, cell)
 end
 
 -- Tries recipe at one wall spot, as a group of nsat satellites when it fits; true when placed.
-local function try_wall_spot(ctx, sp, s, recipe, nsat, role)
+local function try_wall_spot(ctx, sp, s, recipe, nsat, role, purpose)
   local node = sp.L.nodes[s.id]
   local d = HEAD[s.h]
   local ax = node.x - d[1] * s.dist + d[1] * 0.05
   local az = node.z - d[2] * s.dist + d[2] * 0.05
-  local parts = R[recipe](ctx.st, { head = node.top - node.y, tall = true })
+  local parts = R[fit_recipe(sp, recipe)](ctx.st, { head = node.top - node.y, tall = true })
   if not parts then return false end
   local world, tok = try_group(ctx, sp, parts, ax, node.y, az, d[1], d[2], true, 0.3, nsat)
   if not world then return false end
-  emit_prop(ctx, sp, world, tok, nil, nil, role or "props")
+  emit_prop(ctx, sp, world, tok, nil, nil, role or "props", purpose)
   return true
 end
 
@@ -839,7 +870,9 @@ end
 -- place_cover). Outdoor themes (rocks in a canyon) are not capped.
 local function place_free_prop(ctx, sp, recipe, cell)
   local L, st = sp.L, ctx.st
-  if not ctx.theme.outdoor and (sp.free_count or 0) >= max(1, floor(sp.area_before / 120)) then return false end
+  -- Rocks never stand alone on open floor (they go against walls and edges, or serve as cover on a lane).
+  if ROCK_SWAP[recipe] then return false end
+  if not (ctx.theme.outdoor and sp.organic) and (sp.free_count or 0) >= max(1, floor(sp.area_before / 120)) then return false end
   if not sp.free_cells then
     sp.free_cells, sp.free_all = {}, {}
     local list = {}
@@ -872,7 +905,7 @@ local function place_free_prop(ctx, sp, recipe, cell)
         local h = HEAD[st.int(1, 4)]
         local world, tok = try_group(ctx, sp, parts, node.x, node.y, node.z, h[1], h[2], false, 0.6, st.int(1, 2), false)
         if world then
-          emit_prop(ctx, sp, world, tok, nil, nil, "props")
+          emit_prop(ctx, sp, world, tok, nil, nil, "props", ctx.theme.label .. " group on the open floor of " .. (sp.s.name or "the space"))
           sp.free_count = (sp.free_count or 0) + 1
           return true
         end
@@ -906,7 +939,7 @@ local function place_clutter(ctx, sp, spots, cell)
     local az = node.z - d[2] * s.dist + d[2] * 0.08
     local world, tok = try_group(ctx, sp, { clutter_part(cls, st.range(-6, 6), 0) }, ax, node.y, az, d[1], d[2], true, 0.3, nsat)
     if world then
-      emit_prop(ctx, sp, world, tok, nil, nil, nil)
+      emit_prop(ctx, sp, world, tok, nil, nil, nil, ctx.theme.label .. " clutter against a wall of " .. (sp.s.name or "the space"))
       return true
     end
   end
@@ -957,66 +990,197 @@ local function place_door_flanks(ctx, sp, spots)
   end
 end
 
--- Free-standing cover on a jittered lattice in spaces wider than 8 m; each piece usually with a satellite at
--- one end, so it reads as a position (a barrier with crates, a crate row with drums) rather than a lone block.
+-- Cover against measured threats (the intent layer). Each space's lanes are measured on the probe: from floor nodes on a
+-- 2 m grid, the longest open chest-height line through the node (8 axes, both ways). Lanes of at least LANE_MIN m (the
+-- grader's significant sightline, G29) are threats; so are the long lines into each spawn, flag or hill in the space
+-- (their approaches). Longest first, each threat not already broken gets one cover cluster ON the lane, its long side
+-- across it: lanes of BREAK_LANE m or more get a tall sightline breaker at their middle (it blocks the eye line; the
+-- probe sees it at once), shorter lanes low cover a player can duck behind. Clusters stand at least 5 m apart (exemplar
+-- cover every 5-6 m) and at most one per 45 m2. A space with no lane (a small room) gets no free-standing cover at all:
+-- cover there would break nothing. Each piece is tagged with the lane it breaks.
+local LANE_MIN = 14
+local BREAK_LANE = 24
+local AXES = {}
+for k = 0, 7 do AXES[k + 1] = { math.cos(k * math.pi / 8), math.sin(k * math.pi / 8) } end
+
+-- The open line through (x, y, z) along axis a (both ways): its length and the two ends.
+local function lane_through(probe, x, y, z, a)
+  local f = probe:ray(x, y + 1.2, z, a[1], a[2], 60)
+  local b = probe:ray(x, y + 1.2, z, -a[1], -a[2], 60)
+  return f + b, x - a[1] * b, z - a[2] * b, x + a[1] * f, z + a[2] * f
+end
+
+-- Distance from (px, pz) to the segment (ax, az)-(bx, bz).
+local function seg_distance(px, pz, ax, az, bx, bz)
+  local dx, dz = bx - ax, bz - az
+  local l2 = dx * dx + dz * dz
+  local t = l2 > 0 and math.max(0, math.min(1, ((px - ax) * dx + (pz - az) * dz) / l2)) or 0
+  local qx, qz = ax + t * dx - px, az + t * dz - pz
+  return math.sqrt(qx * qx + qz * qz)
+end
+
 local function place_cover(ctx, sp)
-  local s, L, st, th = sp.s, sp.L, ctx.st, ctx.theme
+  local s, L, st, th, probe = sp.s, sp.L, ctx.st, ctx.theme, sp.probe
   local w, d = s.x1 - s.x0, s.z1 - s.z0
-  if min(w, d) < 9 then return end
-  -- Spacing from the engagement distance the space allows: a third of it, held to the exemplar
-  -- 5-6 m (E22: cover every 5-6 m; distance-to-cover p90 <= 4.5 m).
-  local engage = min(24, 0.5 * sqrt(w * w + d * d))
-  local spacing = max(5, min(6, engage / 3))
-  local long_x = w >= d
-  local inset = 3.0
-  local nx = max(1, floor((w - 2 * inset) / spacing) + 1)
-  local nz = max(1, floor((d - 2 * inset) / spacing) + 1)
-  local gx = nx > 1 and (w - 2 * inset) / (nx - 1) or 0
-  local gz = nz > 1 and (d - 2 * inset) / (nz - 1) or 0
-  -- Sightline breakers: one tall piece per 24 m band along the long axis.
-  local long = long_x and w or d
-  local bands = max(1, ceil(long / 24))
-  local band_done = {}
-  for a = 0, nx - 1 do
-    for b = 0, nz - 1 do
-      local x = (nx > 1) and (s.x0 + inset + a * gx) or (s.x0 + s.x1) / 2
-      local z = (nz > 1) and (s.z0 + inset + b * gz) or (s.z0 + s.z1) / 2
-      if (a + b) % 2 == 0 or (nx * nz) <= 4 then
-        x = x + st.range(-0.75, 0.75)
-        z = z + st.range(-0.75, 0.75)
-        local id = P.nearest(L, x, s.y0, z, 1.0, 0.3)
-        if id and sp.flat[id] and not sp.keepout[id] then
-          local n = L.nodes[id]
-          local along = long_x and (n.x - s.x0) or (n.z - s.z0)
-          local band = min(bands - 1, floor(along / 24))
-          local recipe = nil
-          if not band_done[band] and #th.tall > 0 then recipe = th.tall[st.int(1, #th.tall)] else recipe = st.weighted(th.cover) end
-          -- Long side across the space's long axis, so the piece breaks the long sightlines.
-          local vx, vz = nil, nil
-          if long_x then vx, vz = 1, 0 else vx, vz = 0, 1 end
+  if min(w, d) < 6 then return 0 end
+  local edge = P.near_edge(L, 1.5)
+  local threats = {}
+  for id, n in ipairs(L.nodes) do
+    if n.i % 4 == 0 and n.k % 4 == 0 and sp.flat[id] and not sp.keepout[id] and not edge[id] then
+      local best = nil
+      for _, a in ipairs(AXES) do
+        local len, ax, az, bx, bz = lane_through(probe, n.x, n.y, n.z, a)
+        if len >= LANE_MIN and (best == nil or len > best.len + 1e-6) then
+          best = { id = id, y = n.y, len = len, ax = ax, az = az, bx = bx, bz = bz, dx = a[1], dz = a[2], kind = "lane" }
+        end
+      end
+      if best then threats[#threats + 1] = best end
+    end
+  end
+  -- Approaches: the longest open line into each spawn, flag or hill marker in the space (its cover stands 3.5-5 m out).
+  for _, o in ipairs(level.objects_in{ min = { s.x0, s.y0 - 0.5, s.z0 }, max = { s.x1, s.y1, s.z1 } }.objects) do
+    local cls = string.lower(o.class_name or "")
+    if o.kind == "MpRespawnPoint" or o.kind == "PlayerStart" or cls:find("flag", 1, true) or cls:find("capture", 1, true) then
+      local p = o.pos
+      local dx, dz, len = probe:longest_ray(p.x, p.y, p.z, 60)
+      if len >= LANE_MIN then
+        threats[#threats + 1] = { y = p.y, len = len + 100, ax = p.x, az = p.z, bx = p.x + dx * len, bz = p.z + dz * len, dx = dx, dz = dz,
+          kind = "approach", at = 4.25, who = (o.kind == "MpRespawnPoint" and "spawn" or (o.kind == "PlayerStart" and "player start" or "objective")) }
+      end
+    end
+  end
+  P.sort(threats, function(a, b)
+    if abs(a.len - b.len) > 1e-6 then return a.len > b.len end
+    if abs(a.ax - b.ax) > 1e-6 then return a.ax < b.ax end
+    return a.az < b.az
+  end)
+  local cap = max(1, floor(sp.area_before / 45))
+  local placed = {}
+  local inset = 2.0
+  for _, t in ipairs(threats) do
+    if #placed >= cap then break end
+    local len = t.kind == "approach" and (t.len - 100) or t.len
+    -- Already broken: a cluster stands on (within 2.5 m of) this line.
+    local served = false
+    for _, c in ipairs(placed) do
+      if seg_distance(c.x, c.z, t.ax, t.az, t.bx, t.bz) <= 2.5 then served = true break end
+    end
+    if not served and t.kind == "lane" and t.id then
+      -- A tall breaker placed since may have cut it: measure it again.
+      local n = L.nodes[t.id]
+      local l2 = lane_through(probe, n.x, n.y, n.z, { t.dx, t.dz })
+      if l2 < LANE_MIN then served = true end
+    end
+    if not served then
+      -- The spot: the lane's middle (an approach: 3.5-5 m out from the spawn), held inside the space.
+      local f = t.kind == "approach" and (t.at / len) or 0.5
+      local x, z = t.ax + (t.bx - t.ax) * f, t.az + (t.bz - t.az) * f
+      x = max(s.x0 + inset, min(s.x1 - inset, x))
+      z = max(s.z0 + inset, min(s.z1 - inset, z))
+      local id = P.nearest(L, x, t.y, z, 1.5, 0.3)
+      local ok = id ~= nil and sp.flat[id] and not sp.keepout[id] and not sp.occupied[id]
+      if ok then
+        local n = L.nodes[id]
+        for _, c in ipairs(placed) do
+          if (c.x - n.x) ^ 2 + (c.z - n.z) ^ 2 < 25 then ok = false break end
+        end
+        if ok then
+          local tall = len >= BREAK_LANE and t.kind == "lane" and #th.tall > 0
+          local recipe = fit_recipe(sp, tall and th.tall[st.int(1, #th.tall)] or st.weighted(th.cover))
+          -- Rock cover only where rocks belong (organic spaces); a built space takes the theme's built cover.
+          local purpose = string.format("%s the %.0f m %s (%.1f, %.1f) -> (%.1f, %.1f)", tall and "breaks" or "shelters along",
+            len, t.kind == "approach" and ("approach to a " .. t.who) or "lane", t.ax, t.az, t.bx, t.bz)
           local parts = R[recipe](st, { head = n.top - n.y, tall = true })
-          local ok = false
-          if parts then
-            local world, tok = try_group(ctx, sp, parts, n.x, n.y, n.z, vx, vz, false, 0.6, (st.next() < 0.65) and 1 or 0)
-            if world then
-              emit_prop(ctx, sp, world, tok, nil, nil, "cover")
-              ok = true
-              if not band_done[band] and #th.tall > 0 then band_done[band] = true ctx.count.breakers = ctx.count.breakers + 1 end
-            end
+          if not parts and tall then
+            recipe = fit_recipe(sp, st.weighted(th.cover))
+            parts = R[recipe](st, { head = n.top - n.y, tall = false })
           end
-          if not ok and recipe ~= nil and not band_done[band] then
-            -- The tall piece did not fit (budget or room): fall back to low cover here.
-            local alt = R[st.weighted(th.cover)](st, { head = n.top - n.y, tall = false })
-            if alt then
-              local world, tok = try_group(ctx, sp, alt, n.x, n.y, n.z, vx, vz, false, 0.6, (st.next() < 0.65) and 1 or 0)
-              if world then emit_prop(ctx, sp, world, tok, nil, nil, "cover") end
+          if parts then
+            -- v along the lane (snapped to the nearer axis: props stand on the lattice): the cluster's long side (u)
+            -- stands across it, facing the threat.
+            local vx, vz = 0, 0
+            if abs(t.dx) >= abs(t.dz) then vx = t.dx >= 0 and 1 or -1 else vz = t.dz >= 0 and 1 or -1 end
+            -- A tall breaker stands as an outcrop or stack with two smaller pieces at its foot (never a lone pillar).
+            local nsat = tall and 2 or ((st.next() < 0.65) and 1 or 0)
+            local world, tok = try_group(ctx, sp, parts, n.x, n.y, n.z, vx, vz, false, 0.6, nsat, not tall)
+            if not world and tall then world, tok = try_group(ctx, sp, parts, n.x, n.y, n.z, vx, vz, false, 0.6, 1) end
+            if world then
+              emit_prop(ctx, sp, world, tok, nil, nil, "cover", purpose)
+              placed[#placed + 1] = { x = n.x, z = n.z }
+              if tall then
+                ctx.count.breakers = ctx.count.breakers + 1
+                for _, wb in ipairs(world) do probe:add_block(wb.x0, wb.y0, wb.z0, wb.x1, wb.y1, wb.z1) end
+              end
+              ctx.count.lanes = (ctx.count.lanes or 0) + 1
             end
           end
         end
       end
     end
   end
+  return #placed
 end
+
+-- Wall-side cover for a room with no long lane (a small room): one low cover piece against the wall per 120 m2 (at
+-- least one in a room of 60 m2 or more), at the wall spots nearest the line between its doorways — the way a player
+-- crosses the room — so it is cover beside that route, not a lone prop in the middle. Stands against the wall, so it
+-- never reads as free-standing cover (G29).
+local function place_wall_cover(ctx, sp, spots)
+  local L, st, th = sp.L, ctx.st, ctx.theme
+  if sp.area_before < 60 or #spots == 0 or #th.cover == 0 then return 0 end
+  -- The doorway clusters; the route is the line between the two farthest apart (one doorway: to the room's centre).
+  local clusters = {}
+  for _, id in ipairs(sp.doors or {}) do
+    local n = L.nodes[id]
+    if n then
+      local found = nil
+      for _, c in ipairs(clusters) do
+        if (c.x - n.x) ^ 2 + (c.z - n.z) ^ 2 < 9 then found = c break end
+      end
+      if not found then clusters[#clusters + 1] = { x = n.x, z = n.z } end
+    end
+  end
+  local s0 = sp.s
+  local ax, az = (s0.x0 + s0.x1) / 2, (s0.z0 + s0.z1) / 2
+  local bx, bz = ax, az
+  if #clusters >= 2 then
+    local bd = -1
+    for i = 1, #clusters do
+      for j = i + 1, #clusters do
+        local d2 = (clusters[i].x - clusters[j].x) ^ 2 + (clusters[i].z - clusters[j].z) ^ 2
+        if d2 > bd then bd, ax, az, bx, bz = d2, clusters[i].x, clusters[i].z, clusters[j].x, clusters[j].z end
+      end
+    end
+  elseif #clusters == 1 then
+    ax, az = clusters[1].x, clusters[1].z
+  else
+    return 0
+  end
+  local cand = {}
+  for _, sspot in ipairs(spots) do
+    local n = L.nodes[sspot.id]
+    local d = seg_distance(n.x, n.z, ax, az, bx, bz)
+    -- Beside the route (within 6 m of it) but clear of the doorways themselves (3 m).
+    local da = math.min((n.x - ax) ^ 2 + (n.z - az) ^ 2, (n.x - bx) ^ 2 + (n.z - bz) ^ 2)
+    if d <= 6 and da >= 9 and not sp.occupied[sspot.id] then cand[#cand + 1] = { s = sspot, d = d } end
+  end
+  P.sort(cand, function(a, b) return a.d < b.d end)
+  local want = max(1, floor(sp.area_before / 120))
+  local purpose = string.format("cover beside the doorway-to-doorway line (%.1f, %.1f) -> (%.1f, %.1f), against the wall", ax, az, bx, bz)
+  local placed, used = 0, {}
+  for _, c in ipairs(cand) do
+    if placed >= want then break end
+    local n = L.nodes[c.s.id]
+    local near = false
+    for _, u in ipairs(used) do if (u.x - n.x) ^ 2 + (u.z - n.z) ^ 2 < 25 then near = true break end end
+    if not near and try_wall_spot(ctx, sp, c.s, st.weighted(th.cover), (st.next() < 0.5) and 1 or 0, "cover", purpose) then
+      placed = placed + 1
+      used[#used + 1] = { x = n.x, z = n.z }
+    end
+  end
+  return placed
+end
+
 -- Overhead beams across the short axis, flush under the ceiling, clear of lights.
 local function place_overhead(ctx, sp)
   local s, L, st, th, probe = sp.s, sp.L, ctx.st, ctx.theme, sp.probe
@@ -1069,7 +1233,7 @@ local function place_overhead(ctx, sp)
       local part = { shape = (kind == "pipe_overhead") and "pipe_u" or "box", tex = tex, part = kind,
         u0 = 0, u1 = 0, v0 = 0, v1 = 0, y0 = 0, y1 = 0 }
       local wbox = { p = part, x0 = x0, y0 = y0, z0 = z0, x1 = x1, y1 = y1, z1 = z1 }
-      emit_part(ctx, wbox)
+      emit_part(ctx, wbox, sp, "theme_detail", ctx.theme.label .. " overhead structure under the ceiling of " .. (s.name or "the space"))
       ctx.count.elements = ctx.count.elements + 1
       ctx.count.overhead = ctx.count.overhead + 1
       local cell = sp:cell_of((x0 + x1) / 2, (z0 + z1) / 2)
@@ -1128,7 +1292,7 @@ local function place_wall_runs(ctx, sp, theme_key)
         local hy = (kind == "tray") and 0.12 or dia / 2
         local part = { shape = (kind == "tray") and "box" or "pipe_u", tex = (kind == "tray") and "metal" or "pipe", part = "wall_run",
           u0 = 0, u1 = 0, v0 = 0, v1 = 0, y0 = 0, y1 = 0 }
-        emit_part(ctx, { p = part, x0 = x0, y0 = y - hy, z0 = z0, x1 = x1, y1 = y + hy, z1 = z1 })
+        emit_part(ctx, { p = part, x0 = x0, y0 = y - hy, z0 = z0, x1 = x1, y1 = y + hy, z1 = z1 }, sp, "theme_detail", ctx.theme.label .. " service run along a wall of " .. (s.name or "the space"))
         ctx.count.elements = ctx.count.elements + 1
         ctx.count.overhead = ctx.count.overhead + 1
         local cell = sp:cell_of((x0 + x1) / 2, (z0 + z1) / 2)
@@ -1174,7 +1338,8 @@ local function commit_decals(ctx)
     elseif d.cover or (kept[sp] or 0) < sp.decal_target then
       if not d.cover then kept[sp] = (kept[sp] or 0) + 1 end
       local o = level.place{ kind = "decal", pos = { d.x, d.y, d.z }, rot = { forward = { d.fx, d.fy, d.fz }, up = { d.ux, d.uy, d.uz } },
-        name = ctx.name .. "_decal" .. (ctx.count.decals + 1), tags = K.tags_for("dress", ctx.name),
+        name = ctx.name .. "_decal" .. (ctx.count.decals + 1),
+        tags = role_tags(ctx, "theme_detail", (d.fy == -1 and "floor wear" or "wall sign") .. " of " .. ((sp.s and sp.s.name) or "the space"), sp, K.tags_for("dress", ctx.name)),
         props = { texture = d.tex, extents = { d.w, d.h, d.d }, alpha = d.alpha } }
       o:tag("kit.part", "decal")
       ctx.objects[#ctx.objects + 1] = o
@@ -1252,7 +1417,7 @@ local function place_decals(ctx, sp, n_target, spots)
   return placed
 end
 
----@kit kit.dress{room?|rooms?|area?, theme?, density?, seed?, name?, cover?, overhead?, decals?, clutter?, keep_clear?, budget?, group?} → dressing — Generative fill: dresses spaces by 8 m cells with the theme's detail props, cover, overhead beams, stock clutter and decals (5–10 elements per 100 m², every cell dressed), keeping doorways, stairs, spawns and items clear, never cutting a walk route, and changing the walkable floor by at most budget (default 1.5 %). No decal touches a compiled face with more than 19 vertex records (the game and the editor crash loading such a level): decal spots are checked on the stored build when it is current, else on a private sealed build, and unsafe ones are left out. Returns {name, theme, seed, brushes, objects, group, count (elements placed, a number), by_kind {props, cover, breakers, overhead, clutter, decals, decals_unsafe (spots left out), brushes}, decal_check (what the decals were measured on), area, existing, density (elements per 100 m², existing included), walk {before, after, change}, cells {total, dressed, undressed}, spaces[]}.
+---@kit kit.dress{room?|rooms?|area?, theme?, density?, seed?, name?, cover?, overhead?, decals?, clutter?, keep_clear?, budget?, group?} → dressing — Generative fill: dresses spaces by 8 m cells with the theme's detail props, cover, overhead beams, stock clutter and decals (5–10 elements per 100 m², every cell dressed), every element placed for a reason and tagged with it (kit.role = cover or theme_detail, kit.purpose, kit.theme, kit.space): cover only against measured threats (lanes of 14 m or more and the approaches to spawns and objectives, a tall breaker on lanes of 24 m or more, each cluster on the lane it breaks with its long side across it), rocks only in organic spaces (caves, canyons, rock-walled spaces, open ground under the sky — a built interior or walled yard gets the theme's built pieces instead) and only against walls or as cover, keeping doorways, stairs, spawns and items clear, never cutting a walk route, and changing the walkable floor by at most budget (default 1.5 %). No decal touches a compiled face with more than 19 vertex records (the game and the editor crash loading such a level): decal spots are checked on the stored build when it is current, else on a private sealed build, and unsafe ones are left out. Returns {name, theme, seed, brushes, objects, group, count (elements placed, a number), by_kind {props, cover, breakers, lanes (threats given cover), overhead, clutter, decals, decals_unsafe (spots left out), brushes}, decal_check (what the decals were measured on), area, existing, density (elements per 100 m², existing included), walk {before, after, change}, cells {total, dressed, undressed}, spaces[]}.
 ---@opt room: record|string — One space: a kit record (room, corridor, cave, canyon, passage), a kit.name, or a kit.build_layout zone's name (report.zones[i].name).
 ---@opt rooms: (record|string)[] — Several spaces.
 ---@opt area: {min=, max=} — A box: every floor inside it (give one of room, rooms, area; none = every air space of the level).
@@ -1260,7 +1425,7 @@ end
 ---@opt density: number = 1 — Scales the element target (6 per 100 m² at 1, on top of light fixtures; 0.25 to 2).
 ---@opt seed: integer = 1 — The random stream: the same options, level and seed give the same dressing.
 ---@opt name: string = dress<n> — Names the dressing (tags, group, object names).
----@opt cover: boolean = true — Free-standing cover every 5–6 m in spaces wider than 8 m, with one tall sightline breaker per 24 m.
+---@opt cover: boolean = true — Free-standing cover against the space's measured threats: one cluster on every open lane of 14 m or more not already broken (a tall sightline breaker at the middle of lanes of 24 m or more) and on the long approach into each spawn, flag or hill, at least 5 m apart and at most one per 45 m²; a space with no such lane (a small room) gets low cover against the wall beside its doorway-to-doorway route instead (one per 120 m², from 60 m²).
 ---@opt overhead: boolean = true — Beams, pipes or cable trays under ceilings at least 4.5 m high.
 ---@opt decals: boolean = true — Wall signs, streaks and floor grime (stock decal textures, about 0.3 per 100 m²).
 ---@opt clutter: boolean = true — Stock clutter props from the theme when the game tables are loaded (catalog.available).
@@ -1300,8 +1465,8 @@ function kit.dress(t)
   P.mark("dress probe")
   local st = P.stream(seed)
   local ctx = {
-    name = name, theme = th, st = st, brushes = {}, objects = {}, clutter_on = K.boolean(api, "clutter", t.clutter, true),
-    count = { elements = 0, brushes = 0, clutter = 0, decals = 0, cover = 0, props = 0, overhead = 0, breakers = 0, decals_unsafe = 0, groups = 0, flanks = 0 },
+    name = name, theme = th, theme_key = theme_key, st = st, brushes = {}, objects = {}, clutter_on = K.boolean(api, "clutter", t.clutter, true),
+    count = { elements = 0, brushes = 0, clutter = 0, decals = 0, cover = 0, props = 0, overhead = 0, breakers = 0, lanes = 0, decals_unsafe = 0, groups = 0, flanks = 0 },
     pending = {},
   }
   local do_cover = K.boolean(api, "cover", t.cover, true)
@@ -1316,6 +1481,11 @@ function kit.dress(t)
     P.mark("dress space start")
     local sp = new_space(probe, s, keep, budget)
     built[#built + 1] = sp
+    -- Theme fit: the space's own context decides where rocks may go (and swaps them out of built interiors and walled yards).
+    sp.context = P.context(s)
+    sp.organic = sp.context == "rock_walls" or sp.context == "open"
+    sp.built = not sp.organic
+    ctx.organic = sp.organic
     local L = sp.L
     local w, d = s.x1 - s.x0, s.z1 - s.z0
     sp.ncx, sp.ncz = max(1, floor(w / 8 + 0.5)), max(1, floor(d / 8 + 0.5))
@@ -1355,7 +1525,7 @@ function kit.dress(t)
       place_wall_runs(ctx, sp, theme_key)
     end
     P.mark("dress overhead")
-    if do_cover then place_cover(ctx, sp) end
+    if do_cover and place_cover(ctx, sp) == 0 then place_wall_cover(ctx, sp, spots) end
     place_door_flanks(ctx, sp, spots)
     P.mark("dress cover")
     local cells = {}
@@ -1416,7 +1586,7 @@ function kit.dress(t)
     end
     sp.cells, sp.cell_nodes, sp.placed = cells, cell_nodes, ctx.count.elements - start_elements
     total_area = total_area + area
-    reports[#reports + 1] = { name = s.name, area = area, existing = existing }
+    reports[#reports + 1] = { name = s.name, area = area, existing = existing, context = sp.context }
   end
 
   -- The decals, checked against the compiled faces they touch; then each space's dressed cells.
@@ -2118,5 +2288,6 @@ return function(target, internals)
   target.dress = kit.dress
   target.light_room = kit.light_room
   internals.light_fixture = path_fixture
+  internals.dress_space = new_space -- the generative fill's engine space (kit_modules.lua places through it too)
   target.themes = THEME_NAMES
 end

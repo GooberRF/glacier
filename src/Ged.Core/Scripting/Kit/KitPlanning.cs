@@ -29,15 +29,17 @@ internal sealed class KitPlayable
 
     /// <summary>
     /// Lattice nodes of each space reachable on foot (walk area seeds), standing, flagged clear when at least
-    /// <paramref name="margin"/> from a floor edge; a floor shared by overlapping spaces counts once.
+    /// <paramref name="margin"/> from a floor edge; a floor shared by overlapping spaces counts once. <paramref name="zoneOf"/>
+    /// gives the node test of a space by name: a kit.build_layout zone stands on the floor inside its own air brushes
+    /// only, since its box may hold a turned or traced neighbour's floor (see <see cref="ScriptKitCore.Zone"/>).
     /// </summary>
-    public KitPlayable(KitProbe probe, IReadOnlyList<KitSpace> spaces, double margin)
+    public KitPlayable(KitProbe probe, IReadOnlyList<KitSpace> spaces, double margin, Func<string, Func<double, double, double, bool>?>? zoneOf = null)
     {
         var claimed = new HashSet<(long, long)>();
         for (int si = 0; si < spaces.Count; si++)
         {
             KitSpace s = spaces[si];
-            KitLattice l = probe.Lattice(s.X0, s.Z0, s.X1, s.Z1, s.Y0 - 0.1, Math.Max(s.Y0, s.Y1 - 1.0), KitProbe.Headroom, 1);
+            KitLattice l = probe.Lattice(s.X0, s.Z0, s.X1, s.Z1, s.Y0 - 0.1, Math.Max(s.Y0, s.Y1 - 1.0), KitProbe.Headroom, 1, zoneOf?.Invoke(s.Name));
             var doors = l.DoorNodes(s.X0, s.Z0, s.X1, s.Z1).Select(id => new KitFloorNode { X = l.X[id], Y = l.Y[id], Z = l.Z[id], Top = l.Top[id], I = l.I[id], K = l.K[id], Space = si }).ToList();
             double area = l.WalkArea(out bool[] reach);
             bool[] near = l.NearEdge(margin);

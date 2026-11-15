@@ -82,6 +82,11 @@ kit.defaults = {
   box_map = true,
   tile_metres = 4,
   ppm = 64,
+  -- Then line every kit part's textures up like a mapper would (level.uv_align, at ppm): walls stand on
+  -- their floor line, wrap around corners and fit their height to whole repeats, slopes and rock map at
+  -- true length, nothing is mirrored. Each part is aligned as it is built, and kit.build_layout aligns
+  -- the whole layout at the end so textures run on across neighbouring parts. false = box map only.
+  uv_align = true,
   -- The texture of invisible collision brushes (the stairs' ramp): any *_invisible* texture is
   -- compiled invisible (sld_invisible01, rck_invisible04, mtl_invisible02, cem_invisible03 are stock).
   invisible_texture = "sld_invisible01.tga",
@@ -283,20 +288,41 @@ local function textures_of(api, t)
   return kit.defaults.texture, kit.defaults.textures
 end
 
+-- The intent layer: light fixtures and their lights carry their role (kit.role = "fixture") and what they light.
+local FIXTURE_FNS = { light_room = true, light_path = true }
+
+-- The purpose helpers kit_struct.lua installs (purpose_mode, tag_role, stair_route), read at call time.
+local internals_purpose = nil
+
+-- Depth of the composite builders running (kit.space, kit.build_layout): the flights they build as a unit are
+-- "quiet" by default (tagged and built; the grader reads them once the whole piece exists).
+local composite_depth = 0
+
 -- Emits one tagged brush at the end of time. spec = level.brush options (without tags/textures).
 local function emit(fn, name, part, spec, texture, textures)
+  local extra = spec.extra_tags
+  spec.extra_tags = nil
   spec.tags = { kit = fn, ["kit.name"] = name, ["kit.part"] = part }
+  for k, v in pairs(extra or {}) do spec.tags[k] = v end
+  if FIXTURE_FNS[fn] then
+    spec.tags["kit.role"] = "fixture"
+    spec.tags["kit.purpose"] = "lights " .. tostring(name)
+  end
   if not spec.portal then
     if texture ~= nil then spec.texture = texture elseif textures ~= nil then spec.textures = textures end
   end
   local b = level.brush(spec)
   if kit.defaults.box_map and not spec.portal then
     if kit.defaults.ppm then b:box_map{ ppm = kit.defaults.ppm } else b:box_map{ tile = kit.defaults.tile_metres } end
+    if kit.defaults.uv_align and kit.defaults.ppm then level.uv_align{ brushes = b, ppm = kit.defaults.ppm, keep_fitted = false } end
   end
   return b
 end
 
 local function tags_for(fn, name)
+  if FIXTURE_FNS[fn] then
+    return { kit = fn, ["kit.name"] = name, ["kit.role"] = "fixture", ["kit.purpose"] = "lights " .. tostring(name) }
+  end
   return { kit = fn, ["kit.name"] = name }
 end
 
@@ -587,7 +613,7 @@ local function envelope(api, fn, name, x, y, z, dx, dz, width, run, rise, headro
   return emit(fn, name, "envelope", { shape = "box", pos = bs.pos, size = bs.size, air = true }, texture, textures)
 end
 
----@kit kit.stairs{name?, pos, dir, rise, width?, riser?, tread?, carve?, headroom?, detail?, group?, texture?|textures?, allow_tight?, collision_ramp?} → stairs — Full-height solid steps from the floor point pos climbing toward dir, with an invisible collision ramp over them; carve = true first cuts an air envelope through solid.
+---@kit kit.stairs{name?, pos, dir, rise, width?, riser?, tread?, carve?, headroom?, detail?, group?, texture?|textures?, allow_tight?, collision_ramp?, purpose?} → stairs — Full-height solid steps from the floor point pos climbing toward dir, with an invisible collision ramp over them; carve = true first cuts an air envelope through solid. A flight must serve a route: before building, it is refused (with the reason) when its top climbs into a wall or solid, when an end that has floor lacks 1 m clear to step on or off, when the floors are already joined on foot nearby (a walk under 1.5x its length + 4 m), or when an end leads on to under 16 m2 of floor (purpose); an end whose floor is not built yet is noted, not judged. Every brush is tagged kit.role = "route"; the record carries purpose {ok, fault, detour, top_area, foot_area, foot_clear, top_clear}.
 ---@opt name: string = stairs<n> — Names the stairs (tags, group).
 ---@opt pos: vec — Required: the floor point at the foot of the stairs, centre of the width.
 ---@opt dir: string — Required: the climbing direction, "+x", "-x", "+z" or "-z".
@@ -603,11 +629,13 @@ end
 ---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.textures (stock concrete) — Textures by player-relative role.
 ---@opt allow_tight: boolean = false — Allow a width or headroom below the player's size.
 ---@opt collision_ramp: boolean = true — Add an invisible detail ramp over the step edges (kit.defaults.invisible_texture) so players walk up smoothly.
+---@opt purpose: string = "require" (inside kit.space and kit.build_layout: "quiet") — "require" refuses a flight that serves no route or whose landing is blocked; "report" warns and builds; "quiet" or "off" builds without measuring (the grader's G30 reads it once built).
 function kit.stairs(t)
   local api = "kit.stairs"
   check_keys(api, t, { "name", "pos", "dir", "rise", "width", "riser", "tread", "carve", "headroom", "detail", "group",
-    "texture", "textures", "allow_tight", "collision_ramp" })
+    "texture", "textures", "allow_tight", "collision_ramp", "purpose" })
   local name = name_for(api, "stairs", t.name)
+  local mode = internals_purpose.purpose_mode(api, t.purpose, composite_depth > 0 and "quiet" or "require")
   local x, y, z = vec3(api, "pos", t.pos)
   local dx, dz = direction(api, "dir", t.dir)
   local rise = positive(api, "rise", t.rise)
@@ -630,6 +658,21 @@ function kit.stairs(t)
   local run = n * tread
   local texture, textures = textures_of(api, t)
   local detail = boolean(api, "detail", t.detail, false)
+
+  -- The route it serves (the intent layer): refused, or warned about, before anything is built.
+  local route = nil
+  if mode ~= "off" and mode ~= "quiet" then
+    route = internals_purpose.stair_route(x, y, z, dx, dz, run, rise, width)
+    if not route.ok then
+      if mode == "require" then
+        fail(api, name .. " serves no route: " .. route.fault .. ".",
+          "A flight joins two floors that are otherwise apart, with room to step on and off (spatial.purpose{} lists the grader's reading of every flight); pass purpose = \"report\" to build it anyway.")
+      end
+      log.warn(api .. ": " .. name .. " serves no route: " .. route.fault .. ".")
+    elseif route.pending ~= nil then
+      log.info(api .. ": " .. name .. ": " .. route.pending .. ".")
+    end
+  end
 
   local brushes = {}
   local env
@@ -668,13 +711,17 @@ function kit.stairs(t)
 
   uv.stairs(brushes, t.dir)
   local group = group_if_many(name, brushes, boolean(api, "group", t.group, true))
+  internals_purpose.tag_named(name, "route", "a flight " .. fmt(rise) .. " m up from (" .. fmt(x) .. ", " .. fmt(y) .. ", " .. fmt(z) .. ") toward " .. t.dir)
+  if route ~= nil then
+    route.text = route.ok and (route.pending or "serves a route") or ("serves no route: " .. route.fault)
+  end
   return {
     kind = "stairs", name = name, brushes = brushes, envelope = env, group = group, ramp = ramp,
-    top = vec(x + dx * run, y + rise, z + dz * run), run = run, steps = n,
+    top = vec(x + dx * run, y + rise, z + dz * run), run = run, steps = n, role = "route", purpose = route,
   }
 end
 
----@kit kit.ramp{name?, pos, dir, rise, run?, width?, carve?, headroom?, detail?, group?, texture?|textures?, allow_tight?, allow_steep?} → ramp — One solid wedge from the floor point pos rising toward dir (default slope kit.defaults.ramp_slope, max 45 degrees).
+---@kit kit.ramp{name?, pos, dir, rise, run?, width?, carve?, headroom?, detail?, group?, texture?|textures?, allow_tight?, allow_steep?, purpose?} → ramp — One solid wedge from the floor point pos rising toward dir (default slope kit.defaults.ramp_slope, max 45 degrees). Like kit.stairs, a ramp must serve a route (purpose): it is refused when its top climbs into a wall or solid, when an end lacks 1 m clear, when the floors are already joined on foot nearby, or when an end leads nowhere; an end whose floor is not built yet is noted, not judged.
 ---@opt name: string = ramp<n> — Names the ramp (tags, group).
 ---@opt pos: vec — Required: the floor point at the foot of the ramp, centre of the width.
 ---@opt dir: string — Required: the rising direction, "+x", "-x", "+z" or "-z".
@@ -689,11 +736,13 @@ end
 ---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.textures (stock concrete) — Textures by player-relative role.
 ---@opt allow_tight: boolean = false — Allow a width or headroom below the player's size.
 ---@opt allow_steep: boolean = false — Allow steeper than 45 degrees.
+---@opt purpose: string = "require" (inside kit.space and kit.build_layout: "quiet") — As kit.stairs: "require" refuses a ramp that serves no route or whose landing is blocked; "report" warns and builds; "quiet" or "off" builds without measuring.
 function kit.ramp(t)
   local api = "kit.ramp"
   check_keys(api, t, { "name", "pos", "dir", "rise", "run", "width", "carve", "headroom", "detail", "group",
-    "texture", "textures", "allow_tight", "allow_steep" })
+    "texture", "textures", "allow_tight", "allow_steep", "purpose" })
   local name = name_for(api, "ramp", t.name)
+  local mode = internals_purpose.purpose_mode(api, t.purpose, composite_depth > 0 and "quiet" or "require")
   local x, y, z = vec3(api, "pos", t.pos)
   local dx, dz = direction(api, "dir", t.dir)
   local rise = positive(api, "rise", t.rise)
@@ -705,6 +754,22 @@ function kit.ramp(t)
       "Lengthen run, or pass allow_steep = true.")
   end
   local texture, textures = textures_of(api, t)
+
+  -- The route it serves (the intent layer), as for stairs.
+  local route = nil
+  if mode ~= "off" and mode ~= "quiet" then
+    route = internals_purpose.stair_route(x, y, z, dx, dz, run, rise, width)
+    if not route.ok then
+      if mode == "require" then
+        fail(api, name .. " serves no route: " .. route.fault .. ".",
+          "A ramp joins two floors that are otherwise apart, with room to step on and off (spatial.purpose{} lists the grader's reading of every flight); pass purpose = \"report\" to build it anyway.")
+      end
+      log.warn(api .. ": " .. name .. " serves no route: " .. route.fault .. ".")
+    elseif route.pending ~= nil then
+      log.info(api .. ": " .. name .. ": " .. route.pending .. ".")
+    end
+    route.text = route.ok and (route.pending or "serves a route") or ("serves no route: " .. route.fault)
+  end
 
   local brushes = {}
   local env
@@ -727,9 +792,10 @@ function kit.ramp(t)
   uv.ramp(ramp)
   brushes[#brushes + 1] = ramp
   local group = group_if_many(name, brushes, boolean(api, "group", t.group, true))
+  internals_purpose.tag_named(name, "route", "a ramp " .. fmt(rise) .. " m up from (" .. fmt(x) .. ", " .. fmt(y) .. ", " .. fmt(z) .. ") toward " .. t.dir)
   return {
     kind = "ramp", name = name, brush = ramp, brushes = brushes, envelope = env, group = group,
-    top = vec(x + dx * run, y + rise, z + dz * run), run = run,
+    top = vec(x + dx * run, y + rise, z + dz * run), run = run, role = "route", purpose = route,
   }
 end
 
@@ -908,6 +974,7 @@ function kit.platform(t)
   end
 
   local group = group_if_many(name, brushes, boolean(api, "group", t.group, true))
+  internals_purpose.tag_named(name, "route", "raised walkable floor " .. fmt(height) .. " m up at (" .. fmt(x) .. ", " .. fmt(z) .. ")")
   return {
     kind = "platform", name = name, brushes = brushes, group = group, top_y = top,
     min = vec(x - w / 2, y, z - d / 2), max = vec(x + w / 2, top, z + d / 2),
@@ -953,6 +1020,7 @@ function kit.pillar_row(t)
     brushes[i] = emit("pillar_row", name, "pillar" .. i, spec, texture, textures)
   end
   local group = group_if_many(name, brushes, boolean(api, "group", t.group, true))
+  internals_purpose.tag_named(name, "cover", "a pillar row breaking the sightlines along it")
   return { kind = "pillars", name = name, brushes = brushes, group = group }
 end
 
@@ -1384,11 +1452,12 @@ function kit.rock_wall(t)
   a.spacing = t.spacing
   a.seed = seed_of(api, t)
   local rec = rocks_record(name, geo.rock_row(a), boolean(api, "group", t.group, true))
+  internals_purpose.tag_named(name, "theme_detail", "a rock wall foot along a floor line")
   uv.rock(t, name)
   return rec
 end
 
----@kit kit.boulders{name?, area?|room?|along?, count, size?, margin?, seed?, group?, texture?|textures?, tile?} → rocks — count detail boulders scattered on a rectangle, a kit room's floor, or a cave/canyon/passage floor clear of its walkway (geo.scatter). Build them after the air they stand in.
+---@kit kit.boulders{name?, area?|room?|along?, count, size?, margin?, seed?, group?, texture?|textures?, tile?, purpose?} → rocks — count detail boulders on a rectangle, a kit room's floor, or a cave/canyon/passage floor clear of its walkway (geo.scatter). Rocks belong in organic spaces and against walls and edges: on a rectangle or room the space must be open to the sky or rock-walled (a built interior or walled yard is refused), and the boulders are scattered only in the bands along its sides (a cave, canyon or passage scatter keeps its walkway clear), never over the open middle; the record's count says how many fit. Every boulder is tagged kit.role = "theme_detail" and kit.purpose. Build them after the air they stand in.
 ---@opt name: string = boulders<n> — Names the boulders (tags, group).
 ---@opt area: {min=, max=} — A floor rectangle (its floor is min.y); give one of area, room or along.
 ---@opt room: record — A kit room (or other min/max record): its floor rectangle.
@@ -1401,9 +1470,11 @@ end
 ---@opt texture: string = kit.defaults.rock_texture — One texture for every face.
 ---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role.
 ---@opt tile: number = kit.defaults.rock_tile_metres (tile_metres) — Metres per texture repeat.
+---@opt purpose: string = "require" — Theme fit: "require" refuses a built rectangle or room (an interior or a walled yard: walls not natural rock) and scatters only in the bands along the rectangle's sides; "report" warns and scatters over the whole rectangle; "off" skips both.
 function kit.boulders(t)
   local api = "kit.boulders"
-  check_keys(api, t, { "name", "area", "room", "along", "count", "size", "margin", "seed", "group", "texture", "textures", "tile" })
+  check_keys(api, t, { "name", "area", "room", "along", "count", "size", "margin", "seed", "group", "texture", "textures", "tile", "purpose" })
+  local mode = internals_purpose.purpose_mode(api, t.purpose)
   local name = name_for(api, "boulders", t.name)
   local given = (t.area ~= nil and 1 or 0) + (t.room ~= nil and 1 or 0) + (t.along ~= nil and 1 or 0)
   if given ~= 1 then
@@ -1411,6 +1482,7 @@ function kit.boulders(t)
   end
   local a = builder_args(api, "boulders", name, "rock", t)
   a.count = number(api, "count", t.count)
+  local wanted = a.count
   a.size, a.margin = t.size, t.margin
   a.seed = seed_of(api, t)
   a.roughness = kit.defaults.roughness
@@ -1426,7 +1498,86 @@ function kit.boulders(t)
     end
     a.along = t.along.tube
   end
-  local rec = rocks_record(name, geo.scatter(a), boolean(api, "group", t.group, true))
+  -- Theme fit on a rectangle or room: the space must be organic, and the boulders go against its walls and edges.
+  local context = nil
+  if t.along == nil and mode ~= "off" then
+    local P = ged.import("kit_probe")
+    local bx = a.area
+    local function c3(v) if type(v) == "table" and v[1] ~= nil then return v[1], v[2], v[3] end return v.x, v.y, v.z end
+    local x0, y0, z0 = c3(bx.min)
+    local x1, _, z1 = c3(bx.max)
+    local sp = { x0 = math.min(x0, x1), z0 = math.min(z0, z1), x1 = math.max(x0, x1), z1 = math.max(z0, z1), y0 = y0, y1 = y0 + 6, kind = "area" }
+    if t.room ~= nil and type(t.room) == "table" then
+      sp.kind = t.room.kind or "room"
+      sp.brushes = t.room.brushes or (t.room.brush and { t.room.brush }) or nil
+      for _, b in ipairs(sp.brushes or {}) do
+        for _, f in ipairs(b.faces) do if f.show_sky then sp.sky = true end end
+      end
+    end
+    context = P.context(sp)
+    if context == "built_interior" or context == "built_yard" then
+      local msg = "rocks belong in caves, canyons and outdoor ground, not in a built " .. (context == "built_yard" and "yard" or "interior") .. " (" .. fmt(sp.x0) .. ".." .. fmt(sp.x1) .. ", " .. fmt(sp.z0) .. ".." .. fmt(sp.z1) .. ": walls not natural rock)"
+      if mode == "require" then
+        fail(api, msg .. ".", "Dress built rooms with kit.dress (the theme's built props), or give the space rock walls or sky; pass purpose = \"report\" to place them anyway.")
+      end
+      log.warn(api .. ": " .. msg .. ".")
+    end
+  end
+  -- Against walls and edges (a rectangle or room): the boulders are scattered in the bands along its four sides (each
+  -- band as deep as the largest boulder plus 1 m, at most a third of the side), never over its open middle. Along a
+  -- cave, canyon or passage the scatter already keeps the walkway clear, so the boulders sit by the walls.
+  local rec
+  if mode == "require" and t.along == nil then
+    local function c3(v) if type(v) == "table" and v[1] ~= nil then return v[1], v[2], v[3] end return v.x, v.y, v.z end
+    local ax, ay, az = c3(a.area.min)
+    local bx, _, bz = c3(a.area.max)
+    local x0, x1, z0, z1 = math.min(ax, bx), math.max(ax, bx), math.min(az, bz), math.max(az, bz)
+    local smax = type(t.size) == "number" and t.size or (type(t.size) == "table" and (t.size[2] or t.size.max) or 2)
+    local d = math.min(smax + 1.0, (x1 - x0) / 3, (z1 - z0) / 3)
+    local bands = {
+      { x0, z0, x1, z0 + d }, { x0, z1 - d, x1, z1 },
+      { x0, z0 + d, x0 + d, z1 - d }, { x1 - d, z0 + d, x1, z1 - d },
+    }
+    local total = 0
+    for _, bd in ipairs(bands) do bd.area = math.max(0, (bd[3] - bd[1]) * (bd[4] - bd[2])) total = total + bd.area end
+    local brushes, left = {}, wanted
+    for i, bd in ipairs(bands) do
+      local n = (i == #bands) and left or math.floor(wanted * bd.area / math.max(total, 1e-6) + 0.5)
+      n = math.min(n, left)
+      while n > 0 do
+        local args = {}
+        for k, v in pairs(a) do args[k] = v end
+        args.area = { min = { bd[1], ay, bd[2] }, max = { bd[3], ay, bd[4] } }
+        args.count = n
+        args.seed = (a.seed or 1) + i * 7919
+        args.margin = math.min(a.margin or 0.25, 0.25)
+        local ok, r = ged.try(geo.scatter, args)
+        if ok then
+          for _, b in ipairs(r.brushes.brushes) do brushes[#brushes + 1] = b end
+          left = left - n
+          break
+        end
+        n = n - 1
+      end
+    end
+    if #brushes == 0 then fail(api, "no boulder fits in the bands along the walls of the area.", "Enlarge the area or lower size.") end
+    if #brushes < wanted then
+      log.info(api .. ": " .. name .. " placed " .. #brushes .. " of " .. wanted .. " boulders (only along the walls and edges; the middle stays clear).")
+    end
+    rec = { kind = "rocks", name = name, brushes = brushes, count = #brushes, seed = a.seed }
+  else
+    if mode == "require" and t.along ~= nil then
+      -- At the wall foot: each boulder's centre within half the largest size plus 0.75 m of the floor's edge.
+      local smax = type(t.size) == "number" and t.size or (type(t.size) == "table" and (t.size[2] or t.size.max) or 2)
+      a.band = smax / 2 + 0.75
+    end
+    rec = rocks_record(name, geo.scatter(a), false)
+  end
+  rec.group = group_if_many(name, rec.brushes, boolean(api, "group", t.group, true))
+  local where = t.along ~= nil and "rubble along the walls of " .. tostring(t.along.name or "the passage") or ("rubble against the walls and edges" .. (context and (" (" .. context .. ")") or ""))
+  internals_purpose.tag_named(name, "theme_detail", where)
+  rec.role = "theme_detail"
+  rec.context = context
   uv.rock(t, name)
   return rec
 end
@@ -1579,7 +1730,9 @@ end
 -- shaped rooms, alcoves, pilasters, floor sections, roads and the kit.space archetypes); kit_dress.lua and
 -- kit_items.lua (population: generative fill kit.dress, light fixtures kit.light_room, protected spawns
 -- kit.spawn_points and the item economy kit.items, with the kit_probe.lua space probe); kit_layout.lua
--- (layout graphs, their constraint checker, plan preview and builder).
+-- (layout graphs, their constraint checker, plan preview and builder); kit_compose.lua (the layout composer:
+-- free placement of the zones kit.layout generates); kit_modules.lua (architectural detailing
+-- from the module library: wall detail, frames, ceilings, machinery, railings, catwalks, pipes, stairs, rocks).
 do
   local internals = {
     fail = fail, check_keys = check_keys, number = number, positive = positive, boolean = boolean, vec3 = vec3, vec = vec,
@@ -1588,11 +1741,30 @@ do
     record_time_index = record_time_index, free_spot = free_spot, solid_near = solid_near,
   }
   ged.import("kit_struct")(kit, internals)
+  internals_purpose = { purpose_mode = internals.purpose_mode, tag_role = internals.tag_role, tag_named = internals.tag_named, stair_route = internals.stair_route }
   ged.import("kit_space")(kit, internals)
   ged.import("kit_layout")(kit, internals)
+  ged.import("kit_compose")(kit, internals)
+  ged.import("kit_compose_payload")(kit, internals)
+  ged.import("kit_compose_open")(kit, internals)
   ged.import("kit_dress")(kit, internals)
   internals_light_fixture = internals.light_fixture
   ged.import("kit_items")(kit, internals)
+  ged.import("kit_modules")(kit, internals)
+  -- The composite builders: the flights inside them default to purpose = "quiet" (see kit.stairs).
+  for _, fname in ipairs({ "space", "build_layout" }) do
+    local inner = kit[fname]
+    if inner ~= nil then
+      kit[fname] = function(t)
+        -- (A failed build ends the script, so the depth needs no unwinding.)
+        local saved = composite_depth
+        composite_depth = saved + 1
+        local record = inner(t)
+        composite_depth = saved
+        return record
+      end
+    end
+  end
 end
 
 ---@kit kit.help{} → string — The kit's reference as text: every function with its options (types, defaults, meanings); the same as ged.describe("kit").text.

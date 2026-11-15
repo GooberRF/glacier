@@ -41,6 +41,12 @@ public sealed class AutomationScriptRun
     /// </summary>
     public string LabelPrefix { get; init; } = AutomationCommands.CliUndoPrefix;
 
+    /// <summary>
+    /// The modules the run carries from its script's folder, by name (<see cref="ScriptServices.LocalModules"/>): sources,
+    /// never paths, so a host (the editor too) reads nothing from disk for them. Null = none.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? Modules { get; init; }
+
     /// <summary>An optional short description appended to the undo label ("AI: blockout.lua — add east wing").</summary>
     public string? Label { get; init; }
 

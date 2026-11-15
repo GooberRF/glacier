@@ -167,6 +167,29 @@ public sealed partial class SpatialAnalysis
         return false;
     }
 
+    /// <summary>
+    /// The share of the given playable floor samples under open sky or a sky face (show_sky), read like
+    /// <c>outdoor_fraction</c> on every other lattice sample (by parity). This is what "sky" means in the queries: a Red
+    /// Faction level is sealed, so its outdoor floor is almost always under sky faces, not under no ceiling at all.
+    /// </summary>
+    internal double SkyShare(IEnumerable<int> samples)
+    {
+        ShapeReport(); // fills the per-sample sky ceilings
+        int n = 0, sky = 0;
+        foreach (int i in samples)
+        {
+            if ((_s[i].I + _s[i].K) % 2 != 0)
+            {
+                continue;
+            }
+
+            n++;
+            sky += _skyCeiling![i] ? 1 : 0;
+        }
+
+        return n > 0 ? sky / (double)n : 0;
+    }
+
     private double OutdoorFraction()
     {
         List<int> even = _w.PlayIdx.Where(i => (_s[i].I + _s[i].K) % 2 == 0).ToList();
@@ -515,6 +538,9 @@ public sealed partial class SpatialAnalysis
 
     private JsonObject? _texturingReport;
 
+    /// <summary>The worst texture-alignment problems of the last texturing report (mirrored walls, broken seams, stretched slopes), worst first.</summary>
+    internal List<UvQualityIssue> UvIssues { get; private set; } = new();
+
     private string TexName(Face f) => f.Texture >= 0 && f.Texture < _level.Geometry.Textures.Count ? _level.Geometry.Textures[f.Texture].ToLowerInvariant() : string.Empty;
 
     private (int W, int H)? TexSize(string name) => _level.TextureSize?.Invoke(name);
@@ -845,6 +871,19 @@ public sealed partial class SpatialAnalysis
         }
 
         int allTex = area.SelectMany(d => d.Keys).Distinct().Count();
+
+        // Mapper-style alignment (seams, mirrored walls, tile lines on floor and ceiling lines): Analysis.UvQuality.
+        var uvIssues = new List<UvQualityIssue>();
+        JsonObject uv = UvQuality.Measure(UvQuality.FacesOf(geo), TexSize, uvIssues, 64);
+        if (_level.TextureSize is not null)
+        {
+            // Thin members (beams, posts, pilasters) read from the brushes: grain along each, no repeats across it.
+            var memberIssues = new List<UvQualityIssue>();
+            uv["members"] = Editing.UvMembers.Measure(_level.Brushes(), TexSize, _level.TextureGrain, memberIssues);
+            uvIssues.AddRange(memberIssues.OrderByDescending(i => i.Extent).Take(16));
+        }
+
+        UvIssues = uvIssues;
         _texturingReport = new JsonObject
         {
             ["textures"] = allTex,
@@ -868,6 +907,7 @@ public sealed partial class SpatialAnalysis
             ["scroll_area_fraction"] = R(scrollA / Math.Max(1e-9, total)),
             ["metres_per_tile"] = Dist(mpt.Select(x => x.V)),
             ["texel_density"] = dens,
+            ["uv"] = uv,
         };
         return _texturingReport;
     }

@@ -30,6 +30,7 @@ public static class ScriptApiV1
         "rng",        // seeded, deterministic RNG
         "catalog",    // placeable kinds, classes, fields, textures (API v2)
         "prefab",     // prefab library list + place (API v2)
+        "modules",    // detail module library list / get / fit / place (API v2)
         "geo",        // geometry tools: shape checks and edits (API v2)
         "spatial",    // spatial queries and design measurements (API v2)
         "design",     // the self-review grader (API v2)

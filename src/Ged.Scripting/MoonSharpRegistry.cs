@@ -73,6 +73,8 @@ internal static class MoonSharpRegistry
             RegisterSnake<ScriptPrefabs>();
             RegisterSnake<ScriptPrefabInfo>();
             RegisterSnake<ScriptPrefabInstance>();
+            RegisterSnake<ScriptModules>();
+            RegisterSnake<ScriptModuleInfo>();
             RegisterSnake<ScriptGeo>();
             RegisterSnake<ScriptGeoReport>();
             RegisterSnake<ScriptTextureInfo>();

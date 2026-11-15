@@ -75,6 +75,12 @@ public static partial class ScriptOptionSets
         new("max_samples", "integer", "600000", SamplesDoc),
         new("timeout_s", "number", "120", TimeoutDoc));
 
+    public static readonly ScriptOptionSet SpatialPurpose = new("spatial.purpose",
+        new("max", "integer", "20", "At most this many entries per list (bridges, mismatched, orphans, landmarks)."),
+        new("build", "string", "\"none\"", BuildDoc),
+        new("max_samples", "integer", "600000", SamplesDoc),
+        new("timeout_s", "number", "60", TimeoutDoc));
+
     public static readonly ScriptOptionSet SpatialSetPieces = new("spatial.setpieces",
         new("max", "integer", "10", "At most this many entries per list (bridges, walkways, landmarks, atria, largest spaces)."),
         new("build", "string", "\"none\"", BuildDoc),

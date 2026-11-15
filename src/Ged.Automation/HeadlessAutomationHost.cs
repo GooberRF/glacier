@@ -228,6 +228,7 @@ public sealed class HeadlessAutomationHost : IAutomationHost, IDisposable
             TextureTraits = Traits(),
             Confirmation = new DenyAllConfirmation(),
             AutoTags = run.AutoTags,
+            LocalModules = run.Modules,
             PrefabsDirectory = _settings.PrefabDirectory,
             DefaultFloorTexture = _settings.DefaultFloorTexture,
             DefaultWallTexture = _settings.DefaultWallTexture,

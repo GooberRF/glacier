@@ -85,7 +85,7 @@ internal static class KitItemPlanner
         List<Vec3d> path = KitArgs.Points(a, "path");
         Vec3d? hill = KitArgs.Points(a, "hill") is { Count: > 0 } h ? h[0] : null;
 
-        var playable = new KitPlayable(probe, spaces, 0.75);
+        var playable = new KitPlayable(probe, spaces, 0.75, n => core.ZoneFilter(probe, n));
         List<KitFloorNode> nodes = playable.All;
         double area = nodes.Count * KitProbe.Pitch * KitProbe.Pitch;
         if (nodes.Count == 0 || area <= 0)
@@ -97,7 +97,7 @@ internal static class KitItemPlanner
         List<KitSpace> levelSpaces = a.Named.TryGetValue("level_spaces", out object? lv) && lv is ScriptArgs la
             ? KitArgs.Spaces(new ScriptArgs(new Dictionary<string, object?> { ["spaces"] = la }))
             : spaces;
-        double levelArea = ReferenceEquals(levelSpaces, spaces) ? area : Math.Max(area, new KitPlayable(probe, levelSpaces, 0.75).All.Count * KitProbe.Pitch * KitProbe.Pitch);
+        double levelArea = ReferenceEquals(levelSpaces, spaces) ? area : Math.Max(area, new KitPlayable(probe, levelSpaces, 0.75, n => core.ZoneFilter(probe, n)).All.Count * KitProbe.Pitch * KitProbe.Pitch);
 
         // Areas as the grader measures them (playable floor of the compiled level) when the level can be measured:
         // the kit's lattice also counts rough ledges and slopes the grader's walk graph leaves out.
@@ -132,6 +132,8 @@ internal static class KitItemPlanner
         }
 
         var placed = new List<Item>();
+        // Existing weapons and powerups (the level's own, placed by hand or an earlier call) count for the spacing.
+        var existingMajors = new HashSet<Item>();
         int existingHere = 0, existingLevel = 0;
         var flags = new List<(double X, double Z, bool Red)>();
         if (a.Named.TryGetValue("existing", out object? ev) && ev is ScriptArgs el)
@@ -145,8 +147,15 @@ internal static class KitItemPlanner
 
                 string cls = e.String("kit.items", "class") ?? string.Empty;
                 double x = KitArgs.Num(e, "x", 0), y = KitArgs.Num(e, "y", 0) - itemHeight, z = KitArgs.Num(e, "z", 0);
-                placed.Add(new Item(x, y, z, "existing", cls, -1));
+                var existingItem = new Item(x, y, z, "existing", cls, -1);
+                placed.Add(existingItem);
                 string lc = cls.ToLowerInvariant();
+                if (weapons.Any(w => string.Equals(w.Class, cls, StringComparison.OrdinalIgnoreCase)) || lc.Contains("amp", StringComparison.Ordinal)
+                    || lc.Contains("invuln", StringComparison.Ordinal) || lc.Contains("super ", StringComparison.Ordinal))
+                {
+                    existingMajors.Add(existingItem);
+                }
+
                 if (lc == "flag_red" || lc == "flag_blue")
                 {
                     flags.Add((x, z, lc == "flag_red"));
@@ -354,7 +363,7 @@ internal static class KitItemPlanner
                     c.DAll = d;
                 }
 
-                if ((p.Cat == "weapon" || p.Cat == "powerup") && d < c.DMajor)
+                if ((p.Cat == "weapon" || p.Cat == "powerup" || existingMajors.Contains(p)) && d < c.DMajor)
                 {
                     c.DMajor = d;
                 }
@@ -448,6 +457,13 @@ internal static class KitItemPlanner
             Weapon entry = weapons[k % weapons.Count];
             Cand? best = null;
             double bs = 0;
+
+            // Weapons and powerups already standing alone (nearest other one beyond 14 m, the G15 spacing): a new weapon
+            // 7-14 m from one of them closes the gap, so the level's spacing stays exemplar-like however few the
+            // weapons (small levels, and levels whose author already placed a couple far apart).
+            List<Item> majorsNow = placed.Where(p => p.Cat is "weapon" or "powerup" || existingMajors.Contains(p)).ToList();
+            List<Item> lone = majorsNow.Where(m => majorsNow.Where(o => !ReferenceEquals(o, m))
+                .Select(o => Math.Sqrt(D2(m.X, m.Y, m.Z, o.X, o.Y, o.Z))).DefaultIfEmpty(double.MaxValue).Min() > 14).ToList();
             foreach (Cand c in cand)
             {
                 if (c.Taken || !RedHalf(c.N.X, c.N.Z) || Crowded(c))
@@ -478,12 +494,24 @@ internal static class KitItemPlanner
                 }
                 else if (nnd < double.MaxValue)
                 {
-                    s -= 0.02 * (nnd - 14);
+                    s -= 0.1 * (nnd - 14);
                 }
 
-                if (!zonesWith.Contains(c.N.Space))
+                // Spread over the zones, but never at the cost of the spacing: a new zone counts only while the weapon
+                // stays within 14 m of its nearest weapon or powerup (G15), so small levels keep exemplar spacing.
+                if (!zonesWith.Contains(c.N.Space) && (nnd <= 14 || nnd == double.MaxValue))
                 {
                     s += 0.8;
+                }
+
+                foreach (Item m in lone)
+                {
+                    double dm = Math.Sqrt(D2(c.N.X, c.N.Y, c.N.Z, m.X, m.Y, m.Z));
+                    if (dm >= 7 && dm <= 14)
+                    {
+                        s += 1.2;
+                        break;
+                    }
                 }
 
                 if (cl.Pocket)

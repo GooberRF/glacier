@@ -547,6 +547,7 @@ public sealed partial class SpatialAnalysis
             ["floor_area"] = R(area),
             ["clear_width"] = Dist(inside.Select(i => _s[i].Width)),
             ["headroom"] = Dist(hr),
+            ["outdoor_fraction"] = R(SkyShare(inside)),
             ["open_sky_fraction"] = R(inside.Count(i => _s[i].OpenSky) / (double)inside.Count),
             ["headroom_iqr_over_median"] = iqr,
             ["corridor_fraction"] = R(inside.Count(i => _s[i].Corridor) / (double)inside.Count),
@@ -555,7 +556,8 @@ public sealed partial class SpatialAnalysis
             ["spaces"] = new JsonArray(spaces.Take(12).Select(s => (JsonNode)new JsonObject
             {
                 ["pos"] = P3(Spaces.Cent[s.Node]), ["area"] = R(s.Area), ["length"] = R(s.Length), ["width"] = R(s.Width),
-                ["headroom_p50"] = double.IsNaN(s.HeadroomP50) ? null : R(s.HeadroomP50), ["archetype"] = s.Archetype,
+                ["headroom_p50"] = double.IsNaN(s.HeadroomP50) ? null : R(s.HeadroomP50), ["sky"] = R(SkyShare(Spaces.Members[s.Node])),
+                ["archetype"] = s.Archetype,
             }).ToArray()),
             ["dressing_per100"] = R(dressing * per100),
             ["undressed_cells"] = cells.Count(n => NodeDressing[n] == 0),

@@ -36,6 +36,8 @@ internal static class CliHelp
               Everything the run creates is tagged ai.script=<script file> and ai.session=<id>
               (one id per glacier-cli invocation); a tag the script sets itself wins. Find them
               later with level.objects_tagged / level.brushes_tagged. The created UIDs are listed.
+              ged.import("name") also finds name.lua beside the script (its own folder only, literal
+              names); those modules are sent with the run, so --attach works the same.
               --save            save the level back to its own file after a successful run
               --save=<path>     save to another path (same as --out <path>)
               --build           after a successful run, compile a sealed build (before any save)
@@ -146,6 +148,83 @@ internal static class CliHelp
               Output: --out, else artifacts/corpus in a source checkout, else
               %LOCALAPPDATA%/Glacier/corpus.
             """,
+        ["ref"] = """
+            glacier-cli ref add <image> --refs <dir> --id <id> [--crop x,y,w,h] [--snap] [--area <text>]
+                            [--notes <text>] [--replace]
+            glacier-cli ref view <image> [--crop x,y,w,h] [--snap] --out <png> [--side <px>]
+            glacier-cli ref view <id> --refs <dir> --out <png>
+            glacier-cli ref list --refs <dir>
+            glacier-cli ref camera <id> --refs <dir> [--camera x,y,z] [--look x,y,z | --heading <deg> --pitch <deg>]
+                            [--move f,r,u] [--turn h,p] [--hfov <deg>] [--eye-height <m>|eye|crouch|jump]
+                            [--horizon y | x1,y1,x2,y2] [--vp x,y] [--vp-dir x,z] [--object x,base,top,m]
+                            [--measure x,base,top,...] [--ignore x,y,w,h,...] [--clear-marks] [--apply-estimate]
+            glacier-cli ref compare <id> <level.rfl> --refs <dir> --out <png> [--panel <px>] [--mode <mode>]
+                            [camera overrides as for 'ref camera', not saved]
+            glacier-cli ref scale [<count> <unit>]
+              Reference matching: compare the level with the concept screenshots it should look like.
+              add      cuts a reference picture out of a concept image (--crop in the image's pixels;
+                       --snap moves the edges onto the panel's frame) and stores it as <id>.png in the
+                       reference set (--refs: a folder with references.json; the level is never changed).
+              view     an image with a coordinate grid: a concept image in its pixels (to read crops),
+                       or a stored reference in fractions 0-1 with its marks (to read cue positions).
+              camera   sets the reference's matched camera: position and look (or heading / pitch),
+                       nudges in the camera's frame (--move forward,right,up metres; --turn heading,pitch
+                       degrees), the horizontal field of view (default 90) and the eye height above the
+                       floor (renders stand the camera on the floor under it). Marks (fractions of the
+                       picture) give an estimate: the horizon gives pitch and roll, a vanishing point
+                       (with the lines' world direction) the heading, a known-height object the eye
+                       height and its distance, measure spans their heights in metres.
+                       --apply-estimate puts the estimate on the camera.
+              compare  renders the level from the reference's camera (like 'render': headless, or the
+                       editor's level with --attach) at the reference's aspect, and writes one sheet:
+                       reference | render, blend | edge overlay, with both horizons and skylines, plus
+                       the raw render (<out>.render.png). --json adds the cues (detail density, plain
+                       top, skyline, brightness, warmth, horizons, edge overlap) and hints.
+              scale    known Red Faction dimensions measured on the stock levels (door 2.5 m, doorway,
+                       corridor, room height, stairs, player, eye, jump) and count x unit in metres.
+            """,
+        ["modules"] = """
+            glacier-cli modules harvest [--sources <file.json>] [--root <dir>] [--out <dir>] [--group <name>]
+                                        [--rf-dir <dir> | --no-install] [--jobs <n>]
+            glacier-cli modules harvest <level.rfl | pack.vpp> --group <name> --out <dir>
+            glacier-cli modules list  [--category <c>] [--attach <kind>] [--role <r>] [--style <s>]
+                                      [--group <name>] [--stock-only] [--include-rejected] [--limit <n>]
+                                      [--modules <dir>] [--json]
+            glacier-cli modules show <id> [--modules <dir>] [--json]
+            glacier-cli modules stats [--modules <dir>] [--json]
+            glacier-cli modules sheet --out <dir> [--modules <dir>] [--group <g>] [--category <c>] [--style <s>]
+                                      [--top <n>] [--size <px>] [--rf-dir <dir>] [--verbose] [--json]
+              The detail and architecture module library: recurring assemblies (pilasters, trims,
+              door and window frames, beams, trusses, columns, railings, catwalks, stairs, pipes,
+              machinery, consoles, rocks, ...) harvested from levels, each stored as an .rfg in its
+              own local frame with its anchor, stretchable axes, repeating units, styles and score.
+              harvest   reads the levels a sources manifest lists (--sources, else library/sources.json
+                        beside the library), or one level or packfile, READ-ONLY, and writes
+                        <out>/<group>/index.json plus <out>/<group>/<category>/<id>.rfg and
+                        <out>/harvest-report.json. Paths in the manifest are relative to --root
+                        (default: the folder above library/). Nothing is ever written inside a
+                        source folder: an output folder that is, contains, or lies inside one is
+                        refused. The same inputs always give byte-identical files. The Red Faction
+                        install (--rf-dir, GED_RF_DIR, research/rf-dirs.txt) tells stock textures
+                        from custom ones; --group harvests one manifest group (or names the group
+                        of a single level or packfile); --jobs sets the parallel workers.
+              list      modules matching the filters, best score first (default 50; --limit).
+                        --attach here is the attachment filter: wall, corner, floor, ceiling,
+                        column, span, edge, opening or free.
+              show      one module in full: frame, stretch slices, tiles, textures, provenance, curation.
+              stats     counts by group, category, attachment, role and style, and the curation counts
+                        (kept, rejected, relabelled, undecided).
+              sheet     the curation contact sheet: renders each module alone (lit, 3/4 view framed
+                        on it) to <out>/thumbs/<id>.png and writes <out>/index.html, where you keep,
+                        reject and relabel modules and download curation.json. --top modules per
+                        category (default 24, best score first), --size thumbnail pixels (default 256).
+              Curation: library/modules/curation.json (written by you, from the sheet; never by a
+                        harvest) is applied whenever the library loads: rejected modules leave list,
+                        fit, place and the kit (--include-rejected lists them), relabels replace the
+                        category, role and styles, and kept modules rank 0.5 higher.
+              Library: --modules <dir>, else GED_MODULE_LIBRARY, else library/modules beside
+              glacier-cli, else library/modules in the source checkout.
+            """,
         ["save"] = """
             glacier-cli save <level.rfl> [--out <path.rfl>] [--no-build]
               Saves the level (Alpine v306) with the editor's save rules — e.g. to upgrade an older
@@ -173,7 +252,11 @@ internal static class CliHelp
                                   shown dimmed.
                 --view top|bottom|front|back|left|right   orthographic, whole level
                 --view iso [--fov <deg>]                  three-quarter perspective from above
-                --camera x,y,z --look x,y,z [--fov <deg>] perspective camera (fov default 60)
+                --camera x,y,z --look x,y,z [--fov <deg> | --hfov <deg>] [--eye-height <m>]
+                                  perspective camera (vertical fov default 60; --hfov gives the
+                                  horizontal field of view instead, e.g. 90 like Red Faction's
+                                  default; --eye-height stands the camera that high above the
+                                  highest floor at or below the camera point, keeping the pitch)
               Framing (plan / ortho / iso; default: the whole level, or the plan's storey):
                 --region minx,miny,minz,maxx,maxy,maxz | --room <index> | --uid <uid>
               Options:
@@ -276,8 +359,9 @@ internal static class CliHelp
               level with missing or stale geometry is measured on a private preview build unless
               --fresh none). Operations: raycast, los, point_info, clearance (instant); walk, routes,
               graph, sightlines, cover, cells, area_report, spawn_report, item_report, locations,
-              setpieces (bridge spans, landmark heights, atria, largest spaces) (they measure the
-              level once: a few seconds). Points are x,y,z; --region is 6 numbers.
+              setpieces (bridge spans, landmark heights, atria, largest spaces), purpose (bridges
+              and flights that serve no route, route ledges, area ways out, misplaced rocks, orphan
+              cover, hidden landmarks) (they measure the level once: a few seconds). Points are x,y,z; --region is 6 numbers.
               Every result reports the geometry's freshness (built / preview / stale, and what was
               measured). Use --json.
             """,
@@ -329,7 +413,7 @@ internal static class CliHelp
     /// <summary>The verbs whose option lines are generated from the tool catalog (their tools' CLI flags).</summary>
     private static readonly HashSet<string> GeneratedOptionVerbs = new(StringComparer.Ordinal)
     {
-        "redo", "checkpoint", "diff", "inspect", "query", "catalog", "spatial", "grade",
+        "redo", "checkpoint", "diff", "inspect", "query", "catalog", "spatial", "grade", "ref",
     };
 
     /// <summary>
@@ -385,8 +469,12 @@ internal static class CliHelp
               grade <level>                design grader: PASS / REVIEW / FAIL with fixes and locations
               corpus sweep|snapshot|verify|aggregate
                                            fingerprint a folder of levels read-only (help corpus)
+              modules harvest|list|show|stats
+                                           the detail/architecture module library (help modules)
               save <level>                 save with the editor's save rules (--out <path>)
               render <level> --out <png>   floor plan / view image + pixel-to-world mapping
+              ref add|view|list|camera|compare|scale
+                                           match the level to reference screenshots (help ref)
               open <level> --attach        open a level in the running editor
               undo --attach                undo the editor's latest command-line run (--steps <n>)
               redo --attach                redo what undo took back (--steps <n>)

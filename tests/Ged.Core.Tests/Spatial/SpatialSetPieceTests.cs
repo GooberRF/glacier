@@ -114,4 +114,30 @@ public sealed class SpatialSetPieceTests
             """);
         Assert.True(run.Success, run.Error?.ToDisplayString() + "\n" + string.Join("\n", log.Entries.Select(e => e.Message)));
     }
+    [Fact]
+    public void Function_Report_Reads_The_Route_Each_Bridge_Serves()
+    {
+        // The set-piece hall: the only way between its two ledges is the bridge (it serves a route); the free-standing
+        // tower is a landmark seen from several spaces.
+        JsonObject sp = SpatialFixtures.Analyze("setpieces").Purpose();
+        _out.WriteLine(sp.ToJsonString());
+        JsonObject span = sp["bridges"]!.AsArray().Select(b => b!.AsObject()).OrderByDescending(b => b["span"]!.GetValue<double>()).First();
+        Assert.Null(span["fault"]);
+        Assert.Equal("route", span["role"]!.GetValue<string>());
+        Assert.Equal(0, sp["purposeless_bridges"]!.GetValue<int>());
+        Assert.All(sp["landmarks"]!.AsArray(), l => Assert.False(l!["hidden"]!.GetValue<bool>()));
+
+        // The canyon crossing: the footbridge runs 18 m beside the road bridge, but its ends lead into walled approach
+        // corridors the road bridge's ends do not reach (a 102 m walk round), so both serve a route of their own.
+        JsonObject cp = SpatialFixtures.Analyze("cartbridge").Purpose();
+        _out.WriteLine(cp.ToJsonString());
+        Assert.Equal(2, cp["bridges_checked"]!.GetValue<int>());
+        Assert.All(cp["bridges"]!.AsArray(), b =>
+        {
+            Assert.Null(b!["fault"]);
+            Assert.True(b["catchment_ok"]!.GetValue<bool>());
+            Assert.True(b["detour"]!.GetValue<double>() > 2 * b["span"]!.GetValue<double>());
+        });
+        Assert.Empty(SpatialFixtures.Analyze("cartbridge").Locations("purposeless_bridges", 8));
+    }
 }

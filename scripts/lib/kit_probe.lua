@@ -198,9 +198,9 @@ local KEYM = 2097152
 
 --- The floor lattice over [x0, x1] x [z0, z1] for floors with y in [ylo, yhi]: standing nodes
 -- {i, k, x, z, y, top, id} and at = {[ckey] = ids}; L.h is the engine's lattice (graphs, sets).
--- stride > 1 keeps every stride-th column only.
-function Probe:lattice(x0, z0, x1, z1, ylo, yhi, headroom, stride)
-  local h = self.h:lattice(x0, z0, x1, z1, ylo, yhi, headroom or P.HEADROOM, stride or 1)
+-- stride > 1 keeps every stride-th column only; zone = a layout zone's name keeps the floor inside its air brushes.
+function Probe:lattice(x0, z0, x1, z1, ylo, yhi, headroom, stride, zone)
+  local h = self.h:lattice(x0, z0, x1, z1, ylo, yhi, headroom or P.HEADROOM, stride or 1, zone)
   local a = h:arrays()
   local I, Kk, X, Z, Y, T = a.i, a.k, a.x, a.z, a.y, a.top
   local nodes, at = {}, {}
@@ -303,6 +303,7 @@ local function space_of(api, key, r, fail)
   if type(r) == "string" then
     local x0, y0, z0, x1, y1, z1 = math.huge, math.huge, math.huge, -math.huge, -math.huge, -math.huge
     local airs = {}
+    local zone = false
     -- A kit.build_layout zone's name (kit.zone: every air brush of the zone, whatever its parts are named), else a
     -- kit record's name (kit.name).
     for _, tag in ipairs({ "kit.zone", "kit.name" }) do
@@ -315,11 +316,20 @@ local function space_of(api, key, r, fail)
             x1, y1, z1 = max(x1, bb.max.x), max(y1, bb.max.y), max(z1, bb.max.z)
           end
         end
+        zone = (#airs > 0 and tag == "kit.zone")
       end
     end
     if #airs == 0 then fail(api, "'" .. key .. "': no kit room, corridor, cave or layout zone is named '" .. r .. "'.", "Pass the record a kit function returned, a name its brushes carry (kit.name tag), or a kit.build_layout zone's name (report.zones[i].name).") end
+    -- A layout zone's floor is the floor inside its own air brushes: the box of a turned or traced zone also holds
+    -- a neighbour's floor, so the engine keeps only the nodes that stand inside them (an unturned box zone's floor
+    -- is all inside them: the same nodes).
+    if zone then
+      local uids = {}
+      for i, b in ipairs(airs) do uids[i] = b.uid end
+      CORE:zone(r, uids)
+    end
     local kind = airs[1]:tags().kit or "room"
-    return { name = r, kind = kind, x0 = x0, y0 = y0, z0 = z0, x1 = x1, y1 = y1, z1 = z1, sky = sky_of(airs), brushes = airs }
+    return { name = r, kind = kind, x0 = x0, y0 = y0, z0 = z0, x1 = x1, y1 = y1, z1 = z1, sky = sky_of(airs), brushes = airs, zone = zone or nil }
   end
   if type(r) ~= "table" or r.min == nil or r.max == nil then
     fail(api, "'" .. key .. "' must be a kit record (room, corridor, cave, canyon, passage) or a kit.name string.")
@@ -395,6 +405,47 @@ function P.spaces(api, t, fail, no_sky)
   return out
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- Space context (the intent layer's theme fit): the grader reads the same three contexts from the
+-- compiled faces (SpatialAnalysis.Purpose.cs) — open (sky), rock_walls (natural rock) or built_interior.
+-- ---------------------------------------------------------------------------------------------
+
+--- True for a natural-rock texture name (stock rck_ / rock / cliff / boulder / cave families).
+function P.rock_texture(name)
+  local n = string.lower(name or "")
+  return n:find("rck", 1, true) ~= nil or n:find("rock", 1, true) ~= nil or n:find("cliff", 1, true) ~= nil
+    or n:find("boulder", 1, true) ~= nil or n:sub(1, 3) == "cav" or n:find("_cave", 1, true) ~= nil
+end
+
+--- The context of a space: "rock_walls" (a cave or canyon, or at least 35 % of its wall faces natural rock), "open"
+-- (under the sky with no built walls: open ground, floating decks), "built_yard" (under the sky inside built walls)
+-- or "built_interior". Rocks belong in the first two. A space without brushes of its own reads the air brushes in its box.
+function P.context(s)
+  if s.kind == "cave" or s.kind == "canyon" then return "rock_walls" end
+  local sky = s.sky
+  local brushes = s.brushes
+  if brushes == nil or #brushes == 0 then
+    brushes = {}
+    for _, b in ipairs(level.brushes_in{ min = { s.x0, s.y0, s.z0 }, max = { s.x1, s.y1, s.z1 } }.brushes) do
+      if b.air then brushes[#brushes + 1] = b end
+    end
+  end
+  local rock, all = 0, 0
+  for _, b in ipairs(brushes) do
+    for _, f in ipairs(b.faces) do
+      if f.show_sky then sky = true end
+      local n = f.normal
+      if abs(n.y) < 0.7 then
+        all = all + 1
+        if P.rock_texture(f.texture) then rock = rock + 1 end
+      end
+    end
+  end
+  if all > 0 and rock / all >= 0.35 then return "rock_walls" end
+  if sky then return all > 0 and "built_yard" or "open" end
+  return "built_interior"
+end
+
 --- Every air space of the level (P.spaces with no room given; sky flags not read), cached while the
 -- shared probe's brushes are unchanged.
 local all_spaces_cache = nil
@@ -421,11 +472,12 @@ end
 
 --- The lattice of a space (its box, floors between its floor and 1 m under its top).
 function Probe:space_lattice(s, headroom)
-  return self:lattice(s.x0, s.z0, s.x1, s.z1, s.y0 - 0.1, max(s.y0, s.y1 - 1.0), headroom)
+  return self:lattice(s.x0, s.z0, s.x1, s.z1, s.y0 - 0.1, max(s.y0, s.y1 - 1.0), headroom, 1, s.zone and s.name or nil)
 end
 
 --- The walkable area (m^2) of a space's lattice, measured in the engine only (P.walk_area of space_lattice).
 function Probe:walk_area_of(s, headroom)
+  if s.zone then return self.h:lattice(s.x0, s.z0, s.x1, s.z1, s.y0 - 0.1, max(s.y0, s.y1 - 1.0), headroom or P.HEADROOM, 1, s.name):walk_area().area end
   return self.h:walk_area(s.x0, s.z0, s.x1, s.z1, s.y0 - 0.1, max(s.y0, s.y1 - 1.0), headroom or P.HEADROOM)
 end
 

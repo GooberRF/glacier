@@ -64,9 +64,15 @@ public sealed class SpatialLevel
     /// </summary>
     public Func<string, (int Width, int Height)?>? TextureSize { get; init; }
 
-    /// <summary>This level with texture pixel sizes from <paramref name="sizes"/> (e.g. <see cref="Assets.TextureSizeLookup.Get"/>).</summary>
-    public SpatialLevel WithTextureSize(Func<string, (int Width, int Height)?> sizes) =>
-        new(Rfl, Objects, Geometry, FileName, Freshness) { TextureSize = sizes };
+    /// <summary>
+    /// The grain a texture's pixels show (<see cref="Editing.TextureGrains"/>), when known; null = thin-member metrics judge
+    /// grain from texture proportions only (strips).
+    /// </summary>
+    public Func<string, Editing.TextureGrain>? TextureGrain { get; init; }
+
+    /// <summary>This level with texture pixel sizes from <paramref name="sizes"/> (e.g. <see cref="Assets.TextureSizeLookup.Get"/>) and optionally grains.</summary>
+    public SpatialLevel WithTextureSize(Func<string, (int Width, int Height)?> sizes, Func<string, Editing.TextureGrain>? grain = null) =>
+        new(Rfl, Objects, Geometry, FileName, Freshness) { TextureSize = sizes, TextureGrain = grain };
 
     /// <summary>
     /// The level of <paramref name="document"/>, measuring <paramref name="geometry"/> (default: its stored compiled

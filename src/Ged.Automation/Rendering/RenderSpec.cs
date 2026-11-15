@@ -75,7 +75,8 @@ public enum RenderOverlays
 /// GPU or build work starts.
 /// <para>args: <c>out</c> (.png, required), <c>view</c> (plan|top|bottom|front|back|left|right|iso|camera),
 /// <c>y</c>, <c>thickness</c>, <c>below</c> (plan slice), <c>camera</c> / <c>look</c> ([x,y,z]) and
-/// <c>fov</c> (degrees), <c>region</c> ([minx,miny,minz,maxx,maxy,maxz]) | <c>room</c> (index) |
+/// <c>fov</c> (vertical degrees) or <c>hfov</c> (horizontal degrees: the vertical field of view follows from the image's aspect),
+/// <c>eyeHeight</c> (camera view: put the camera this many metres above the floor under it, keeping the pitch), <c>region</c> ([minx,miny,minz,maxx,maxy,maxz]) | <c>room</c> (index) |
 /// <c>uid</c>, <c>mode</c> (lit|textured|lightmaps|rooms|wireframe|seethrough), <c>width</c>,
 /// <c>height</c> (a fixed image size), <c>maxSide</c> (without width/height: the image's longest side, default
 /// 1024; an orthographic view sizes the image to the framed geometry's or region's proportions), <c>overlays</c> (array of grid|scale|objects|labels|links|holes|legend, or "none"),
@@ -117,6 +118,19 @@ public sealed class RenderSpec
 
     /// <summary>The perspective field of view (null = 60 for the camera view, 45 for iso).</summary>
     public float? FovDegrees { get; init; }
+
+    /// <summary>
+    /// The horizontal field of view in degrees (null = use <see cref="FovDegrees"/>). Given, the vertical field of view is
+    /// derived from it and the image's aspect: vfov = 2·atan(tan(hfov / 2) · height / width).
+    /// </summary>
+    public float? HFovDegrees { get; init; }
+
+    /// <summary>
+    /// Camera view: the eye's height above the floor (null = the camera position as given). The camera's Y is the search
+    /// start: the camera moves to the highest floor at or below it plus this height, and the look point moves by the
+    /// same amount so the pitch is kept.
+    /// </summary>
+    public float? EyeHeight { get; init; }
 
     /// <summary>An explicit framing box (min, max).</summary>
     public (Vector3 Min, Vector3 Max)? Region { get; init; }
@@ -220,6 +234,39 @@ public sealed class RenderSpec
             throw Usage("fov only applies to the camera and iso views.");
         }
 
+        float? hfov = Num(args, "hfov");
+        if (hfov is not null)
+        {
+            if (fov is not null)
+            {
+                throw Usage("fov (vertical) and hfov (horizontal) are alternatives: give one.");
+            }
+
+            if (hfov is < 10f or > 170f)
+            {
+                throw Usage("hfov must be between 10 and 170 degrees.");
+            }
+
+            if (view is not (RenderView.Camera or RenderView.Iso))
+            {
+                throw Usage("hfov only applies to the camera and iso views.");
+            }
+        }
+
+        float? eyeHeight = Num(args, "eyeHeight");
+        if (eyeHeight is not null)
+        {
+            if (view != RenderView.Camera)
+            {
+                throw Usage("eyeHeight only applies to the camera view.");
+            }
+
+            if (eyeHeight is < 0.05f or > 200f)
+            {
+                throw Usage("eyeHeight must be between 0.05 and 200 metres.");
+            }
+        }
+
         (Vector3, Vector3)? region = null;
         if (args["region"] is JsonNode rn)
         {
@@ -315,6 +362,8 @@ public sealed class RenderSpec
             CameraPosition = cam,
             CameraLook = look,
             FovDegrees = fov,
+            HFovDegrees = hfov,
+            EyeHeight = eyeHeight,
             Region = region,
             Room = room,
             Uid = uid,
@@ -327,6 +376,14 @@ public sealed class RenderSpec
             Build = build,
         };
     }
+
+    /// <summary>The vertical field of view (degrees) that gives <paramref name="hfovDegrees"/> horizontally at <paramref name="width"/> x <paramref name="height"/>.</summary>
+    public static float VerticalFov(float hfovDegrees, int width, int height) =>
+        2f * MathF.Atan(MathF.Tan(hfovDegrees * (MathF.PI / 360f)) * height / width) * (180f / MathF.PI);
+
+    /// <summary>The horizontal field of view (degrees) of a vertical one at <paramref name="width"/> x <paramref name="height"/>.</summary>
+    public static float HorizontalFov(float vfovDegrees, int width, int height) =>
+        2f * MathF.Atan(MathF.Tan(vfovDegrees * (MathF.PI / 360f)) * width / height) * (180f / MathF.PI);
 
     /// <summary>Parses a view name.</summary>
     public static RenderView ParseView(string name) => name.ToLowerInvariant() switch

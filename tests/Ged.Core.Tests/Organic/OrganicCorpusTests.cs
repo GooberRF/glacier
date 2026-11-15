@@ -7,7 +7,9 @@ using System.Security.Cryptography;
 using Ged.Core.Compiler;
 using Ged.Core.Editing;
 using Ged.Core.Editing.Organic;
+using Ged.Core.Editor;
 using Ged.Core.Model;
+using Ged.Core.Scripting;
 using Ged.Core.Tests.Scripting;
 using Xunit;
 using static Ged.Core.Tests.Scripting.KitTestHarness;
@@ -21,7 +23,8 @@ namespace Ged.Core.Tests.Organic;
 /// 1/1024 m grid; (3) no duplicate horizontal coverage on either build; (4) the walkway along every tube: one
 /// floor at the expected height and 2 m of open space above it, ±0.9 m to each side, rising at most 45°;
 /// (5) determinism (byte-identical reruns; a stored SHA-256 on Windows, with a text dump of the level written
-/// on mismatch); (6) budget: ≤ 60 Lua→C# facade calls (the ≤ 2 s script time is a Perf gate).
+/// on mismatch); (6) budget: ≤ 60 Lua→C# facade calls of the fixture's own, beyond loading the kit (the ≤ 2 s
+/// script time is a Perf gate).
 /// </summary>
 public sealed class OrganicCorpusTests
 {
@@ -37,6 +40,19 @@ public sealed class OrganicCorpusTests
     private static readonly Dictionary<string, (int Shared, int Incremental)> KnownCompilerLeaks = new(StringComparer.Ordinal)
     {
     };
+
+    /// <summary>Facade calls an empty script makes through the harness: loading the kit and its modules.</summary>
+    private static readonly Lazy<int> KitLoadCalls = new(() =>
+    {
+        // Straight through the runner: the kit harness requires one undo step, which an empty script does not make.
+        ScriptRunResult r = ScriptTestFixture.Runner().Run(
+            new ScriptServices { Document = LevelTemplates.CreateNew(KitTestHarness.FixedDate), Confirmation = new AllowAllConfirmation() },
+            "local kit = ged.import('kit')\nreturn 0",
+            new ScriptRunOptions { ChunkName = "kit-load", Limits = ScriptTestFixture.LoadTolerantLimits },
+            new ScriptLog());
+        Assert.True(r.Success, r.Error?.ToDisplayString());
+        return r.FacadeCalls;
+    });
 
     public static IEnumerable<object[]> FastCases() =>
         Fixtures.SelectMany(f => new[] { 1, 2, 3 }.Select(s => new object[] { f, s }));
@@ -74,8 +90,11 @@ public sealed class OrganicCorpusTests
         KitRun run = Run(Script(fixture, seed));
         string label = $"{fixture} seed {seed}";
 
-        // 6. Budget (calls; the wall-clock half is a Perf gate).
-        Assert.True(run.Result.FacadeCalls <= 60, $"{label}: {run.Result.FacadeCalls} facade calls (budget 60)");
+        // 6. Budget (calls; the wall-clock half is a Perf gate). The fixture's own calls are counted: the kit's fixed
+        // cost of loading itself and its modules (measured on an empty script) grows with every module the kit ships
+        // and is not what the budget guards against (a regression to per-vertex callbacks).
+        int own = run.Result.FacadeCalls - KitLoadCalls.Value;
+        Assert.True(own <= 60, $"{label}: {own} facade calls of its own (budget 60; {run.Result.FacadeCalls} in all, {KitLoadCalls.Value} loading the kit)");
 
         // 2. Shape rules on every generated brush (rooms are kit boxes, which are rotated-free too).
         List<Brush> brushes = new BrushEditor(run.Doc).Brushes.ToList();

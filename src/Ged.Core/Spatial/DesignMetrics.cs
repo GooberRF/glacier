@@ -9,7 +9,7 @@ namespace Ged.Core.Spatial;
 /// <summary>One design metric: its id, where it is read from the report, its group and how far it can be trusted.</summary>
 /// <param name="Id">The id (the exemplar study's <c>metrics.csv</c> column).</param>
 /// <param name="Path">The dotted path into <see cref="SpatialAnalysis.Report"/> (list indices as numbers).</param>
-/// <param name="Group">scale, flow, shape, pop, tex, class or payload.</param>
+/// <param name="Group">scale, flow, shape, pop, tex, class, payload or function.</param>
 /// <param name="Reliability">high, medium or low (DESIGN-QUALITY-SPEC §0).</param>
 /// <param name="Doc">What it measures, with its unit.</param>
 public sealed record DesignMetric(string Id, string Path, string Group, string Reliability, string Doc);
@@ -61,6 +61,20 @@ public static class DesignMetrics
         M("bridge_gap_depth", "setpieces.bridges.0.gap_depth", "scale", "medium", "Drop under the landmark bridge (m; E9)."),
         M("landmark_height_max", "setpieces.landmark_height_max", "scale", "medium", "Tallest landmark (E9): a free-standing structure's height above the floor around it (m; at least 12 m to count)."),
         M("atrium_height_max", "setpieces.atrium_height_max", "scale", "medium", "Tallest atrium (E9): an indoor space's median headroom (m; at least 12 m to count)."),
+        M("bridges_checked", "purpose.bridges_checked", "function", "medium", "Bridges read for their route (E9 bridges)."),
+        M("purposeless_bridges", "purpose.purposeless_bridges", "function", "medium", "Set-piece bridges (span 12 m or more) serving no route: redundant (the floor beside or below joins the ends with a walk at most 1.2x the deck + 1 m) or leading nowhere (under 40 m² of floor on one side gains by crossing, no item or spawn waits at that end, and it leads on to under 160 m²)."),
+        M("mismatched_props", "purpose.mismatched_props", "function", "medium", "Rock props (half their face area natural-rock textures) standing free (2 m from walls and edges) in built spaces (built walls: interiors, and yards walled all round under the sky)."),
+        M("scattered_rocks", "purpose.scattered_rocks", "function", "medium", "Rock props standing free (2 m from walls and edges) that are not cover: rubble scattered on open floor."),
+        M("cover_pieces", "purpose.cover_pieces", "function", "medium", "Free-standing cover: prop clusters 0.9-2.8 m tall, 2 m clear of walls and edges."),
+        M("orphan_cover", "purpose.orphan_cover", "function", "medium", "Free-standing cover with no open line of 14 m or more through it (nothing to break)."),
+        M("orphan_cover_fraction", "purpose.orphan_cover_fraction", "function", "medium", "Orphan cover over the free-standing cover pieces (at least 4 counted)."),
+        M("hidden_landmarks", "purpose.hidden_landmarks", "function", "low", "Landmarks seen from fewer than 2 spaces."),
+        M("flights_checked", "purpose.flights_checked", "function", "medium", "Flights of stairs and ramps read for their route (built, climbing at least 1 m between landings)."),
+        M("purposeless_flights", "purpose.purposeless_flights", "function", "medium", "Flights serving no route: climbing into a wall or solid, blocked at an end, redundant beside another way up, or leading into a dead-end pit or perch (in a bridge's gap, empty, or a second way in)."),
+        M("route_ledges", "purpose.route_ledges", "function", "medium", "Abrupt 0.3-1.5 m steps between two floors of 150 m² or more in a doorway or corridor, with no way round on foot."),
+        M("poorly_connected_share", "purpose.connections.poorly_connected_share", "function", "medium", "Share of the area floor (spaces of 30 m² or more) in areas with at most 2 ways out to other areas."),
+        M("ways_out_mean", "purpose.connections.ways_out_mean", "function", "medium", "Area-weighted mean of each area's ways out (connector pieces or neighbouring spaces leading to another area)."),
+        M("areas_reached_mean", "purpose.connections.areas_reached_mean", "function", "low", "Area-weighted mean of the other areas each area's ways out reach."),
         M("loops8_per1000", "loops.b1_cell8_per1000m2", "flow", "medium", "Route loops around 8 m-scale obstacles per 1000 m²."),
         M("loops4_per1000", "loops.b1_cell4_per1000m2", "flow", "medium", "Route loops around 4 m-scale obstacles per 1000 m²."),
         M("loops8", "loops.b1_cell8", "flow", "medium", "Route loops around 8 m-scale obstacles."),
@@ -110,6 +124,7 @@ public static class DesignMetrics
         M("open_area_fraction", "cover.open_area_fraction", "pop", "medium", "Share of the floor in open areas (clear width ≥ 8 m)."),
         M("spawn_nn_p50", "spawns.nn.p50", "pop", "high", "Median nearest-neighbour distance between spawns (m)."),
         M("spawn_los30", "spawns.los_pairs_within30_fraction", "pop", "medium", "Share of spawn pairs within 30 m that see each other."),
+        M("spawn_los30_live", "spawns.los_pairs_within30_live_fraction", "pop", "medium", "Share of spawn pairs within 30 m that see each other, counting only pairs live at the same time (payload: a respawn a checkpoint links is live while that checkpoint is the cart's target; elsewhere every pair, equal to spawn_los30)."),
         M("spawn_exposure_p50", "spawns.exposure40.p50", "pop", "medium", "Median spawn exposure (share of the floor within 40 m seen)."),
         M("spawn_to_item_p50", "spawns.to_nearest_item.p50", "pop", "high", "Median distance from a spawn to its nearest item (m)."),
         M("items_per100", "items.per100", "pop", "high", "Items per 100 m²."),
@@ -132,6 +147,16 @@ public static class DesignMetrics
         M("uv_scale_consistent", "texturing.uv_scale_consistent_per_texture", "tex", "medium", "Share of face area at its texture's usual scale."),
         M("uv_cont_coplanar", "texturing.uv_continuity_coplanar", "tex", "medium", "UV continuity across shared coplanar edges."),
         M("uv_cont_corner", "texturing.uv_continuity_corner", "tex", "medium", "UV continuity across corners."),
+        M("uv_handedness", "texturing.uv.walls.handedness_major", "tex", "high", "Share of wall area whose textures read the same way round (box mapping mirrors half the walls: 0.5)."),
+        M("uv_corner_aligned", "texturing.uv.seams.wall_corner.aligned", "tex", "medium", "Wall corners (length-weighted) where the texture's features meet across the corner."),
+        M("uv_corner_continuous", "texturing.uv.seams.wall_corner.continuous", "tex", "medium", "Wall corners where the texture wraps without any jump."),
+        M("uv_fold_aligned", "texturing.uv.seams.fold.aligned", "tex", "medium", "Folds between sloped or rock faces (and lips onto tops) where the texture's features meet."),
+        M("uv_floor_line_tile", "texturing.uv.walls.floor_line.tile", "tex", "low", "Floor lines where the wall texture's tile edge stands on the floor."),
+        M("uv_ceiling_line_tile", "texturing.uv.walls.ceiling_line.tile", "tex", "low", "Ceiling lines where the wall texture's tile edge meets the ceiling."),
+        M("uv_member_grain", "texturing.uv.members.grain_along", "tex", "medium", "Thin members (beams, posts, pilasters) in a strip or girder texture: share of their long-face area whose texture runs along the member (stock levels 0.98; a girder texture stacked up a post reads as stripes)."),
+        M("uv_member_grain_vertical", "texturing.uv.members.vertical_grain_along", "tex", "high", "Vertical members (posts, pilasters, columns) in a strip or girder texture: share of their long-face area whose texture runs up the member (study levels p50 1.0; a girder stacked up a post reads as zebra stripes)."),
+        M("uv_member_repeats", "texturing.uv.members.no_repeats_across", "tex", "low", "Thin members in a strip or girder texture: share of their long-face area showing at most one repeat across the member."),
+        M("uv_slope_stretched", "texturing.uv.slope_stretched", "tex", "medium", "Share of sloped face area whose texture is stretched or sheared (box-mapped from above)."),
         M("trim_per100", "texturing.trim_faces_per100", "tex", "medium", "Trim strips (thin faces with their own texture) per 100 m²."),
         M("trim_area", "texturing.trim_area_fraction", "tex", "medium", "Share of face area in trim strips."),
         M("detail_face_area", "texturing.detail_face_area_fraction", "tex", "high", "Share of face area on detail faces."),

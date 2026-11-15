@@ -68,6 +68,37 @@ internal static class ScriptTags
         return tags;
     }
 
+    /// <summary>The tag the <c>name</c> creation option writes: the design kit's own name tag, so kit lookups by name find the brush.</summary>
+    public const string NameKey = "kit.name";
+
+    /// <summary>
+    /// The <c>tags</c> table plus the <c>name</c> option of a brush-creating call: <c>name</c> becomes the
+    /// <see cref="NameKey"/> tag (as every kit function tags its brushes), and contradicting a <c>kit.name</c> given in
+    /// <c>tags</c> is an error.
+    /// </summary>
+    public static Dictionary<string, string> TableWithName(string api, ScriptArgs args)
+    {
+        Dictionary<string, string> tags = Table(api, args.Table(api, "tags"));
+        if (args.String(api, "name") is not { } name)
+        {
+            return tags;
+        }
+
+        string value = Value(api, NameKey, name);
+        if (tags.TryGetValue(NameKey, out string? given) && !string.Equals(given, value, StringComparison.Ordinal))
+        {
+            throw new ScriptApiException($"{api}: name '{value}' contradicts tags[\"{NameKey}\"] = '{given}'.", "Give the name once: name = \"...\" (it is written as the kit.name tag).");
+        }
+
+        tags[NameKey] = value;
+        if (tags.Count > ObjectTags.MaxTagsPerUid)
+        {
+            throw new ScriptApiException($"{api}: at most {ObjectTags.MaxTagsPerUid} tags per object (got {tags.Count}).");
+        }
+
+        return tags;
+    }
+
     /// <summary>The Lua view of a tag set: a table <c>{key = value}</c>.</summary>
     public static Dictionary<string, object?> ToLua(IReadOnlyDictionary<string, string> tags)
     {

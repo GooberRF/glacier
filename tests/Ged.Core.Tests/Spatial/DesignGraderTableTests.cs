@@ -39,6 +39,16 @@ public sealed class DesignGraderTableTests
             {
                 Assert.Contains(kind!.GetValue<string>(), SpatialAnalysis.LocationKinds);
             }
+
+            if (c["explain"]?.GetValue<string>() is { } explain)
+            {
+                Assert.Contains(explain, SpatialAnalysis.DetailKinds);
+            }
+
+            if (c["explain_metric"]?.GetValue<string>() is { } em)
+            {
+                Assert.True(known.Contains(em), $"{id}.explain_metric reads unknown metric '{em}'");
+            }
         }
 
         Assert.Equal(new[] { "G24", "G25", "G26" }, DesignGrader.Table["checks"]!.AsArray().Where(c => c!["hard"]?.GetValue<bool>() == true).Select(c => c!["id"]!.GetValue<string>()));

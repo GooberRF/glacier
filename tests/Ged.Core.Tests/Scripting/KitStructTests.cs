@@ -149,8 +149,8 @@ public sealed class KitStructTests
     {
         (ScriptRunResult r, ScriptLog log) = ScriptTestFixture.Run(LevelTemplates.CreateNew(FixedDate), "local kit = ged.import('kit')\n" +
             "kit.room{name = 'hall', pos = {0, 0, 0}, size = {30, 8, 10}}\n" +
-            "local b = kit.bridge{name = 'small', from = {-4, 0}, to = {4, 0}, style = 'plank'}\n" +
-            "local c = kit.bridge{name = 'quiet', from = {-4, 2, 3}, to = {4, 2, 3}, style = 'plank', landmark = false}\n" +
+            "local b = kit.bridge{name = 'small', from = {-4, 0}, to = {4, 0}, style = 'plank', purpose = 'off'}\n" +
+            "local c = kit.bridge{name = 'quiet', from = {-4, 2, 3}, to = {4, 2, 3}, style = 'plank', landmark = false, purpose = 'off'}\n" +
             "return b.from.y .. ':' .. #b.warnings .. ':' .. #c.warnings .. ':' .. b.warnings[1] .. '|' .. b.warnings[2]");
         Assert.True(r.Success, r.Error?.ToDisplayString());
         string[] p = r.ReturnValue!.Split(':', 4);
@@ -323,7 +323,7 @@ public sealed class KitStructTests
             "kit.room{name = 'r', pos = {0, 0, 0}, size = {40, 12, 40}}\n" +
             "local prev = kit.ground_provider{name = 'terrain', at = function(x, z) return {y = 0.05 * x, normal = {-0.05, 1, 0}, kind = 'terrain'} end}\n" +
             "local a = kit.ground_at{x = 10, z = 0}\n" +
-            "local b = kit.bridge{from = {-14, 0}, to = {14, 0}, landmark = false, style = 'plank'}\n" +
+            "local b = kit.bridge{from = {-14, 0}, to = {14, 0}, landmark = false, style = 'plank', purpose = 'off'}\n" +
             "local back = kit.ground_provider{}\n" +
             "local c = kit.ground_at{x = 10, z = 6}\n" + // off the new deck: the brush provider sees the bridge itself
             "return prev .. ':' .. a.provider .. ':' .. a.kind .. ':' .. a.y .. ':' .. string.format('%.2f:%.2f', b.from.y, b.to.y) .. ':' .. back .. ':' .. c.provider .. ':' .. c.y");

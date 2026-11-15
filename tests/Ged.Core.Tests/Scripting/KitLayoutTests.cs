@@ -36,11 +36,12 @@ public sealed class KitLayoutTests
         local function ser(v, out)
           local t = type(v)
           if t == "table" then
-            local keys = {}
-            for k in pairs(v) do keys[#keys + 1] = k end
-            table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+            -- (keys as text, sorted without a comparator: a comparator is slow in the interpreter)
+            local keys, of = {}, {}
+            for k in pairs(v) do local sk = tostring(k) keys[#keys + 1] = sk of[sk] = k end
+            table.sort(keys)
             out[#out + 1] = "{"
-            for _, k in ipairs(keys) do out[#out + 1] = tostring(k) .. "=" ser(v[k], out) out[#out + 1] = "," end
+            for _, sk in ipairs(keys) do out[#out + 1] = sk .. "=" ser(v[of[sk]], out) out[#out + 1] = "," end
             out[#out + 1] = "}"
           elseif t == "number" then out[#out + 1] = string.format("%.4f", v)
           elseif t == "userdata" then out[#out + 1] = string.format("(%.4f,%.4f,%.4f)", v.x, v.y, v.z)
@@ -113,14 +114,22 @@ public sealed class KitLayoutTests
         (_, ScriptRunResult r) = Run(
             "local g = kit.layout{ gametype = 'ctf', seed = 3, players = 12 }\n" +
             "local p = kit.layout_preview{ graph = g }\n" +
-            "return p.text .. '\\n@@SVG ' .. #p.svg .. ' ' .. tostring(p.svg:find('<svg') ~= nil) .. ' ' .. #p.legend");
+            "local seen, types = {}, {}\n" +
+            "for _, l in ipairs(g.links) do if not seen[l.type] then seen[l.type] = true types[#types + 1] = l.type end end\n" +
+            "return p.text .. '\\n@@SVG ' .. #p.svg .. ' ' .. tostring(p.svg:find('<svg') ~= nil) .. ' ' .. #p.legend .. '\\n@@TYPES ' .. table.concat(types, ' ')");
         string text = r.ReturnValue!;
         _out.WriteLine(text);
         Assert.StartsWith("PLAN ctf standard", text, StringComparison.Ordinal);
         Assert.Contains("R", text, StringComparison.Ordinal); // the red flag
         Assert.Contains("B", text, StringComparison.Ordinal);
         Assert.Contains(" gallery [base]", text, StringComparison.Ordinal);
-        Assert.Contains(" corridor ", text, StringComparison.Ordinal);
+        // every link type the graph uses is listed in the legend ("l<n> <type> z<a>-z<b> ...")
+        string[] types = text[(text.LastIndexOf("@@TYPES ", StringComparison.Ordinal) + 8)..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        Assert.True(types.Length >= 2, "the generated graph uses fewer than two link types: " + string.Join(",", types));
+        foreach (string t in types)
+        {
+            Assert.Contains($" {t} z", text, StringComparison.Ordinal);
+        }
         Assert.Contains("spawns red", text, StringComparison.Ordinal);
         Assert.Contains("@@SVG", text, StringComparison.Ordinal);
         Assert.Contains(" true ", text, StringComparison.Ordinal);
@@ -181,14 +190,22 @@ public sealed class KitLayoutTests
     [Fact]
     public void Checker_Flags_Dead_Ends()
     {
+        // A hand graph: a row of three halls, whose two end halls are dead ends.
+        string row = Check("return rule(kit.check_layout{ graph = row(3) }, 'degree')");
+        Assert.Contains("zone z1 has 1 walk link(s)", row, StringComparison.Ordinal);
+        Assert.Contains("zone z3 has 1 walk link(s)", row, StringComparison.Ordinal);
+        Assert.DoesNotContain("zone z2 has", row, StringComparison.Ordinal);
+        Assert.Contains("no dead ends", row, StringComparison.Ordinal);
+        // A generated graph cut down to one walk link at a zone that is not a reward nook.
         string v = Check(
             "local g = kit.layout{ gametype = 'dm', seed = 5, players = 12 }\n" +
-            "local z = g.zones[2] local kept = false\n" +
-            "drop_links(g, function(l) if l.a == z.id or l.b == z.id then if kept then return true end kept = true end return false end)\n" +
+            "local WALK = { corridor = true, doorway = true, stair = true, ramp = true, drop = true, bridge = true, lift = true, road = true, join = true }\n" +
+            "local z = nil for _, c in ipairs(g.zones) do if not z and c.archetype ~= 'nook' then z = c end end\n" +
+            "local kept = false\n" +
+            "drop_links(g, function(l) if l.a == z.id or l.b == z.id then if kept or not WALK[l.type] then return true end kept = true end return false end)\n" +
             "return rule(kit.check_layout{ graph = g }, 'degree') .. ' @' .. z.id");
         string id = v[(v.LastIndexOf('@') + 1)..];
         Assert.Contains($"zone {id} has 1 walk link(s)", v, StringComparison.Ordinal);
-        Assert.Contains("no dead ends", v, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -240,10 +257,12 @@ public sealed class KitLayoutTests
             "local red, blue\n" +
             "for _, o in ipairs(g.objectives) do if o.kind == 'flag' then if o.team == 'red' then red = o else blue = o end end end\n" +
             "local base = zone(g, red.zone)\n" +
-            // the high and flank lanes lose their crossings of the centre column; the red base keeps one exit
-            "drop_links(g, function(l) local a, b = zone(g, l.a), zone(g, l.b) return a.lane ~= 1 and b.lane ~= 1 and a.lane == b.lane and (a.cell[1] == 2 or b.cell[1] == 2) end)\n" +
+            // the high and flank lanes lose their crossings of the centre zones (on the axis, of no team); the red base
+            // keeps one exit. Joins stay: a join is part of two touching zones' shared outline, and without it the
+            // zones overlap (a geometry error, which stops the checker before the design rules)
+            "drop_links(g, function(l) local a, b = zone(g, l.a), zone(g, l.b) return l.type ~= 'join' and a.lane ~= 1 and b.lane ~= 1 and a.lane == b.lane and (a.team == nil or b.team == nil) end)\n" +
             "local kept = false\n" +
-            "drop_links(g, function(l) if l.a == base.id or l.b == base.id then if kept then return true end kept = true end return false end)\n" +
+            "drop_links(g, function(l) if l.type ~= 'join' and (l.a == base.id or l.b == base.id) then if kept then return true end kept = true end return false end)\n" +
             "local V = kit.check_layout{ graph = g }\n" +
             "local lanes = rule(V, 'ctf')\n" +
             "blue.zone = g.zones[1].id == red.zone and g.zones[2].id or g.zones[1].id\n" +
@@ -263,7 +282,7 @@ public sealed class KitLayoutTests
             "local hill for _, o in ipairs(g.objectives) do if o.kind == 'hill' then hill = o.zone end end\n" +
             "local n = 0\n" +
             "drop_links(g, function(l) if l.a == hill or l.b == hill then n = n + 1 return n > 3 end return false end)\n" +
-            "zone(g, hill).archetype = 'arena'\n" +
+            "zone(g, hill).archetype = 'hall'\n" +
             "return rule(kit.check_layout{ graph = g }, 'koth')");
         Assert.Contains("has 3 approaches (5-8)", v, StringComparison.Ordinal);
         Assert.Contains("must be sunken or raised 3-5 m", v, StringComparison.Ordinal);

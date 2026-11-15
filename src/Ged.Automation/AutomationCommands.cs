@@ -32,7 +32,7 @@ public sealed partial class AutomationCommands
     public static readonly IReadOnlyList<string> Names = new[]
     {
         "hello", "info", "new", "open", "run", "build", "holes", "lint", "summary", "analyze", "norms", "save", "undo", "redo",
-        "checkpoint", "diff", "inspect", "query", "catalog", "api", "snapshot", "spatial", "grade",
+        "checkpoint", "diff", "inspect", "query", "catalog", "api", "snapshot", "spatial", "grade", "modules", "harvest",
     };
 
     /// <summary>
@@ -137,6 +137,8 @@ public sealed partial class AutomationCommands
         "snapshot" => SnapshotAsync(r, ct),
         "spatial" => SpatialAsync(r, ct),
         "grade" => GradeAsync(r, ct),
+        "modules" => ModulesAsync(r, ct),
+        "harvest" => HarvestAsync(r, ct),
         _ => throw new AutomationException(AutomationErrorCodes.UnknownCommand,
             $"Unknown command '{r.Command}'. Commands: {string.Join(", ", Names)}."),
     };
@@ -226,6 +228,48 @@ public sealed partial class AutomationCommands
     /// wins) unless <c>tag: false</c>; <c>session?</c> overrides the session id. <c>result.created</c>
     /// lists the created UIDs.
     /// </summary>
+    /// <summary>
+    /// The <c>modules</c> argument of a run: {name: source} of the modules beside the script file
+    /// (<see cref="ScriptModuleResolver.CollectLocal"/>); valid module names that are not shipped, at most
+    /// <see cref="ScriptModuleResolver.MaxLocalModules"/>, each source at most 1 MB.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? Modules(AutomationRequest r)
+    {
+        if (r.Args["modules"] is not JsonNode node)
+        {
+            return null;
+        }
+
+        if (node is not JsonObject o)
+        {
+            throw new AutomationException(AutomationErrorCodes.Usage, "'modules' must be an object of module name -> Lua source.");
+        }
+
+        if (o.Count > ScriptModuleResolver.MaxLocalModules)
+        {
+            throw new AutomationException(AutomationErrorCodes.Usage, $"'modules' holds {o.Count} modules (at most {ScriptModuleResolver.MaxLocalModules}).");
+        }
+
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (KeyValuePair<string, JsonNode?> kv in o)
+        {
+            if (!ScriptModuleResolver.IsValidName(kv.Key) || ScriptModuleResolver.ShippedSource(kv.Key) is not null)
+            {
+                throw new AutomationException(AutomationErrorCodes.Usage,
+                    $"'modules': '{kv.Key}' is not a module name a script folder can supply (lower-case letters, digits and '_', not a module shipped with Glacier).");
+            }
+
+            if (kv.Value is not JsonValue v || !v.TryGetValue(out string? text) || text.Length > ScriptModuleResolver.MaxLocalModuleBytes)
+            {
+                throw new AutomationException(AutomationErrorCodes.Usage, $"'modules': '{kv.Key}' must be Lua source text of at most 1 MB.");
+            }
+
+            map[kv.Key] = text;
+        }
+
+        return map.Count > 0 ? map : null;
+    }
+
     private async Task<AutomationResponse> RunAsync(AutomationRequest r, IProgress<AutomationProgress>? progress, CancellationToken ct)
     {
         string source = Str(r, "script") ?? throw new AutomationException(AutomationErrorCodes.Usage, "run needs the script text ('script').");
@@ -264,11 +308,13 @@ public sealed partial class AutomationCommands
         string? saveTarget = save ? ResolveSaveTarget(outPath, allowDestructive) : null;
 
         ScriptExecutionLimits limits = Limits(Num(r, "timeoutSeconds"), Num(r, "instructionBudget"));
+        IReadOnlyDictionary<string, string>? modules = Modules(r);
 
         var run = new AutomationScriptRun
         {
             Source = source,
             Name = name,
+            Modules = modules,
             DryRun = dryRun,
             AllowDestructive = allowDestructive,
             Limits = limits,

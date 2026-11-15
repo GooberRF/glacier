@@ -47,6 +47,12 @@ internal sealed class ScriptRunExtras
     /// <see cref="ScriptServices.AutoTags"/>). Null for Script Editor / Console runs, which never auto-tag.
     /// </summary>
     public System.Collections.Generic.IReadOnlyDictionary<string, string>? AutoTags { get; init; }
+
+    /// <summary>
+    /// The modules a command-line run carries from its script's folder (sources sent with the request; see
+    /// <see cref="ScriptServices.LocalModules"/>). The editor never reads module files for a bridge request.
+    /// </summary>
+    public System.Collections.Generic.IReadOnlyDictionary<string, string>? LocalModules { get; init; }
 }
 
 /// <summary>
@@ -108,6 +114,11 @@ internal sealed class ScriptingService
         if (extras?.WrapOperations is not null || extras?.AutoTags is { Count: > 0 })
         {
             services = WithOverrides(services, extras!.WrapOperations, extras.AutoTags);
+        }
+
+        if (extras?.LocalModules is { Count: > 0 } modules)
+        {
+            services = services with { LocalModules = modules };
         }
 
         ScriptMetadata meta = ScriptMetadata.Parse(source);

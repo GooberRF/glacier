@@ -74,6 +74,7 @@ public static partial class ScriptOptionSets
         new("life", "integer", "-1", "Hit points: -1 is infinite; finite life on a detail brush makes it breakable."),
         new("texture", "string", "the editor's per-role defaults", "One texture for every face (give texture or textures, not both)."),
         new("textures", "{floor=, wall=, ceiling=}", "the editor's per-role defaults", "Textures by player-relative role (floor = the surface you stand on, for air brushes too); omitted roles use the defaults."),
+        new("name", "string", "none", "A name for the brush, written as its kit.name tag (as every kit function names its brushes), so level.brushes_tagged(\"kit.name\", name) and the kit's by-name lookups find it."),
         new("tags", "{key = value}", "none", "Provenance tags written on the new brush."));
 
     private const string HullTextureDefault = "the editor's per-role defaults";
@@ -90,6 +91,7 @@ public static partial class ScriptOptionSets
         new("tile", "number", "4", "Metres per texture repeat of the world box map (0.25 to 64)."),
         new("snap", "number", "1/1024", "The grid the points are snapped to: a power of two from 1/1024 to 1 metre."),
         new("strict", "boolean", "false", "true: error when a point is not a corner of the hull (inside it, a repeat after snapping, or removed as a sliver)."),
+        new("name", "string", "none", "A name for the brush, written as its kit.name tag (as every kit function names its brushes), so level.brushes_tagged(\"kit.name\", name) and the kit's by-name lookups find it."),
         new("tags", "{key = value}", "none", "Provenance tags written on the new brush."));
 
     public static readonly ScriptOptionSet BrushesFromPoints = new("level.brushes_from_points",
@@ -104,6 +106,7 @@ public static partial class ScriptOptionSets
         new("tile", "number", "4", "Metres per texture repeat of the world box map (0.25 to 64)."),
         new("snap", "number", "1/1024", "The grid the points are snapped to: a power of two from 1/1024 to 1 metre."),
         new("strict", "boolean", "false", "true: error when a point is not a corner of its hull (inside it, a repeat after snapping, or removed as a sliver)."),
+        new("name", "string", "none", "A name for every brush, written as their kit.name tag (as level.brush)."),
         new("tags", "{key = value}", "none", "Provenance tags written on every new brush."));
 
     private const string GeoBrushes = "brush | list | brush_query";
@@ -235,6 +238,7 @@ public static partial class ScriptOptionSets
         new("size", "number | {min, max}", "{0.6, 2}", "Rock diameter in metres, or the range it is drawn from."),
         new("margin", "number", "0.5 (area) / 0.25 (along)", "Area: how far every rock stays inside the rectangle's edges. Along: how far a rock's centre stays inside the floor's edge (rocks may lean into the wall foot), metres."),
         new("gap", "number", "0.25", "Extra clearance between neighbouring rocks, metres."),
+        new("band", "number", "none", "Along only: keep each rock's centre within this many metres of the floor's edge (rubble at the wall foot, the open middle left clear); none = anywhere outside the walkway."),
         new("roughness", "number", "0.2", "Jitter as a fraction of the rock size (0.05 to 0.5)."),
         new("points", "integer", "12", "Samples per rock (8 to 24)."),
         new("seed", "integer", "1", BuilderSeed),

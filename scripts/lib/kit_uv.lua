@@ -12,6 +12,12 @@
 --     4-6 m, frames around openings and hazard stripes on drop edges. kit.trim.
 --   * Slope-aligned stairs and ramps: treads start their texture at the nosing, risers hang from it, and
 --     a ramp's texture runs up the slope at true length (installed into kit.stairs and kit.ramp).
+--   * Mapper-style alignment (kit.defaults.uv_align, level.uv_align): wall textures stand on their floor
+--     line, wrap around corners and fit their height to whole repeats; rock folds across its facets at
+--     true length; nothing reads mirrored (stock levels: 98 % of wall area one handedness). Every kit
+--     part is aligned as it is built, organic pieces as a whole, and kit.build_layout re-aligns the whole
+--     layout at the end so textures continue across neighbouring parts (trims and stair steps keep their
+--     own fitted / nosing alignment).
 --
 -- The kit functions below are written at the left margin inside install() so the kit reference
 -- generator (---@kit / ---@opt lines, ged.describe("kit")) reads them like the ones in kit.lua.
@@ -129,10 +135,14 @@ function M.install(kit, H)
 
   local hooks = {}
 
-  -- Stairs: each tread's texture stands on its nosing (U across the width, V up the climb) and each
-  -- riser hangs from it, at the kit's texel density (true length, no box-map stretch).
+  local function aligning() return kit.defaults.box_map and kit.defaults.uv_align and kit.defaults.ppm end
+
+  -- Stairs: the steps' sides wrap as one wall standing on the stair's foot; then each tread's texture
+  -- stands on its nosing (U across the width, V up the climb) and each riser hangs from it, at the
+  -- kit's texel density (true length, no box-map stretch).
   function hooks.stairs(brushes, dir)
     if not kit.defaults.box_map then return end
+    if aligning() then level.uv_align{ brushes = brushes, ppm = kit.defaults.ppm, keep_fitted = false } end
     local dx, dz = 0, 0
     if dir == "+x" then dx = 1 elseif dir == "-x" then dx = -1 elseif dir == "+z" then dz = 1 else dz = -1 end
     for _, b in ipairs(brushes) do
@@ -163,7 +173,34 @@ function M.install(kit, H)
   -- texture's own size) unless the call or kit.defaults.rock_tile_metres asked for a tile.
   function hooks.rock(t, name)
     if not kit.defaults.box_map or not kit.defaults.ppm or t.tile ~= nil or kit.defaults.rock_tile_metres ~= nil then return end
-    level.brushes_tagged("kit.name", name):box_map{ ppm = kit.defaults.ppm }
+    local q = level.brushes_tagged("kit.name", name)
+    q:box_map{ ppm = kit.defaults.ppm }
+    -- One piece of rock: the texture folds across every facet of every brush at true length.
+    if kit.defaults.uv_align then q:uv_align{ ppm = kit.defaults.ppm, keep_fitted = false } end
+  end
+
+  -- The end of a layout build: align every kit part together so textures run on across neighbouring
+  -- parts (a room's wall into the corridor beside it). Trims keep their fitted strips, stair steps their
+  -- nosing alignment, dressing its own per-prop mapping, and the room detail (library modules and their
+  -- hand-authored stand-ins) the mapping it was placed with.
+  local KEEP = { trim = true, dress = true, light_room = true, wall_detail = true, frame_opening = true, ceiling_detail = true,
+    machinery = true, railing = true, catwalk = true, pipe_run = true, stair_detail = true, rock_detail = true }
+  function hooks.finish()
+    if not aligning() then return end
+    level.brushes_tagged("kit"):where(function(b)
+      local tg = b:tags()
+      if KEEP[tg.kit] then return false end
+      return not (tg.kit == "stairs" and (tg["kit.part"] or ""):sub(1, 4) == "step")
+    end):uv_align{ ppm = kit.defaults.ppm }
+  end
+
+  local build_layout = kit.build_layout
+  if build_layout ~= nil then
+    kit.build_layout = function(t)
+      local r = build_layout(t)
+      hooks.finish()
+      return r
+    end
   end
 
 ---@kit kit.palette{theme, variant?, team?} → palette — A coherent set of stock textures for one zone: lists by role (floor, wall, ceiling, trim, post, frame, accent, stripe; floor and wall never share a texture), the role table one room uses (textures, for kit.room), and the trim set (trims, for kit.trim). Give each zone its own theme or variant.
@@ -357,6 +394,9 @@ function kit.trim(t)
       shape = "box", pos = { (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2 }, size = { x1 - x0, y1 - y0, z1 - z0 }, detail = true,
     }, texture, nil)
     b:fit_faces{ axes = axes, facing = "side" }
+    -- A post, jamb or header in a grained texture (a girder, a door trim) carries its grain along its length, one
+    -- repeat at most across it, as a mapper turns a girder texture up a post; bands fitted along the wall stay.
+    if kit.defaults.uv_align then level.uv_align{ brushes = b, ppm = kit.defaults.ppm or 64, keep_fitted = false, members = "only" } end
     brushes[#brushes + 1] = b
     return b
   end

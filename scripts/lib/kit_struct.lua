@@ -38,6 +38,7 @@ local function hull(fn, name, part, points, o)
   if o.texture ~= nil then spec.texture = o.texture elseif o.textures ~= nil then spec.textures = o.textures end
   local b = level.brush_from_points(spec)
   if kit.defaults.ppm then b:box_map{ ppm = kit.defaults.ppm } end
+  if kit.defaults.ppm and kit.defaults.uv_align then level.uv_align{ brushes = b, ppm = kit.defaults.ppm, keep_fitted = false } end
   return b
 end
 I.hull = hull
@@ -108,46 +109,76 @@ local SPAN = 8192
 -- in CSG time order (the world starts solid; air carves, solid fills), then any detail solid fills. An air
 -- portal brush carves too, after every other brush (RED applies its portal list after its brush list; a
 -- kit.doorway{portal = true} opening is carved by its portal brush alone); a solid portal brush carves nothing.
-local function column(x, z)
-  local q = level.brushes_in{ min = { x - 0.001, -SPAN, z - 0.001 }, max = { x + 0.001, SPAN, z + 0.001 } }
-  local structural, details, portals = {}, {}, {}
-  local lo, hi = math.huge, -math.huge
+--
+-- The brushes a probe reads, fetched once per query box: each brush's role, time index and world bounds are read
+-- once, so a probe tests only the brushes whose bounds reach its column and height (brush:contains is the costly
+-- call). recs = {list = {...}} in query order; rec = {b, portal, detail, solid, ti, x0, y0, z0, x1, y1, z1}.
+local function fetch(x0, z0, x1, z1)
+  local q = level.brushes_in{ min = { x0 - 0.001, -SPAN, z0 - 0.001 }, max = { x1 + 0.001, SPAN, z1 + 0.001 } }
+  local list = {}
   for _, b in ipairs(q.brushes) do
-    if not b.portal or b.air then
-      if b.portal then
-        portals[#portals + 1] = b
-      elseif b.detail then
-        if b.solid then details[#details + 1] = b end
-      else
-        structural[#structural + 1] = b
-      end
+    local portal = b.portal
+    if not portal or b.air then
       local bb = b.bounds
-      lo, hi = math.min(lo, bb.min.y), math.max(hi, bb.max.y)
+      local mn, mx = bb.min, bb.max
+      local detail = b.detail
+      list[#list + 1] = { b = b, portal = portal, detail = detail, solid = b.solid, ti = (not portal and not detail) and b.time_index or 0,
+        x0 = mn.x, y0 = mn.y, z0 = mn.z, x1 = mx.x, y1 = mx.y, z1 = mx.z }
     end
   end
-  table.sort(structural, function(a, b) return a.time_index < b.time_index end)
+  return { list = list }
+end
+
+-- A column's brushes from fetched records (all of them, or those whose bounds reach (x, z) as level.brushes_in
+-- would): structural ones in time order, then the air portals; solid details apart; lo / hi = the column's extent.
+local function column_of(recs, x, z, filter)
+  local structural, details, portals = {}, {}, {}
+  local lo, hi = math.huge, -math.huge
+  for _, r in ipairs(recs.list) do
+    if not filter or (r.x0 <= x + 0.001 and r.x1 >= x - 0.001 and r.z0 <= z + 0.001 and r.z1 >= z - 0.001) then
+      if r.portal then
+        portals[#portals + 1] = r
+      elseif r.detail then
+        if r.solid then details[#details + 1] = r end
+      else
+        -- (insertion by time index: columns hold few brushes)
+        local j = #structural
+        while j >= 1 and structural[j].ti > r.ti do structural[j + 1] = structural[j] j = j - 1 end
+        structural[j + 1] = r
+      end
+      lo, hi = math.min(lo, r.y0), math.max(hi, r.y1)
+    end
+  end
   for i = 1, #portals do structural[#structural + 1] = portals[i] end
   return structural, details, lo, hi
 end
 
+local function column(x, z) return column_of(fetch(x, z, x, z), x, z, false) end
+
+-- (a brush cannot contain a point beyond its bounds: those are skipped without asking it)
+local REACH = 0.01
+
 local function solid_at(structural, details, x, y, z)
   local s = true
   for i = 1, #structural do
-    local b = structural[i]
-    if b:contains(x, y, z) then s = b.solid end
+    local r = structural[i]
+    if y >= r.y0 - REACH and y <= r.y1 + REACH and r.b:contains(x, y, z) then s = r.solid end
   end
   if not s then
     for i = 1, #details do
-      if details[i]:contains(x, y, z) then return true, details[i] end
+      local r = details[i]
+      if y >= r.y0 - REACH and y <= r.y1 + REACH and r.b:contains(x, y, z) then return true, r.b end
     end
   end
   return s
 end
 
 -- The highest floor at or below y (default: the top of whatever stands in the column): march down to the
--- first air, then to the first solid under it, then bisect the boundary to 1/512 m.
-local function brush_at(x, z, y)
-  local structural, details, lo, hi = column(x, z)
+-- first air, then to the first solid under it, then bisect the boundary to 1/512 m. recs: brushes fetched for
+-- a region holding (x, z) (one fetch serves many probes), else the column is fetched alone.
+local function brush_at(x, z, y, recs)
+  local structural, details, lo, hi = nil, nil, nil, nil
+  if recs then structural, details, lo, hi = column_of(recs, x, z, true) else structural, details, lo, hi = column(x, z) end
   if lo == math.huge then return nil end
   local step = 0.25
   local cur = y or (hi + 1)
@@ -213,6 +244,17 @@ local function ground_point(x, z, y)
   return out
 end
 I.ground_point = ground_point
+
+-- The ground's height alone under (x, z) (nil over the void): the provider's y; the brush provider answers from
+-- the brushes fetched once for the region (fetch_region), without the normal's four extra probes.
+local function fetch_region(x0, z0, x1, z1)
+  if provider.at ~= brush_provider_at then return nil end
+  return fetch(math.min(x0, x1), math.min(z0, z1), math.max(x0, x1), math.max(z0, z1))
+end
+local function ground_y(x, z, y, recs)
+  if recs and provider.at == brush_provider_at then return (brush_at(x, z, y, recs)) end
+  return ground_point(x, z, y).y
+end
 
 -- The lowest solid at or above (x, y, z) in the brush column (a ceiling, a beam, a detail top hanging over
 -- the point), bisected to 1/512 m; nil when the point is inside solid or nothing solid lies above it.
@@ -455,6 +497,282 @@ function kit.truss(t)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- Purpose (the intent layer): every set piece carries a role (kit.role) and what it serves (kit.purpose)
+-- ---------------------------------------------------------------------------------------------
+
+-- The rules the grader's function checks use (SpatialAnalysis.Purpose.cs), so the kit and the grader agree.
+local PURPOSE = {
+  catchment = 150, -- m2 of floor on EACH side that must reach the far end sooner across a bridge
+  saving = 4,      -- the least saving that counts (m; a fifth of the span when that is more)
+  reach = 40,      -- how far around a bridge its route is measured (m; at least its span)
+  redundant = 1.6, -- a walk between the ends at most this many times the span (+ 2 m), with under twice the catchment on a side, makes a new bridge redundant
+  raised = 0.3,    -- share of the free span over stairs or raised floor (between the gap floor and the deck) that rejects
+  landmark_spaces = 2, -- a landmark must be seen from at least this many spaces
+  flight_reach = 30,   -- how far around a flight its route is measured (m; at least twice its length)
+  flight_redundant = 1.5, -- a walk on foot from its foot to its top at most this many times its length (+ flight_plus m) makes a flight redundant
+  flight_plus = 4,
+  run_out = 1.0,       -- clear run (m) a flight needs past its top step and in front of its first step
+  dead_end = 16,       -- floor (m2) an end must lead on to: less is a solid's top or a hole
+}
+I.PURPOSE = PURPOSE
+
+-- The purpose option every placing kit function shares: "require" (default: refuse an element that serves nothing),
+-- "report" (measure, warn and build), "quiet" (tag and build without measuring: the set pieces the kit's own spaces
+-- and layouts build as a unit, read by the grader once built) or "off" (build without measuring).
+local function purpose_mode(api, v, default)
+  if v == nil then return default or "require" end
+  if v == false then return "off" end
+  if v ~= "require" and v ~= "report" and v ~= "quiet" and v ~= "off" then
+    fail(api, "'purpose' must be \"require\", \"report\", \"quiet\" or \"off\" (got " .. tostring(v) .. ").")
+  end
+  return v
+end
+I.purpose_mode = purpose_mode
+
+-- A purpose sentence as a tag value (tags hold at most 256 characters).
+local function clip(s)
+  if s ~= nil and #s > 250 then return s:sub(1, 247) .. "..." end
+  return s
+end
+I.clip_purpose = clip
+
+-- Tags every brush (and object) of an element with its role and what it serves.
+local function tag_role(list, role, purpose)
+  purpose = clip(purpose)
+  for _, e in ipairs(list or {}) do
+    e:tag("kit.role", role)
+    if purpose then e:tag("kit.purpose", purpose) end
+  end
+end
+I.tag_role = tag_role
+
+-- Tags every brush of the element named name (its kit.name) in three calls, however many brushes it has.
+local function tag_named(name, role, purpose)
+  local q = level.brushes_tagged("kit.name", name)
+  q:tag("kit.role", role)
+  if purpose then q:tag("kit.purpose", clip(purpose)) end
+end
+I.tag_named = tag_named
+
+-- A bridge's route, measured before it is built on the probe's walk lattice (the grader's rule): the walkable floor
+-- at each end, the floor on each side that reaches the far end sooner across it, the walk around without it, and how
+-- much of the free span sits over stairs or raised floor. Returns {ok, fault, catch_a, catch_b, detour, raised}.
+local function bridge_route(a, b, fwd, span, gap0, gap1, deck)
+  local P = ged.import("kit_probe")
+  local probe = P.shared()
+  local R = math.max(PURPOSE.reach, span)
+  local x0, x1 = math.min(a[1], b[1]) - R, math.max(a[1], b[1]) + R
+  local z0, z1 = math.min(a[3], b[3]) - R, math.max(a[3], b[3]) + R
+  local ylo, yhi = math.min(a[2], b[2]) - 30, math.max(a[2], b[2]) + 12
+  local h = probe.h:lattice(x0, z0, x1, z1, ylo, yhi, P.HEADROOM, 1)
+  local function end_node(p, ox, oz)
+    for _, d in ipairs({ 1.0, 0.5, 1.5, 0, 2.0, 2.5 }) do
+      local id = h:nearest(p[1] + ox * d, p[2], p[3] + oz * d, 0.75, 0.6)
+      if id > 0 then return id end
+    end
+    return 0
+  end
+  local out = { catch_a = 0, catch_b = 0, raised = 0 }
+  local ia, ib = end_node(a, -fwd[1], -fwd[3]), end_node(b, fwd[1], fwd[3])
+  if ia == 0 or ib == 0 then
+    local p = ia == 0 and a or b
+    out.fault = "its end at (" .. fmt(p[1]) .. ", " .. fmt(p[2]) .. ", " .. fmt(p[3]) .. ") lands on no walkable floor at deck height: a bridge must lead somewhere (build the floor or doorway it lands on first)"
+    return out
+  end
+  -- Raised floor under the free span: ground samples between the gap floor and the deck (stairs, ramps, ledges).
+  local lows, n = {}, 0
+  local steps = math.max(4, math.floor((gap1 - gap0) * span / 0.5))
+  for k = 0, steps do
+    local f = gap0 + (gap1 - gap0) * k / steps
+    local px, py, pz = a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f
+    local g = ground_point(px, pz, py - deck - 0.3)
+    if g.y ~= nil then n = n + 1 lows[n] = { g.y, py } end
+  end
+  if n > 0 then
+    local lowest = math.huge
+    for _, l in ipairs(lows) do lowest = math.min(lowest, l[1]) end
+    local raised = 0
+    for _, l in ipairs(lows) do if l[1] >= lowest + 1.5 and l[1] <= l[2] - 2.0 then raised = raised + 1 end end
+    out.raised = raised / n
+  end
+  local margin = math.max(PURPOSE.saving, 0.2 * span)
+  local r = h:route_catchment(ia, ib, span, margin)
+  out.catch_a, out.catch_b, out.detour = r.catch_a, r.catch_b, r.detour
+  local least = math.min(r.catch_a, r.catch_b)
+  if r.detour ~= nil and r.detour <= PURPOSE.redundant * span + 2 and least < 2 * PURPOSE.catchment then
+    out.fault = "redundant: the floor below, stairs or another crossing already join its ends with a " .. fmt(r.detour) .. " m walk (vs " .. fmt(span) .. " m across); a bridge joins places that are otherwise far apart"
+  elseif out.raised > PURPOSE.raised then
+    out.fault = "its span sits over stairs or raised floor (" .. fmt(out.raised * 100) .. " % of the free span): the levels below already join; cross a real drop or leave it out"
+  elseif least < PURPOSE.catchment then
+    if r.detour ~= nil and r.detour - span < 2 * margin then
+      out.fault = "redundant: the floor below, stairs or another crossing already join its ends with a " .. fmt(r.detour) .. " m walk (vs " .. fmt(span) .. " m across), so only " .. fmt(least) .. " m2 of floor would gain by crossing"
+    else
+      out.fault = "its ends lead nowhere: only " .. fmt(r.catch_a) .. " / " .. fmt(r.catch_b) .. " m2 of floor on its two sides would reach the far end sooner across it (at least " .. PURPOSE.catchment .. " m2 each); land both ends on floor that leads on, or join two places that are otherwise far apart"
+    end
+  end
+  out.ok = out.fault == nil
+  return out
+end
+
+-- A flight's route, measured before it is built on the probe's walk lattice (the grader's rule, G30): standing
+-- floor in front of its foot and beyond its top step, the run-out clear of walls and props past each end, the walk
+-- from foot to top on foot without it, and the floor its top and foot lead on to.
+-- Returns {ok, fault, pending, detour, top_area, foot_area, foot_clear, top_clear}; pending (ok, with a note) when an end
+-- has no floor yet.
+local function stair_route(x, y, z, dx, dz, run, rise, width)
+  local P = ged.import("kit_probe")
+  local probe = P.shared()
+  local len = math.sqrt(run * run + rise * rise)
+  local tx, ty, tz = x + dx * run, y + rise, z + dz * run
+  local R = math.max(PURPOSE.flight_reach, 2 * len)
+  local h = probe.h:lattice(math.min(x, tx) - R, math.min(z, tz) - R, math.max(x, tx) + R, math.max(z, tz) + R,
+    math.min(y, ty) - 10, math.max(y, ty) + 10, P.HEADROOM, 1)
+  local pitch = P.PITCH
+  -- The standing node in front of an end (along o), at height py.
+  local function end_node(px, py, pz, ox, oz)
+    for _, d in ipairs({ 0.75, 0.5, 1.25, 1.75 }) do
+      local id = h:node_at(math.floor((px + ox * d) / pitch), math.floor((pz + oz * d) / pitch), py, 0.3)
+      if id > 0 then return id end
+    end
+    return 0
+  end
+  -- The clear run past an end along o at knee and head height, on three lanes across the width: the middle value.
+  local function clear(px, py, pz, ox, oz)
+    local lanes = {}
+    for _, off in ipairs({ -width / 3, 0, width / 3 }) do
+      local lx, lz = px - oz * off, pz + ox * off
+      local c = math.min(probe:ray(lx, py + 0.5, lz, ox, oz, 3), probe:ray(lx, py + 1.5, lz, ox, oz, 3))
+      lanes[#lanes + 1] = c
+    end
+    table.sort(lanes)
+    return lanes[2]
+  end
+  local function at(px, py, pz) return "(" .. fmt(px) .. ", " .. fmt(py) .. ", " .. fmt(pz) .. ")" end
+  local out = { foot_clear = clear(x, y, z, -dx, -dz), top_clear = clear(tx, ty, tz, dx, dz) }
+  local foot, top = end_node(x, y, z, -dx, -dz), end_node(tx, ty, tz, dx, dz)
+  if top == 0 and out.top_clear < PURPOSE.run_out then
+    out.fault = "its top at " .. at(tx, ty, tz) .. " climbs into a wall or a solid: no standing floor beyond its top step and " .. fmt(out.top_clear) .. " m clear"
+  elseif foot == 0 or top == 0 then
+    -- A landing not built yet (scripts build in time order): not judged now; the grader reads the flight once built.
+    out.pending = (foot == 0 and "its foot at " .. at(x, y, z) or "its top at " .. at(tx, ty, tz))
+      .. " has no walkable floor yet: build it, or the flight leads nowhere (spatial.purpose{} reads the flight once the level is built)"
+  elseif out.top_clear < PURPOSE.run_out then
+    out.fault = "its top is blocked: a wall or prop " .. fmt(out.top_clear) .. " m past the top step (a landing needs " .. PURPOSE.run_out .. " m clear to step off)"
+  elseif out.foot_clear < PURPOSE.run_out then
+    out.fault = "its foot is blocked: a wall or prop " .. fmt(out.foot_clear) .. " m in front of the first step (it needs " .. PURPOSE.run_out .. " m clear to step on)"
+  else
+    local r = h:flight_route(foot, top, PURPOSE.flight_redundant * len + PURPOSE.flight_plus, PURPOSE.dead_end * 4)
+    out.detour, out.top_area, out.foot_area = r.detour, r.top_area, r.foot_area
+    if r.detour ~= nil then
+      out.fault = "redundant: the floor already joins its foot and top on foot with a " .. fmt(r.detour) .. " m walk (vs " .. fmt(len) .. " m up the flight); a flight joins floors that are otherwise apart"
+    elseif r.top_area < PURPOSE.dead_end then
+      out.fault = "its top leads nowhere: only " .. fmt(r.top_area) .. " m2 of floor beyond it (a dead-end perch or a solid's top)"
+    elseif r.foot_area < PURPOSE.dead_end then
+      out.fault = "its foot leads nowhere: only " .. fmt(r.foot_area) .. " m2 of floor around it (a dead-end pit)"
+    end
+  end
+  out.ok = out.fault == nil
+  return out
+end
+I.stair_route = stair_route
+
+-- A landmark's visibility, measured before it is built:the walkable floor within 80 m (every 2 m) whose eye point
+-- (1.6 m) sees its upper part (three quarters of its height), and how many air spaces that floor lies in.
+-- Returns {checked, area, spaces, hidden, fault}.
+local function landmark_view(p, height)
+  local P = ged.import("kit_probe")
+  local probe = P.shared()
+  local R = 80
+  local h = probe.h:lattice(p[1] - R, p[3] - R, p[1] + R, p[3] + R, p[2] - 30, p[2] + height, P.HEADROOM, 4)
+  local a = h:arrays()
+  local X, Y, Z = a.x, a.y, a.z
+  local ty = p[2] + 0.75 * height
+  local seen, area = {}, 0
+  for id = 1, #X do
+    local dx, dz = X[id] - p[1], Z[id] - p[3]
+    if dx * dx + dz * dz <= R * R and dx * dx + dz * dz >= 4 and probe:los(X[id], Y[id] + 1.6, Z[id], p[1], ty, p[3]) then
+      seen[#seen + 1] = id
+      area = area + 4
+    end
+  end
+  local out = { checked = #X > 0, area = area, spaces = 0 }
+  if #X == 0 then return out end
+  local spaces = ged.import("kit_probe").all_spaces("kit.landmark", fail)
+  local hit = {}
+  for _, id in ipairs(seen) do
+    for q, s in ipairs(spaces) do
+      if X[id] >= s.x0 and X[id] <= s.x1 and Z[id] >= s.z0 and Z[id] <= s.z1 and Y[id] >= s.y0 - 0.5 and Y[id] <= s.y1 then
+        hit[q] = true
+        break
+      end
+    end
+  end
+  for _ in pairs(hit) do out.spaces = out.spaces + 1 end
+  out.hidden = out.spaces < PURPOSE.landmark_spaces and area < 200
+  if out.hidden then
+    out.fault = "hidden: only " .. fmt(area) .. " m2 of floor in " .. out.spaces .. " space(s) within 80 m sees it (a landmark is seen from several spaces, at least " .. PURPOSE.landmark_spaces .. " or 200 m2)"
+  end
+  return out
+end
+
+local ROLES = { cover = true, route = true, landmark = true, theme_detail = true, fixture = true }
+
+---@kit kit.roles{role?, name?} → roles — The intent layer: every kit-placed element with its role and what it serves, read from the kit.role / kit.purpose tags the kit writes on brushes and objects (they are saved with the level): cover (the lane or approach it breaks), route (the walkable places a bridge, catwalk or platform joins), landmark (what sees it), theme_detail (its theme and space: props, clutter, rubble, decals, overhead runs) and fixture (the lights it carries). Elements are grouped by kit.name and role. Returns {counts = {role = n elements}, elements[] {role, name, kit, purpose, brushes, objects, min, max}, unassigned (kit dressing and set-piece brushes and objects without a role)}.
+---@opt role: string = all — Only elements of this role (cover, route, landmark, theme_detail, fixture).
+---@opt name: string = all — Only elements whose kit.name is this.
+function kit.roles(t)
+  local api = "kit.roles"
+  t = t or {}
+  check_keys(api, t, { "role", "name" })
+  if t.role ~= nil and not ROLES[t.role] then fail(api, "'role' must be cover, route, landmark, theme_detail or fixture (got " .. tostring(t.role) .. ").") end
+  local groups, order = {}, {}
+  local function add(e, tags, is_brush, bb)
+    local role = tags["kit.role"]
+    if t.role ~= nil and role ~= t.role then return end
+    local nm = tags["kit.name"] or "?"
+    if t.name ~= nil and nm ~= t.name then return end
+    local key = role .. "|" .. nm .. "|" .. (tags["kit.purpose"] or "")
+    local g = groups[key]
+    if not g then
+      g = { role = role, name = nm, kit = tags.kit, purpose = tags["kit.purpose"], brushes = 0, objects = 0,
+        lo = { math.huge, math.huge, math.huge }, hi = { -math.huge, -math.huge, -math.huge } }
+      groups[key] = g
+      order[#order + 1] = key
+    end
+    if is_brush then g.brushes = g.brushes + 1 else g.objects = g.objects + 1 end
+    g.lo = { math.min(g.lo[1], bb[1]), math.min(g.lo[2], bb[2]), math.min(g.lo[3], bb[3]) }
+    g.hi = { math.max(g.hi[1], bb[4]), math.max(g.hi[2], bb[5]), math.max(g.hi[3], bb[6]) }
+  end
+  for _, b in ipairs(level.brushes_tagged("kit.role").brushes) do
+    local bb = b.bounds
+    add(b, b:tags(), true, { bb.min.x, bb.min.y, bb.min.z, bb.max.x, bb.max.y, bb.max.z })
+  end
+  for _, o in ipairs(level.objects_tagged("kit.role").objects) do
+    local p = o.pos
+    add(o, o:tags(), false, { p.x, p.y, p.z, p.x, p.y, p.z })
+  end
+  local counts, elements = {}, {}
+  for _, key in ipairs(order) do
+    local g = groups[key]
+    counts[g.role] = (counts[g.role] or 0) + 1
+    elements[#elements + 1] = { role = g.role, name = g.name, kit = g.kit, purpose = g.purpose, brushes = g.brushes, objects = g.objects,
+      min = vec(g.lo[1], g.lo[2], g.lo[3]), max = vec(g.hi[1], g.hi[2], g.hi[3]) }
+  end
+  -- Placed elements of the role-carrying kit functions that have no role (made before roles, or retagged by hand).
+  local unassigned = 0
+  local PLACERS = { dress = true, bridge = true, landmark = true, boulders = true, light_room = true, light_path = true }
+  for _, b in ipairs(level.brushes_tagged("kit").brushes) do
+    local tags = b:tags()
+    if PLACERS[tags.kit] and tags["kit.role"] == nil then unassigned = unassigned + 1 end
+  end
+  for _, o in ipairs(level.objects_tagged("kit").objects) do
+    local tags = o:tags()
+    if PLACERS[tags.kit] and tags["kit.role"] == nil then unassigned = unassigned + 1 end
+  end
+  return { kind = "roles", counts = counts, elements = elements, unassigned = unassigned }
+end
+
+-- ---------------------------------------------------------------------------------------------
 -- Bridges
 -- ---------------------------------------------------------------------------------------------
 
@@ -476,7 +794,7 @@ local function anchor(api, key, v)
   return point(api, key, v)
 end
 
----@kit kit.bridge{name?, from, to, width?, style?, deck?, depth?, railing?, landmark?, group?, texture?|textures?, frame_texture?} → bridge — A landmark-scale bridge of detail brushes: a deck whose top runs from → to (ends without y sit on the ground), carried by a through truss, an arch, girders or as a plank deck with rails. Reports the span, the unsupported gap and the drop under mid-span (all read through the ground provider) and warns below landmark scale (span < 12 m, drop < 6 m).
+---@kit kit.bridge{name?, from, to, width?, style?, deck?, depth?, railing?, landmark?, group?, texture?|textures?, frame_texture?, purpose?} → bridge — A landmark-scale bridge of detail brushes: a deck whose top runs from → to (ends without y sit on the ground), carried by a through truss, an arch, girders or as a plank deck with rails. Reports the span, the unsupported gap and the drop under mid-span (all read through the ground provider) and warns below landmark scale (span < 12 m, drop < 6 m). A bridge must serve a route: before building, its ends must land on walkable floor and enough floor on each side must reach the far end sooner across it (purpose; a bridge over stairs or floor that already joins its ends, or whose ends lead nowhere, is refused with the reason). Every brush is tagged kit.role = "route" and kit.purpose = what it joins; the record carries role and purpose {ok, fault, catch_a, catch_b, detour, raised, text}.
 ---@opt name: string = bridge<n> — Names the bridge (tags, group).
 ---@opt from: vec — Required: one end of the deck's walking surface (centre of its width); {x, z} takes y from the ground.
 ---@opt to: vec — Required: the other end (the deck may climb, at most 45°).
@@ -490,9 +808,11 @@ end
 ---@opt texture: string = kit.defaults.texture (nil: textures below) — The deck's texture (every face).
 ---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.textures (stock concrete) — The deck's textures by role.
 ---@opt frame_texture: string = the deck's — The truss/arch/girder/rail texture.
+---@opt purpose: string = "require" — The route check (measured on the walk lattice before anything is built, the grader's G27 rule): both ends must land on walkable floor, at least 150 m² of floor on EACH side must reach the far end sooner across the deck than any other way (the floor below, stairs at both ends or a bridge beside it must not already join them), and at most 30 % of the free span may sit over stairs or raised floor. "require" refuses a bridge that fails with the reason, "report" warns and builds, "quiet" builds without measuring and tags it for the grader (the kit's own spaces and layouts), "off" skips the check (build the approaches first).
 function kit.bridge(t)
   local api = "kit.bridge"
-  check_keys(api, t, { "name", "from", "to", "width", "style", "deck", "depth", "railing", "landmark", "group", "texture", "textures", "frame_texture" })
+  check_keys(api, t, { "name", "from", "to", "width", "style", "deck", "depth", "railing", "landmark", "group", "texture", "textures", "frame_texture", "purpose" })
+  local mode = purpose_mode(api, t.purpose)
   local name = name_for(api, "bridge", t.name)
   local a, b = anchor(api, "from", t.from), anchor(api, "to", t.to)
   local width = positive(api, "width", t.width, 3.5)
@@ -522,10 +842,10 @@ function kit.bridge(t)
 
   -- 0. Measurements through the ground provider, before anything is built: the drop under mid-span (from the
   -- deck's underside) and the unsupported gap (where the ground is more than the deck depth + 1 m below the top).
+  local recs = fetch_region(a[1], a[3], b[1], b[3])
   local function ground_below(f)
     local p = at(f, 0, 0.25)
-    local g = ground_point(p[1], p[3], p[2])
-    return g.y, p[2] - 0.25
+    return ground_y(p[1], p[3], p[2], recs), p[2] - 0.25
   end
   local gy, top_mid = ground_below(0.5)
   local drop = gy and (top_mid - deck - gy) or math.huge
@@ -540,6 +860,20 @@ function kit.bridge(t)
     if y1 ~= nil and t1 - y1 <= deck + 1 then gap1 = k / samples break end
   end
   local gap = (gap1 - gap0) * span
+
+  -- 0b. The route it serves (the intent layer): refused, or warned about, before anything is built.
+  local route = nil
+  if mode ~= "off" and mode ~= "quiet" then
+    route = bridge_route(a, b, fwd, span, gap0, gap1, deck)
+    if not route.ok then
+      if mode == "require" then
+        fail(api, name .. " serves no route: " .. route.fault .. ".",
+          "Place bridges where they join two walkable places that are otherwise far apart across a real drop (spatial.purpose{} lists the grader's reading); pass purpose = \"report\" to build it anyway.")
+      end
+      if mode == "quiet" then log.info(api .. ": " .. name .. " serves no route: " .. route.fault .. ".")
+      else warn(api, warnings, name .. " serves no route: " .. route.fault .. ".") end
+    end
+  end
 
   -- 1. The deck: one slab whose top face runs exactly from a to b.
   local deck_brush = hull("bridge", name, "deck", {
@@ -624,6 +958,15 @@ function kit.bridge(t)
   end
 
   local group = group_if_many(name, brushes, boolean(api, "group", t.group, true))
+  local serves = "joins (" .. fmt(a[1]) .. ", " .. fmt(a[2]) .. ", " .. fmt(a[3]) .. ") and (" .. fmt(b[1]) .. ", " .. fmt(b[2]) .. ", " .. fmt(b[3]) .. ")"
+  if route then
+    serves = serves .. (route.ok and (" for " .. fmt(route.catch_a) .. " / " .. fmt(route.catch_b) .. " m2 of floor") or (" - unproven: " .. route.fault))
+  elseif mode == "quiet" then
+    serves = serves .. " (a kit space's own set piece: the grader's G27 reads it once built)"
+  else
+    serves = serves .. " (unchecked)"
+  end
+  tag_named(name, "route", serves)
   local lo = { math.huge, math.huge, math.huge }
   local hi = { -math.huge, -math.huge, -math.huge }
   for _, br in ipairs(brushes) do
@@ -636,6 +979,8 @@ function kit.bridge(t)
     span = span, gap = gap, drop = drop, width = width, depth = depth, climb = rise,
     from = vec(a[1], a[2], a[3]), to = vec(b[1], b[2], b[3]), floor_y = math.min(a[2], b[2]),
     min = vec(lo[1], lo[2], lo[3]), max = vec(hi[1], hi[2], hi[3]), warnings = warnings,
+    role = "route", purpose = route and { ok = route.ok, fault = route.fault, catch_a = route.catch_a, catch_b = route.catch_b,
+      detour = route.detour, raised = route.raised, text = serves } or { ok = nil, text = serves },
   }
 end
 
@@ -643,7 +988,7 @@ end
 -- Landmarks
 -- ---------------------------------------------------------------------------------------------
 
----@kit kit.landmark{name?, pos, height?, base?, style?, sides?, group?, texture?|textures?} → landmark — An outdoor landmark standing on the floor point pos: a tapering tower, a lattice pylon of trusses, or a spire on a plinth. Exemplar outdoor landmarks stand 25-40 m tall; it warns outside that range.
+---@kit kit.landmark{name?, pos, height?, base?, style?, sides?, group?, texture?|textures?, purpose?} → landmark — An outdoor landmark standing on the floor point pos: a tapering tower, a lattice pylon of trusses, or a spire on a plinth. Exemplar outdoor landmarks stand 25-40 m tall; it warns outside that range. A landmark is there to be seen: before building, the walkable floor within 80 m that sees its upper part is measured, and one seen from fewer than 2 spaces and under 200 m² of floor is refused (purpose). Its brushes are tagged kit.role = "landmark" and kit.purpose = what sees it; the record carries role and purpose {ok, fault, area, spaces, text}.
 ---@opt name: string = landmark<n> — Names the landmark (tags, group).
 ---@opt pos: vec — Required: the floor point at the centre of its base.
 ---@opt height: number = 30 — Total height, metres.
@@ -653,9 +998,11 @@ end
 ---@opt group: boolean = true — Group the brushes under the landmark's name.
 ---@opt texture: string = kit.defaults.texture (nil: textures below) — One texture for every face.
 ---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.textures (stock concrete) — Textures by player-relative role.
+---@opt purpose: string = "require" — The visibility check (G-rule: a landmark is seen from several spaces): "require" refuses a hidden landmark with the reason, "report" warns and builds, "quiet" builds without measuring (the kit's own spaces), "off" skips it. With no walkable floor within 80 m yet it builds unchecked.
 function kit.landmark(t)
   local api = "kit.landmark"
-  check_keys(api, t, { "name", "pos", "height", "base", "style", "sides", "group", "texture", "textures" })
+  check_keys(api, t, { "name", "pos", "height", "base", "style", "sides", "group", "texture", "textures", "purpose" })
+  local mode = purpose_mode(api, t.purpose)
   local name = name_for(api, "landmark", t.name)
   local p = point(api, "pos", t.pos)
   local height = positive(api, "height", t.height, 30)
@@ -670,6 +1017,15 @@ function kit.landmark(t)
   local warnings = {}
   if height < 25 - EPS or height > 40 + EPS then
     warn(api, warnings, name .. " is " .. fmt(height) .. " m tall; exemplar outdoor landmarks stand 25-40 m.")
+  end
+  -- The intent layer: a landmark is there to be seen (and to orient by) from several spaces.
+  local view = (mode ~= "off" and mode ~= "quiet") and landmark_view(p, height) or nil
+  if view and view.hidden then
+    if mode == "require" then
+      fail(api, name .. " would be hidden: " .. view.fault .. ".", "Stand it where long sightlines meet (a hub, a canyon bend, an open yard) — spatial.sightlines{} and spatial.purpose{} show what sees what; pass purpose = \"report\" to build it anyway.")
+    end
+    if mode == "quiet" then log.info(api .. ": " .. name .. " would be hidden: " .. view.fault .. ".")
+    else warn(api, warnings, name .. " would be hidden: " .. view.fault .. ".") end
   end
   local function ring(r, y, rot)
     local pts = {}
@@ -720,7 +1076,11 @@ function kit.landmark(t)
       { detail = true, texture = tex.texture, textures = tex.textures })
   end
   local group = group_if_many(name, brushes, boolean(api, "group", t.group, true))
+  local seen_text = view and view.checked and ("seen from " .. fmt(view.area) .. " m2 of floor in " .. view.spaces .. " space(s) within 80 m")
+    or "a landmark (visibility unchecked)"
+  tag_named(name, "landmark", seen_text)
   return {
+    role = "landmark", purpose = view and { ok = not view.hidden, fault = view.fault, area = view.area, spaces = view.spaces, text = seen_text } or { text = seen_text },
     kind = "landmark", name = name, style = style, brushes = brushes, group = group, height = height, base = base,
     min = vec(p[1] - r * 1.25, y, p[3] - r * 1.25), max = vec(p[1] + r * 1.25, y + height, p[3] + r * 1.25), floor_y = y,
     warnings = warnings,

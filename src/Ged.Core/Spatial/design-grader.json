@@ -1,7 +1,7 @@
 {
   "schema": "glacier.design-grader/1",
-  "version": 1,
-  "source": "DESIGN-QUALITY-SPEC §(d), calibrated on the exemplar study (44 exemplars, 6 counter-examples, 2 generated levels): every base threshold below is the study's own (research/exemplar-study/tools/grader.py), reproduced exactly by the grader calibration test. Class thresholds (§(h)) relax only the checks sky, open edges or a payload layout distort; re-calibrate by re-running the study tools and this test.",
+  "version": 3,
+  "source": "DESIGN-QUALITY-SPEC §(d), calibrated on the exemplar study (44 exemplars, 6 counter-examples, 2 generated levels): every base threshold below is the study's own (research/exemplar-study/tools/grader.py), reproduced exactly by the grader calibration test. The function checks (group function, G27-G32, \"study\": false) came after the study: their limits are the exemplars' own range measured with the product defaults, held by the purpose calibration gate. Class thresholds (§(h)) relax only the checks sky, open edges or a payload layout distort; re-calibrate by re-running the study tools and this test.",
   "verdict": {
     "doc": "PASS: at most pass_max failures. REVIEW: at most review_max. FAIL: more, or any hard check failing. A generated level should reach PASS; every remaining REVIEW item goes in the hand-off with its reason.",
     "pass_max": 2,
@@ -13,7 +13,7 @@
       "detect": { "all": [ { "metric": "open_air_fraction", "min": 0.5 }, { "metric": "falloff_edge_fraction", "min": 0.04 } ] }
     },
     "payload": {
-      "doc": "Payload maps (gametype payload, or a Payload_Handler event): a cart track through 3-5 checkpoints, each segment a fight area with its own loops and population, at least 3 routes into every next segment and no single cell carrying most of the crossing, and spawns switched over at every checkpoint. Thresholds come from the owner's payload direction (§(h)) and the per-area density of the closest exemplars (E20, E23), until real payload maps exist. The DM no-chokepoint check is replaced by the boundary check P05.",
+      "doc": "Payload maps (gametype payload, or a Payload_Handler event): a cart track through 3-5 checkpoints, each segment a fight area with its own loops and population, at least 3 routes into every next segment and no single cell carrying most of the crossing, and spawns switched over at every checkpoint. Thresholds come from the owner's payload direction (§(h)) and the per-area density of the closest exemplars (E20, E23), until real payload maps exist. The DM no-chokepoint check is replaced by the boundary check P05, and spawn safety (G19) counts only the spawn pairs live at the same time: a respawn a checkpoint links is live while that checkpoint is the cart's target, one no checkpoint links is always live.",
       "detect": "payload"
     }
   },
@@ -66,7 +66,8 @@
       "rule": { "metric": "space_area_p50", "max": 260 },
       "open_air": { "metric": "space_area_p50", "max": 1000 },
       "locate": [ "spaces" ],
-      "fix": "Split the largest spaces into a hierarchy (kit.layout zones, kit.space archetypes: alcoves, galleries, side rooms); median space target 55-160 m2."
+      "explain": "space_area", "explain_metric": "space_area_p50",
+      "fix": "The median counts spaces of at least 30 m2 and drops only when the spaces at or under the limit outnumber the larger ones: add side rooms, alcoves and galleries of 30-260 m2 set off by openings under 4 m wide or short corridors (kit.layout zones, kit.space archetypes), or split a large space so that every piece is under the limit. Splitting it into pieces that stay over the limit raises the median. The failure's detail lists every counted space and how many more small ones it takes; median space target 55-160 m2."
     },
     {
       "id": "G07", "group": "shape", "doc": "Ceiling variety: headroom IQR/median >= 0.45, or >= 25% of neighbouring 8 m cells change ceiling by >= 1.5 m.",
@@ -79,7 +80,8 @@
       "id": "G08", "group": "shape", "doc": "Verticality: >= 5 floor-height classes and vertical span >= 8 m.",
       "rule": { "all": [ { "metric": "floor_height_classes", "min": 5 }, { "metric": "vertical_span", "min": 8 } ] },
       "locate": [ "spaces" ],
-      "fix": "At least 3 floor levels 4.5-10 m apart, with stairs, ramps and drops of different kinds between them (kit.layout levels, kit.stairs, raised and sunken floor sections)."
+      "explain": "floor_height_classes",
+      "fix": "At least 3 floor levels 4.5-10 m apart, with stairs, ramps and drops of different kinds between them (kit.layout levels, kit.stairs, raised and sunken floor sections). A floor-height class is a 0.5 m height bin (world multiples of 0.5 m) holding at least 2% of the playable floor, so a small raised piece adds none; the failure's detail lists the bins and how far each is short."
     },
     {
       "id": "G09", "group": "shape", "doc": "Room variety: >= 4 space archetypes, entropy >= 0.6.",
@@ -148,6 +150,7 @@
       "id": "G19", "group": "pop", "doc": "Spawn safety: <= 35% of spawn pairs within 30 m see each other; spawn exposure p50 <= 0.25.",
       "rule": { "all": [ { "metric": "spawn_los30", "max": 0.35 }, { "metric": "spawn_exposure_p50", "max": 0.25 } ] },
       "open_air": { "all": [ { "metric": "spawn_los30", "max": 0.55 }, { "metric": "spawn_exposure_p50", "max": 0.65 } ] },
+      "payload": { "all": [ { "metric": "spawn_los30_live", "max": 0.35 }, { "metric": "spawn_exposure_p50", "max": 0.25 } ] },
       "locate": [ "exposed_spawns" ],
       "fix": "Move spawns beside cover or into alcoves, facing along a route out (kit.spawn_points v2): nearest neighbour 8-15 m, at most 20% of pairs within 30 m in sight, exposure <= 0.2."
     },
@@ -159,10 +162,10 @@
       "fix": "Add cover 1.2-2.5 m tall every 5-6 m in open spaces and sightline breakers (kit.dress cover); distance-to-cover p90 <= 4.5 m."
     },
     {
-      "id": "G21", "group": "tex", "doc": "Texture scale: metres per texture tile p50 <= 6.",
-      "rule": { "metric": "metres_per_tile_p50", "max": 6 },
-      "locate": [],
-      "fix": "Map at 4 m per tile (64 px/m for 256 px textures) or by real texture size (ppm = 64); never more than 6 m per tile."
+      "id": "G21", "group": "tex", "doc": "Texture scale and alignment: metres per texture tile p50 <= 6, and >= 55% of the wall area reads the same way round (box mapping mirrors half the walls: 0.50; study exemplars 0.60-1.00, p50 0.98).",
+      "rule": { "all": [ { "metric": "metres_per_tile_p50", "max": 6 }, { "metric": "uv_handedness", "min": 0.55, "default": 1 } ] },
+      "locate": [ "uv" ],
+      "fix": "Map at 4 m per tile (64 px/m for 256 px textures) or by real texture size (ppm = 64); never more than 6 m per tile. Line textures up like a mapper: level.uv_align{} (walls stand on the floor line, wrap around corners, never mirrored; girder and trim textures run along beams, posts and pilasters; the kit does it with kit.defaults.uv_align), then rebuild."
     },
     {
       "id": "G22", "group": "tex", "doc": "Palette: >= 10 textures, >= 2 families, >= 3 wall and >= 2 ceiling textures needed to cover 90% of their area.",
@@ -210,6 +213,36 @@
         { "any": [ { "metric": "longest_sight_p50", "gt": 40, "default": 0 }, { "metric": "clear_width_p50", "gt": 32, "default": 0 } ] } ] } } },
       "locate": [ "sightlines", "spaces" ],
       "fix": "The level is too big and open for its spawns: shrink the footprint or add spawns, and subdivide the open floor (kit.layout size budget, kit.space, kit.dress)."
+    },
+    {
+      "id": "G27", "group": "function", "study": false, "doc": "Purposeful bridges: at most 1 set-piece bridge (span 12 m or more) serving no route: redundant (the floor beside or below joins its ends with a walk at most 1.2x the deck + 1 m) or leading nowhere (under 40 m2 of floor on one side gains by crossing, no item or spawn waits within 15 m of that end, and it leads on to under 160 m2). Exemplar maximum 1 (dm04, dm07, dm17, dm19, E10); spatial.purpose lists every bridge with its catchments.",
+      "rule": { "metric": "purposeless_bridges", "max": 1, "default": 0 },
+      "locate": [ "purposeless_bridges" ],
+      "fix": "A bridge joins two walkable places that are otherwise far apart across a real drop: remove bridges whose ends the floor below or a bridge beside already joins, land both ends on floor that leads on, or give a dead-end perch its reward (kit.bridge refuses such bridges; spatial.purpose lists the catchments)."
+    },
+    {
+      "id": "G28", "group": "function", "study": false, "doc": "Theme fit: no rock prop standing free in a built space (walls not natural rock: an interior, or a yard walled all round under the sky) and no rock rubble scattered on open floor (free-standing, not cover). No exemplar has either.",
+      "rule": { "all": [ { "metric": "mismatched_props", "max": 0, "default": 0 }, { "metric": "scattered_rocks", "max": 0, "default": 0 } ] },
+      "locate": [ "mismatched_props" ],
+      "fix": "Rocks belong in caves, canyons and outdoor ground, against walls and edges or as cover on a lane: move rubble to a wall foot, swap rocks in built rooms for the zone's own props (kit.dress picks by the space's context; kit.boulders keeps boulders by walls and edges)."
+    },
+    {
+      "id": "G29", "group": "function", "study": false, "doc": "Purposeful cover: at most a quarter of the free-standing cover (2 m clear of walls and edges, 0.9-2.8 m tall; at least 4 counted) has no open line of 14 m or more through it (both ways along one of 8 axes at 1.2 m: nothing to break). No exemplar has any orphan cover; a quarter is the margin.",
+      "rule": { "metric": "orphan_cover_fraction", "max": 0.25 },
+      "locate": [ "orphan_cover" ],
+      "fix": "Cover breaks a lane: move orphan cover onto a long sightline or an approach to a spawn or objective (kit.dress places cover on measured lanes), or push it against a wall as dressing."
+    },
+    {
+      "id": "G30", "group": "function", "study": false, "doc": "Purposeful flights: at most 1 flight of stairs or ramp (built, climbing 1 m or more between landings) that climbs into a wall or onto a solid (no floor beyond its top step, under 1.5 m clear), is blocked (a wall or prop under 0.3 m from its first or top step), leads onto nothing (no landing beyond its top, only a drop) or leads into a dead-end pit in a bridge's gap (under 150 m2, reached only by flights from the floor the bridge joins). Exemplar maximum 1 (E6, E8, E10, E17, E18, dm10); spatial.purpose also notes redundant flights and dead-end perches without counting them.",
+      "rule": { "metric": "purposeless_flights", "max": 1, "default": 0 },
+      "locate": [ "purposeless_flights" ],
+      "fix": "A flight joins two floors that are otherwise apart, with room to step on and off: remove flights another way up already serves, flights into a dead-end pit (above all in a bridge's gap) and flights onto solids; clear the wall or prop at a blocked end (kit.stairs refuses such flights; spatial.purpose lists every flight)."
+    },
+    {
+      "id": "G31", "group": "function", "study": false, "doc": "Level routes: at most 1 route ledge, an abrupt 0.3-1.5 m step between two floors of 150 m2 or more in a doorway or corridor with no way round on foot within 60 m (the route makes players hop). No exemplar has one; 1 is the margin.",
+      "rule": { "metric": "route_ledges", "max": 1, "default": 0 },
+      "locate": [ "route_ledges" ],
+      "fix": "Floors joined by a doorway or corridor should meet level, or by a proper ramp or stairs: level the two floors, or replace the step with kit.ramp or kit.stairs (spatial.purpose lists every route ledge)."
     },
     {
       "id": "C01", "group": "ctf", "doc": "CTF: >= 2 node-disjoint base-to-base routes, spawn-to-enemy-flag balance >= 0.85, flags 30-170 m apart.",

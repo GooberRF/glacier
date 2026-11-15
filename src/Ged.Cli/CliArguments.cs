@@ -28,7 +28,7 @@ internal sealed class CliArguments
         "--json", "--attach", "--dry-run", "--allow-destructive", "--sealed", "--light", "--no-shadows",
         "--fail-on-holes", "--no-tag", "--no-build", "--build", "--markdown", "--lua", "--help", "-h", "--version",
         "--no-collapse", "--no-snapshot", "--no-install", "--stock-only", "--headless", "--read-only", "--promote", "--compare",
-        "--verbose",
+        "--verbose", "--include-rejected",
     };
 
     private static readonly HashSet<string> Valued = new(StringComparer.Ordinal)
@@ -49,7 +49,7 @@ internal sealed class CliArguments
     /// <summary>The <c>render</c> command's valued options (kept in <see cref="RenderOptions"/>).</summary>
     private static readonly HashSet<string> RenderValued = new(StringComparer.Ordinal)
     {
-        "--view", "--y", "--thickness", "--below", "--camera", "--look", "--fov", "--region", "--room",
+        "--view", "--y", "--thickness", "--below", "--camera", "--look", "--fov", "--hfov", "--eye-height", "--region", "--room",
         "--uid", "--mode", "--size", "--overlays",
     };
 
@@ -66,6 +66,33 @@ internal sealed class CliArguments
         "--player-class", "--max", "--players", "--fresh", "--max-samples", "--max-locations", "--fail-on",
     };
 
+    /// <summary>The <c>ref</c> command's switches (kept in <see cref="RefOptions"/>).</summary>
+    private static readonly HashSet<string> RefSwitches = new(StringComparer.Ordinal)
+    {
+        "--snap", "--replace", "--clear-marks", "--apply-estimate",
+    };
+
+    /// <summary>The <c>ref</c> command's valued options (kept in <see cref="RefOptions"/>; it also reads --camera, --look, --hfov, --eye-height and --mode).</summary>
+    private static readonly HashSet<string> RefValued = new(StringComparer.Ordinal)
+    {
+        "--refs", "--id", "--image", "--crop", "--area", "--notes", "--heading", "--pitch", "--move", "--turn", "--horizon",
+        "--vp", "--vp-dir", "--object", "--measure", "--ignore", "--panel", "--side", "--count", "--unit",
+    };
+
+    /// <summary>The ref options given (flag → value; switches map to an empty string).</summary>
+    public Dictionary<string, string> RefOptions { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The <c>modules</c> command's valued options (kept in <see cref="ModuleOptions"/>).</summary>
+    private static readonly HashSet<string> ModuleValued = new(StringComparer.Ordinal)
+    {
+        "--sources", "--modules", "--group", "--category", "--role", "--style", "--top",
+    };
+
+    /// <summary>
+    /// The <c>modules</c> options given (flag → value). After the <c>modules</c> verb, <c>--attach &lt;kind&gt;</c> is the
+    /// attachment filter (the module library never talks to the editor).
+    /// </summary>
+    public Dictionary<string, string> ModuleOptions { get; } = new(StringComparer.Ordinal);
     /// <summary>The spatial / grade options given (flag → value; switches map to an empty string).</summary>
     public Dictionary<string, string> SpatialOptions { get; } = new(StringComparer.Ordinal);
 
@@ -188,6 +215,9 @@ internal sealed class CliArguments
     /// <summary><c>catalog textures --stock-only</c>.</summary>
     public bool StockOnly { get; private set; }
 
+    /// <summary><c>modules list --include-rejected</c>: also modules the mapper rejected in curation.json.</summary>
+    public bool IncludeRejected { get; private set; }
+
     /// <summary><c>run --label &lt;text&gt;</c>: appended to the undo label.</summary>
     public string? Label { get; private set; }
 
@@ -281,6 +311,12 @@ internal sealed class CliArguments
                 continue;
             }
 
+            if (ModuleValued.Contains(name) || (name is "--attach" or "--size" && a.Verb == "modules"))
+            {
+                a.ModuleOptions[name] = inline ?? (i + 1 < args.Count ? args[++i] : throw new UsageException($"'{name}' needs a value."));
+                continue;
+            }
+
             if (Switches.Contains(name))
             {
                 if (inline is not null)
@@ -311,6 +347,23 @@ internal sealed class CliArguments
                 }
 
                 a.SpatialOptions[name] = string.Empty;
+                continue;
+            }
+
+            if (RefSwitches.Contains(name))
+            {
+                if (inline is not null)
+                {
+                    throw new UsageException($"'{name}' does not take a value.");
+                }
+
+                a.RefOptions[name] = string.Empty;
+                continue;
+            }
+
+            if (RefValued.Contains(name))
+            {
+                a.RefOptions[name] = inline ?? (i + 1 < args.Count ? args[++i] : throw new UsageException($"'{name}' needs a value."));
                 continue;
             }
 
@@ -377,6 +430,7 @@ internal sealed class CliArguments
             case "--no-snapshot": NoSnapshot = true; break;
             case "--no-install": NoInstall = true; break;
             case "--stock-only": StockOnly = true; break;
+            case "--include-rejected": IncludeRejected = true; break;
             case "--headless": Headless = true; break;
             case "--read-only": ReadOnly = true; break;
             case "--verbose": Verbose = true; break;

@@ -133,6 +133,12 @@ public sealed class RenderCameraDto
     /// <summary>Perspective: vertical field of view, degrees.</summary>
     public double? FovDegrees { get; init; }
 
+    /// <summary>Perspective: horizontal field of view, degrees (from the vertical one and the image's aspect).</summary>
+    public double? HFovDegrees { get; init; }
+
+    /// <summary>Camera view with eyeHeight: the floor height the camera was placed above.</summary>
+    public double? Floor { get; init; }
+
     /// <summary>Orthographic: half the visible world height, metres.</summary>
     public double? OrthoHalfHeight { get; init; }
 }

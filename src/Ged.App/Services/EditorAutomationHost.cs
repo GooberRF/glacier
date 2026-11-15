@@ -120,6 +120,7 @@ internal sealed class EditorAutomationHost : IAutomationHost
                 LogTap = capture,
                 WrapOperations = (ctx, inner) => new AutomationScriptOperations(ctx, doc, inner, PathPolicy),
                 AutoTags = run.AutoTags,
+                LocalModules = run.Modules,
             });
 
         if (result.Committed)

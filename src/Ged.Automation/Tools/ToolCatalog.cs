@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Nodes;
+using Ged.Automation.Reference;
 using Ged.Core.Scripting;
 
 namespace Ged.Automation.Tools;
 
 /// <summary>
-/// The safety class of a tool (MCP-SERVER-SPEC §7): what a session must allow before the tool may run.
+/// The safety class of a tool (MCP-SERVER-SPEC Â§7): what a session must allow before the tool may run.
 /// </summary>
 public enum ToolSafety
 {
@@ -57,9 +58,9 @@ public sealed record ToolArg(
 /// <summary>One tool: a name, the automation command it runs, its safety class, documentation and arguments.</summary>
 /// <param name="Name">The tool name (unprefixed snake_case).</param>
 /// <param name="Command">The <see cref="AutomationCommands"/> command it executes.</param>
-/// <param name="Safety">The safety class (§7).</param>
+/// <param name="Safety">The safety class (Â§7).</param>
 /// <param name="Summary">One line, for tables.</param>
-/// <param name="Description">When to use it, what it costs, what to do next (≤ 700 characters).</param>
+/// <param name="Description">When to use it, what it costs, what to do next (â‰¤ 700 characters).</param>
 /// <param name="Args">The arguments.</param>
 /// <param name="ResultDoc">What the result contains.</param>
 /// <param name="ReturnsImage">True when the result carries an image.</param>
@@ -88,7 +89,7 @@ public sealed record ToolSpec(
 }
 
 /// <summary>
-/// The single source of truth for the tools an AI agent can call (MCP-SERVER-SPEC §2, §4): the MCP
+/// The single source of truth for the tools an AI agent can call (MCP-SERVER-SPEC Â§2, Â§4): the MCP
 /// <c>tools/list</c> (names, descriptions, JSON Schemas, annotations), the per-tool request mapping, the
 /// CLI option lines of the matching verbs and the agent guide's tool table are all generated from it, and
 /// tests hold them in step. Plain C# with no protocol dependency, so the editor bridge and the tests use it too.
@@ -117,7 +118,7 @@ public static class ToolCatalog
     /// <summary>The tool named <paramref name="name"/>, or null.</summary>
     public static ToolSpec? Find(string name) => All.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.Ordinal));
 
-    /// <summary>snake_case → camelCase (<c>max_changes</c> → <c>maxChanges</c>).</summary>
+    /// <summary>snake_case â†’ camelCase (<c>max_changes</c> â†’ <c>maxChanges</c>).</summary>
     public static string Camel(string snake)
     {
         string[] parts = snake.Split('_', StringSplitOptions.RemoveEmptyEntries);
@@ -142,6 +143,8 @@ public static class ToolCatalog
         ToolArg MaxChars() => new("max_chars", "integer",
             $"Result size budget in characters (default {DefaultResultBudget}); longer lists are cut with truncated and a hint.",
             Default: DefaultResultBudget, Min: 2000, Max: MaxResultBudget, CommandArg: string.Empty);
+
+        ToolArg RefsDir() => new("refs_dir", "string", "Reference set folder (MCP default: scratch/references; the CLI needs --refs).", CommandArg: "refs", CliFlag: "--refs");
 
         ToolArg SpatialFresh() => new("fresh_build", "string", "auto (preview build when stale), preview, sealed, none.",
             Enum: FreshBuild, Default: "auto", CommandArg: "build", CliFlag: "--fresh");
@@ -216,7 +219,8 @@ public static class ToolCatalog
                 $"The way to build and edit: runs Lua against the open level as ONE undo step labelled \"AI: <name>\" (any error rolls it all back). Prefer the design kit (local kit = ged.import(\"kit\")). {conventions} Globals: {globals}. Seconds; limit timeout_s. Use dry_run to preview. Returns changes, created UIDs, log, errors with line:column and a hint. Next: build (sealed), check_holes, render_plan.",
                 new[]
                 {
-                    new ToolArg("code", "string", "The Lua source.", Required: true, CommandArg: "script"),
+                    new ToolArg("code", "string", "The Lua source (give code or file).", CommandArg: "script"),
+                    new ToolArg("file", "string", "A Lua script file to run instead of code, inside the folders this server may write (session_info writeRoots); ged.import(\"name\") then also finds name.lua beside it (that folder only, literal names).", CommandArg: string.Empty, MaxLength: 1024),
                     new ToolArg("name", "string", "Script name for diagnostics, tags and undo label (default mcp-<n>.lua).", MaxLength: 128),
                     new ToolArg("label", "string", "Short note appended to the undo label.", MaxLength: AutomationCommands.MaxRunLabel, CliFlag: "--label"),
                     new ToolArg("dry_run", "boolean", "Report what would change, then roll it all back.", Default: false, CliFlag: "--dry-run"),
@@ -285,11 +289,85 @@ public static class ToolCatalog
                     new ToolArg("camera", "array", "view camera: eye position x, y, z.", ItemsType: "number", Items: 3, CliFlag: "--camera"),
                     new ToolArg("look", "array", "view camera: target point x, y, z.", ItemsType: "number", Items: 3, CliFlag: "--look"),
                     new ToolArg("fov", "number", "iso / camera: vertical field of view in degrees (default 60).", Min: 10, Max: 120, CliFlag: "--fov"),
+                    new ToolArg("hfov", "number", "iso / camera: horizontal fov instead (RF: 90).", Min: 10, Max: 170, CliFlag: "--hfov"),
+                    new ToolArg("eye_height", "number", "camera: eye m above the floor below it.", Min: 0.05, Max: 200, CliFlag: "--eye-height"),
                     region, Room(), Uid(), Overlays("none", icons: true), Mode(), Size(), Fresh(),
                 },
                 "image/png + {width, height, view, projection, camera, worldPerPixel, origin?, viewProjection, framing, legend, objects[], geometry, notes[], path}",
                 ReturnsImage: true,
                 CliVerb: "render"),
+
+            new("reference_view", "reference", ToolSafety.Read,
+                "Reference pictures: a concept image or a stored reference with a grid, or the list of references.",
+                "Reference matching, step 1. image: the concept with a grid in its pixels (crop zooms on and outlines a rectangle; snap shows it snapped onto the panel frame): read a screenshot's crop for reference_edit add. id: the stored reference with a grid in fractions (0-1 from the top-left) and its marks: read the horizon, vanishing point and object positions for reference_edit camera. Neither: the list of references with their cameras and marks. Known sizes for reading scale: glacier://reference/scale. Instant.",
+                new[]
+                {
+                    new ToolArg("image", "string", "A concept image (png, jpg).", CliFlag: "--image"),
+                    new ToolArg("id", "string", "A stored reference.", MaxLength: 64, CliFlag: "--id"),
+                    new ToolArg("crop", "array", "image: x, y, w, h pixels.", ItemsType: "number", Items: 4, CliFlag: "--crop"),
+                    new ToolArg("snap", "boolean", "image + crop: show the snapped crop.", CliFlag: "--snap"),
+                    new ToolArg("size", "integer", "Longest side, px.", Min: 200, Max: 4096, CliFlag: "--side"),
+                    RefsDir(),
+                },
+                "image/png + {op, kind, path, width, height, crop?, snapped?, reference?, read} | {op: list, count, references[]}",
+                ReturnsImage: true,
+                CliVerb: "ref",
+                FixedArgs: new Dictionary<string, string> { ["op"] = "view" }),
+
+            new("reference_edit", "reference", ToolSafety.Mutate,
+                "Register a reference crop (add) or set its matched camera and marks (camera).",
+                "add: store the image's crop (x, y, w, h px; snap moves it onto the panel frame) as reference id, with its area and notes. camera: set the camera reference_compare renders from: camera + look, or heading / pitch; move (forward, right, up m) and turn (heading, pitch deg) nudge it; hfov (default 90); eye_height (m above the floor under it). Marks in picture fractions give an estimate: horizon = pitch and roll, vp + vp_dir = heading, object (x, base, top, metres) = eye height, measure (x, base, top...) = heights in m; apply_estimate applies it; ignore (x, y, w, h) masks a weapon or caption. Writes only the reference set. Instant.",
+                new[]
+                {
+                    new ToolArg("op", "string", "add or camera.", Required: true, Enum: new[] { "add", "camera" }),
+                    new ToolArg("id", "string", "The reference id (letters, digits, - _).", Required: true, MaxLength: 64, CliFlag: "--id"),
+                    new ToolArg("image", "string", "add: the concept image.", CliFlag: "--image"),
+                    new ToolArg("crop", "array", "add: x, y, w, h pixels.", ItemsType: "number", Items: 4, CliFlag: "--crop"),
+                    new ToolArg("snap", "boolean", "add: snap the crop onto the frame.", CliFlag: "--snap"),
+                    new ToolArg("area", "string", "add: the area it shows.", MaxLength: 200, CliFlag: "--area"),
+                    new ToolArg("notes", "string", "add: what matters in it.", MaxLength: 2000, CliFlag: "--notes"),
+                    new ToolArg("replace", "boolean", "add: overwrite the id (keeps camera, marks).", CliFlag: "--replace"),
+                    new ToolArg("camera", "array", "Eye x, y, z.", ItemsType: "number", Items: 3, CliFlag: "--camera"),
+                    new ToolArg("look", "array", "Look-at x, y, z.", ItemsType: "number", Items: 3, CliFlag: "--look"),
+                    new ToolArg("heading", "number", "Degrees, 0 = +Z, 90 = +X.", Min: -360, Max: 360, CliFlag: "--heading"),
+                    new ToolArg("pitch", "number", "Degrees, up positive.", Min: -89, Max: 89, CliFlag: "--pitch"),
+                    new ToolArg("move", "array", "Nudge forward, right, up m.", ItemsType: "number", Items: 3, CliFlag: "--move"),
+                    new ToolArg("turn", "array", "Nudge heading, pitch deg.", ItemsType: "number", Items: 2, CliFlag: "--turn"),
+                    new ToolArg("hfov", "number", "Horizontal fov deg (90).", Min: 10, Max: 170, CliFlag: "--hfov"),
+                    new ToolArg("eye_height", "number", "Eye m above floor; 0 clears.", Min: 0, Max: 200, CliFlag: "--eye-height"),
+                    new ToolArg("horizon", "array", "[y] or [x1, y1, x2, y2].", ItemsType: "number", CliFlag: "--horizon"),
+                    new ToolArg("vp", "array", "Vanishing point x, y.", ItemsType: "number", Items: 2, CliFlag: "--vp"),
+                    new ToolArg("vp_dir", "array", "World x, z of the vp lines.", ItemsType: "number", Items: 2, CliFlag: "--vp-dir"),
+                    new ToolArg("object", "array", "x, base, top, metres.", ItemsType: "number", Items: 4, CliFlag: "--object"),
+                    new ToolArg("measure", "array", "x, base, top triples.", ItemsType: "number", CliFlag: "--measure"),
+                    new ToolArg("ignore", "array", "x, y, w, h rectangles.", ItemsType: "number", CliFlag: "--ignore"),
+                    new ToolArg("clear_marks", "boolean", "Drop stored marks first.", CliFlag: "--clear-marks"),
+                    new ToolArg("apply_estimate", "boolean", "Put the estimate on the camera.", CliFlag: "--apply-estimate"),
+                    RefsDir(),
+                },
+                "{op, refs, reference | id, camera{position, look, heading, pitch, hfov, vfov, eyeHeight?}, marks?, estimate{pitchDeg, rollDeg, headingDeg, eyeHeight, objectDistance, measurements[]}?, renderFlags, next, notes[]}",
+                CliVerb: "ref"),
+
+            new("reference_compare", "reference", ToolSafety.Read,
+                "Render the level from a reference's camera beside the reference: one comparison sheet plus cues.",
+                "Reference matching, the loop: renders a private copy of the level from the reference's camera at its aspect and fov and returns one sheet: reference | render, blend | edge overlay (orange ref, cyan render, white both; skylines), one fraction grid, both horizons. Also cues (detail, plain top, skyline, brightness, warmth, horizons, edge overlap) and hints: hints, not a score. Align the camera first, then write a difference list (massing, height, openings, structure, detail, materials), fix, compare again. Camera arguments here are one-off. Seconds.",
+                new[]
+                {
+                    new ToolArg("id", "string", "The reference.", Required: true, MaxLength: 64, CliFlag: "--id"),
+                    new ToolArg("camera", "array", "Eye x, y, z.", ItemsType: "number", Items: 3, CliFlag: "--camera"),
+                    new ToolArg("look", "array", "Look-at x, y, z.", ItemsType: "number", Items: 3, CliFlag: "--look"),
+                    new ToolArg("move", "array", "Nudge forward, right, up m.", ItemsType: "number", Items: 3, CliFlag: "--move"),
+                    new ToolArg("turn", "array", "Nudge heading, pitch deg.", ItemsType: "number", Items: 2, CliFlag: "--turn"),
+                    new ToolArg("hfov", "number", "Horizontal fov deg.", Min: 10, Max: 170, CliFlag: "--hfov"),
+                    new ToolArg("eye_height", "number", "Eye m above floor.", Min: 0, Max: 200, CliFlag: "--eye-height"),
+                    new ToolArg("panel", "integer", "Picture width px (640, fitted to the cap).", Min: ReferenceCommand.MinPanel, Max: ReferenceCommand.MaxPanel, CliFlag: "--panel"),
+                    Mode(),
+                    RefsDir(),
+                },
+                "image/png + {op, id, area, path, width, height, render, panel, camera{position, look, heading, pitch, hfov, floor?}, cues{reference, render, edgeOverlapReference, edgeOverlapRender, hints[]}, geometry, notes[]}",
+                ReturnsImage: true,
+                CliVerb: "ref",
+                FixedArgs: new Dictionary<string, string> { ["op"] = "compare" }),
 
             new("build", "build", ToolSafety.Mutate,
                 "Compile the level's geometry (sealed by default), optionally bake lighting.",
@@ -340,7 +418,7 @@ public static class ToolCatalog
 
             new("spatial_query", "spatial", ToolSafety.Read,
                 "Spatial queries and design measurements.",
-                "Instant: raycast(p, dir), los(p, q), point_info(p), clearance(p). Measured (seconds, cached): walk(p?), routes(p, q, k), graph(kind, scale), sightlines, cover, cells, area_report(region | p + radius), spawn_report, item_report, locations(kind), setpieces. Results carry geometry freshness.",
+                "Instant: raycast(p, dir), los(p, q), point_info(p), clearance(p). Measured, cached: walk(p?), routes(p, q, k), graph(kind, scale), sightlines, cover, cells, area_report(region | p + radius), spawn_report, item_report, locations(kind), setpieces, purpose. Results carry geometry freshness.",
                 new[]
                 {
                     new ToolArg("op", "string", "The query.", Required: true, Enum: SpatialOps),
@@ -356,6 +434,17 @@ public static class ToolCatalog
                 },
                 "{op result, geometry{state, measured, note}, ...}",
                 CliVerb: "spatial"),
+
+            new("align_textures", "run", ToolSafety.Mutate,
+                "Line textures up like a mapper (level.uv_align), or report UV problems.",
+                "One undo step: walls on the floor line, wrapped round corners, never mirrored; slopes and rock at true length; girder and trim textures run along beams, posts and pilasters; fitted faces kept. report = true only measures (level.uv_report). Then build; grade_level G21 checks it.",
+                new[]
+                {
+                    new ToolArg("tag", "string", "Only brushes with this tag (key or key=value).", MaxLength: 128, CommandArg: string.Empty),
+                    new ToolArg("report", "boolean", "Measure only; change nothing.", Default: false, CommandArg: string.Empty),
+                },
+                "{success, committed, returnValue}",
+                CliVerb: "run"),
 
             new("grade_level", "grade", ToolSafety.Read,
                 "Design grader: verdict, fixes and locations.",
@@ -406,6 +495,34 @@ public static class ToolCatalog
                 "{op, available, returned, limit, textures[{name, stock, origin?, overridden?}], note?, hint?}",
                 CliVerb: "catalog",
                 FixedArgs: new Dictionary<string, string> { ["op"] = "textures" }),
+
+            new("module_library", "modules", ToolSafety.Read,
+                "Detail/architecture module library: stats, best matches, or one module.",
+                "Modules are recurring detail pieces harvested from released levels (pilaster, trims, frames, beam, railing, catwalk, stairs, pipe, machinery, rock...) with an anchor frame, stretch axes, repeating units, styles and a score. Without id: stats and the best matches. With id: the full entry. Needs no level; a missing library answers available=false.",
+                new[]
+                {
+                    new ToolArg("id", "string", "A module id: its full entry."),
+                    new ToolArg("category", "string", "e.g. pilaster, railing, door_frame.", CliFlag: "--category"),
+                    new ToolArg("attach", "string", "wall, floor, ceiling, span, edge, opening, ...", CliFlag: "--attach"),
+                    new ToolArg("style", "string", "e.g. industrial, bunker, cave.", CliFlag: "--style"),
+                    new ToolArg("limit", "integer", "Max listed (50).", Min: 1, Max: ModuleLibraryCommands.MaxLimit, CliFlag: "--limit"),
+                    new ToolArg("include_rejected", "boolean", "Also curation-rejected.", Default: false, CliFlag: "--include-rejected"),
+                    new ToolArg("library", "string", "A library/modules folder.", CliFlag: "--modules"),
+                },
+                "{available, reason?, library, stats{}, total, modules[] | module{}}",
+                CliVerb: "modules"),
+
+            new("harvest_modules", "harvest", ToolSafety.Mutate,
+                "Harvest modules from levels (read-only) into a library folder.",
+                "Reads library/sources.json's levels, or one level/packfile (source + group), read-only, and writes the library (index.json + one .rfg per module) to out, inside the allowed folders and outside every source folder. Deterministic. Seconds per level. Next: module_library.",
+                new[]
+                {
+                    new ToolArg("source", "string", "One .rfl or .vpp instead of the manifest."),
+                    new ToolArg("group", "string", "Group name (single source) or group to harvest.", CliFlag: "--group"),
+                    new ToolArg("out", "string", "The library/modules folder to write.", CliFlag: "--out"),
+                },
+                "{levels_read, levels_failed, modules, rejected{}, by_category_group, output}",
+                CliVerb: "modules"),
 
             new("api_reference", "api", ToolSafety.Read,
                 "The Lua scripting reference: one global, type or member, or the index.",

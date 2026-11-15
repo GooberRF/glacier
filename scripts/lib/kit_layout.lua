@@ -28,6 +28,8 @@ local SP = I.space_parts
 -- Data (spec §a.1 / §a.2 / §c.1-1 / §(h); the generator aims at the exemplar p25-p75 rows)
 -- ---------------------------------------------------------------------------------------------
 
+local LAYOUT = { generators = {} } -- the internals the layout generators build on (filled at the end of this module)
+
 local DATA = {
   step = 5,                    -- metres between floor levels (c.1-1: levels 4.5-10 m apart)
   payload_step = 4.5,          -- payload legs climb 4.5 m over a 34 m graded stretch (13%: an uphill push; the level pads at the road's ends do not count)
@@ -57,16 +59,17 @@ local DATA = {
   payload_area_min = 10000,    -- P07
   open_air_void_depth = 40,
   chasm_depth = 8,             -- a bridge outside an open-air layout spans a chasm this deep under its deck (link.depth)
+  pit_depth = 10,              -- a pit zone's chasm: deeper than drop_max, so it is crossed or skirted, never entered
 }
 
 -- Size budgets: playable floor and floor per spawn are the §a.1 rows; zones and hubs are §c.1-1.
 -- XS is §(g) open question 2: 2-4 players play in 1,500-3,000 m2.
 local BUDGET = {
   dm = {
-    XS = { area = { 1500, 3000 }, per_spawn = { 250, 500 }, zones = { 5, 7 }, hubs = { 1, 1 }, grid = { 3, 2 } },
-    S = { area = { 3300, 4900 }, per_spawn = { 430, 610 }, zones = { 5, 9 }, hubs = { 1, 1 }, grid = { 3, 3 } },
-    M = { area = { 4400, 6400 }, per_spawn = { 300, 510 }, zones = { 8, 14 }, hubs = { 1, 1 }, grid = { 4, 3 } },
-    L = { area = { 4600, 8000 }, per_spawn = { 165, 265 }, zones = { 12, 20 }, hubs = { 2, 3 }, grid = { 5, 4 } },
+    XS = { area = { 1500, 3000 }, per_spawn = { 250, 500 }, zones = { 5, 7 }, hubs = { 1, 1 } },
+    S = { area = { 3300, 4900 }, per_spawn = { 430, 610 }, zones = { 5, 9 }, hubs = { 1, 1 } },
+    M = { area = { 4400, 6400 }, per_spawn = { 300, 510 }, zones = { 8, 14 }, hubs = { 1, 1 } },
+    L = { area = { 4600, 8000 }, per_spawn = { 165, 265 }, zones = { 12, 20 }, hubs = { 2, 3 } },
   },
   ctf = { area = { 5000, 8200 }, per_spawn = { 265, 410 }, zones = { 12, 20 }, hubs = { 1, 3 } },
   koth = { area = { 7400, 10000 }, per_spawn = { 340, 660 }, zones = { 8, 14 }, hubs = { 1, 1 } },
@@ -84,9 +87,11 @@ local THEMES = {
 local SIDES = { "+x", "-x", "+z", "-z" }
 local OPP = { ["+x"] = "-x", ["-x"] = "+x", ["+z"] = "-z", ["-z"] = "+z" }
 local DIRV = { ["+x"] = { 1, 0 }, ["-x"] = { -1, 0 }, ["+z"] = { 0, 1 }, ["-z"] = { 0, -1 } }
-local LINK_TYPES = { corridor = true, doorway = true, stair = true, ramp = true, drop = true, bridge = true, window = true, lift = true, road = true }
-local WALK = { corridor = true, doorway = true, stair = true, ramp = true, drop = true, bridge = true, lift = true, road = true }
-local CART_LINK = { road = true, bridge = true, doorway = true, corridor = true } -- links the payload cart can run along
+local LINK_TYPES = { corridor = true, doorway = true, stair = true, ramp = true, drop = true, bridge = true, window = true, lift = true, road = true, join = true }
+local WALK = { corridor = true, doorway = true, stair = true, ramp = true, drop = true, bridge = true, lift = true, road = true, join = true }
+local CART_LINK = { road = true, bridge = true, doorway = true, corridor = true, join = true } -- links the payload cart can run along
+-- The link types that may leave the facing-walls geometry (a free link: any heading, bends, any zone frames).
+local FREE_TYPES = { corridor = true, doorway = true, road = true, bridge = true, stair = true, ramp = true }
 
 -- ---------------------------------------------------------------------------------------------
 -- Small helpers
@@ -121,12 +126,246 @@ end
 
 local function copy_list(t) local o = {} for i, v in ipairs(t) do o[i] = v end return o end
 
-local function rect_of(z)
-  local w, d = z.size[1], z.size[2]
-  return z.pos[1] - w / 2, z.pos[3] - d / 2, z.pos[1] + w / 2, z.pos[3] + d / 2
+-- ---------------------------------------------------------------------------------------------
+-- Plan geometry: zone frames (zone.rot), polygon zones (archetype "poly") and polygon tests
+-- ---------------------------------------------------------------------------------------------
+
+local function snapv(v, k) return math.floor(v * k + 0.5) / k end
+
+-- A yaw in [0, 360): 0 faces +z, positive turns toward +x (the API's yaw convention).
+local function norm_rot(r)
+  if type(r) ~= "number" then return 0 end
+  r = r % 360
+  if r < 1e-9 or r > 360 - 1e-9 then return 0 end
+  return r
+end
+local function zone_rot(z) if z.archetype == "poly" then return 0 end return norm_rot(z.rot) end
+local function same_rot(a, b) local d = math.abs(a - b) return d < 1e-6 or math.abs(d - 360) < 1e-6 end
+
+-- World = R(rot) . local about the world origin; local = R(-rot) . world (plan x, z).
+local function to_world(rot, x, z)
+  if rot == 0 then return x, z end
+  local r = math.rad(rot)
+  local c, s = math.cos(r), math.sin(r)
+  return x * c + z * s, -x * s + z * c
+end
+local function to_local(rot, x, z)
+  if rot == 0 then return x, z end
+  local r = math.rad(rot)
+  local c, s = math.cos(r), math.sin(r)
+  return x * c - z * s, x * s + z * c
+end
+-- The yaw of a plan direction (dx, dz) in degrees (0 = +z, 90 = +x).
+local function yaw_of(dx, dz) return math.deg(math.atan2(dx, dz)) end
+local function ang_diff(a, b) local d = math.abs(norm_rot(a) - norm_rot(b)) return math.min(d, 360 - d) end
+
+local function area2(p)
+  local s = 0
+  for i = 1, #p do local a, b = p[i], p[i % #p + 1] s = s + a[1] * b[2] - b[1] * a[2] end
+  return s / 2
+end
+local function ccw(p)
+  if area2(p) >= 0 then return p end
+  local r = {}
+  for i = #p, 1, -1 do r[#r + 1] = p[i] end
+  return r
+end
+local function bbox(p)
+  local x0, z0, x1, z1 = math.huge, math.huge, -math.huge, -math.huge
+  for _, q in ipairs(p) do x0, z0, x1, z1 = math.min(x0, q[1]), math.min(z0, q[2]), math.max(x1, q[1]), math.max(z1, q[2]) end
+  return x0, z0, x1, z1
+end
+local function inside(p, x, z) return SP.inside(p, x, z) end
+
+-- The world outline of a poly zone: its points as {x, z} in the order given (edge i runs from point i to point
+-- i + 1), on the 1/16 m grid; nil when the outline is not a list of 3+ points.
+local function poly_of(z)
+  local o = z.outline
+  if type(o) ~= "table" or #o < 3 then return nil end
+  local out = {}
+  for i, q in ipairs(o) do
+    if type(q) ~= "table" then return nil end
+    local x, zz = q[1] or q.x, q[2] or q.z
+    if type(x) ~= "number" or type(zz) ~= "number" then return nil end
+    out[i] = { snapv(x, 16), snapv(zz, 16) }
+  end
+  return out
 end
 
-local function zone_area(z) return z.size[1] * z.size[2] end
+-- +1 when a poly zone's outline runs counter-clockwise, -1 clockwise (its edges' outward side follows).
+local function poly_sign(p) return area2(p) >= 0 and 1 or -1 end
+
+-- Edge i of a polygon: start, end, unit direction, length and outward normal.
+local function poly_edge(p, i)
+  local a, b = p[i], p[i % #p + 1]
+  local ex, ez = b[1] - a[1], b[2] - a[2]
+  local L = math.sqrt(ex * ex + ez * ez)
+  local tx, tz = ex / L, ez / L
+  local s = poly_sign(p)
+  return a, b, { tx, tz }, L, { s * tz, -s * tx }
+end
+
+-- The centre of a rectangle zone's plan in its own frame: R(-rot) . pos, on the 1/16 m grid (pos itself at rot 0).
+local function local_centre(z)
+  local rot = zone_rot(z)
+  if rot == 0 then return z.pos[1], z.pos[3] end
+  local x, zz = to_local(rot, z.pos[1], z.pos[3])
+  return snapv(x, 16), snapv(zz, 16)
+end
+
+-- A zone's plan rectangle in its own frame (a poly zone: its outline's world bounds).
+local function rect_of(z)
+  if z.archetype == "poly" then
+    local p = poly_of(z)
+    if p then return bbox(p) end
+  end
+  local w, d = z.size[1], z.size[2]
+  local cx, cz = local_centre(z)
+  return cx - w / 2, cz - d / 2, cx + w / 2, cz + d / 2
+end
+
+local function zone_area(z)
+  if z.archetype == "poly" then
+    local p = poly_of(z)
+    if p then return math.abs(area2(p)) end
+  end
+  return z.size[1] * z.size[2]
+end
+
+-- A zone's plan in world coordinates (counter-clockwise): the turned rectangle, or a poly zone's outline.
+local function zone_poly(z)
+  if z.archetype == "poly" then
+    local p = poly_of(z)
+    if p then return ccw(p) end
+  end
+  local x0, z0, x1, z1 = rect_of(z)
+  local rot = zone_rot(z)
+  local out = {}
+  for i, q in ipairs({ { x0, z0 }, { x1, z0 }, { x1, z1 }, { x0, z1 } }) do
+    local x, zz = to_world(rot, q[1], q[2])
+    out[i] = { x, zz }
+  end
+  return out
+end
+
+-- Segment tests in the plan.
+local function cross2(o, a, b) return (a[1] - o[1]) * (b[2] - o[2]) - (a[2] - o[2]) * (b[1] - o[1]) end
+local function seg_hit(a, b, c, d)
+  local d1, d2, d3, d4 = cross2(a, b, c), cross2(a, b, d), cross2(c, d, a), cross2(c, d, b)
+  if ((d1 > 1e-12 and d2 < -1e-12) or (d1 < -1e-12 and d2 > 1e-12)) and ((d3 > 1e-12 and d4 < -1e-12) or (d3 < -1e-12 and d4 > 1e-12)) then return true end
+  return false
+end
+local function pt_seg(p, a, b)
+  local ex, ez = b[1] - a[1], b[2] - a[2]
+  local L2 = ex * ex + ez * ez
+  local t = L2 > 0 and clamp(((p[1] - a[1]) * ex + (p[2] - a[2]) * ez) / L2, 0, 1) or 0
+  local x, z = a[1] + ex * t - p[1], a[2] + ez * t - p[2]
+  return math.sqrt(x * x + z * z)
+end
+local function seg_seg(a, b, c, d)
+  if seg_hit(a, b, c, d) then return 0 end
+  return math.min(pt_seg(a, c, d), pt_seg(b, c, d), pt_seg(c, a, b), pt_seg(d, a, b))
+end
+
+-- The plan distance between two polygons (0 when they overlap or touch).
+local function poly_dist(A, B, limit)
+  local ax0, az0, ax1, az1 = bbox(A)
+  local bx0, bz0, bx1, bz1 = bbox(B)
+  local gx, gz = math.max(bx0 - ax1, ax0 - bx1, 0), math.max(bz0 - az1, az0 - bz1, 0)
+  local far = math.sqrt(gx * gx + gz * gz)
+  if far > (limit or 50) then return far end
+  local best = math.huge
+  for i = 1, #A do
+    local a, b = A[i], A[i % #A + 1]
+    for j = 1, #B do
+      local d = seg_seg(a, b, B[j], B[j % #B + 1])
+      if d < best then best = d end
+      if best <= 0 then return 0 end
+    end
+  end
+  -- no edges meet: one polygon holds the other, or they are apart
+  if inside(B, A[1][1], A[1][2]) or inside(A, B[1][1], B[1][2]) then return 0 end
+  return best
+end
+
+-- A polygon's plan bounds as a box {x0, z0, x1, z1}.
+local function bbox_box(p) local x0, z0, x1, z1 = bbox(p) return { x0, z0, x1, z1 } end
+
+-- The plan gap between two boxes (0 when they overlap).
+local function box_gap(a, b)
+  local gx, gz = math.max(b[1] - a[3], a[1] - b[3], 0), math.max(b[2] - a[4], a[2] - b[4], 0)
+  return math.sqrt(gx * gx + gz * gz)
+end
+
+-- True when two polygons come closer than m (poly_dist(A, B, m) < m, without measuring what is far): boxes and
+-- edge pairs whose boxes keep m apart are passed over. ba / bb: the polygons' boxes when known.
+local function poly_near(A, B, m, ba, bb)
+  ba = ba or bbox_box(A)
+  bb = bb or bbox_box(B)
+  if box_gap(ba, bb) >= m + 1e-9 then return false end
+  local nb = #B
+  local m2 = m + 1e-9
+  for i = 1, #A do
+    local a, b = A[i], A[i % #A + 1]
+    local ex0, ez0, ex1, ez1 = math.min(a[1], b[1]), math.min(a[2], b[2]), math.max(a[1], b[1]), math.max(a[2], b[2])
+    if not (ex0 > bb[3] + m2 or ex1 < bb[1] - m2 or ez0 > bb[4] + m2 or ez1 < bb[2] - m2) then
+      for j = 1, nb do
+        local c, d = B[j], B[j % nb + 1]
+        local gx = math.max(math.min(c[1], d[1]) - ex1, ex0 - math.max(c[1], d[1]), 0)
+        local gz = math.max(math.min(c[2], d[2]) - ez1, ez0 - math.max(c[2], d[2]), 0)
+        if gx * gx + gz * gz < m2 * m2 and seg_seg(a, b, c, d) < m then return true end
+      end
+    end
+  end
+  if inside(B, A[1][1], A[1][2]) or inside(A, B[1][1], B[1][2]) then return true end
+  return false
+end
+
+-- The intervals of the plan segment a -> b (as distances from a) that lie inside polygon P.
+local function seg_inside(P, a, b)
+  local ex, ez = b[1] - a[1], b[2] - a[2]
+  local L = math.sqrt(ex * ex + ez * ez)
+  if L < 1e-9 then return {} end
+  local ts = { 0, L }
+  for i = 1, #P do
+    local c, d = P[i], P[i % #P + 1]
+    local den = ex * (d[2] - c[2]) - ez * (d[1] - c[1])
+    if math.abs(den) > 1e-12 then
+      local t = ((c[1] - a[1]) * (d[2] - c[2]) - (c[2] - a[2]) * (d[1] - c[1])) / den
+      local u = ((c[1] - a[1]) * ez - (c[2] - a[2]) * ex) / den
+      if t > 0 and t < 1 and u >= 0 and u <= 1 then ts[#ts + 1] = t * L end
+    end
+  end
+  table.sort(ts)
+  local out = {}
+  for i = 1, #ts - 1 do
+    local m = (ts[i] + ts[i + 1]) / 2
+    if ts[i + 1] - ts[i] > 1e-6 and inside(P, a[1] + ex / L * m, a[2] + ez / L * m) then
+      if #out > 0 and math.abs(out[#out][2] - ts[i]) < 1e-6 then out[#out][2] = ts[i + 1] else out[#out + 1] = { ts[i], ts[i + 1] } end
+    end
+  end
+  return out
+end
+
+-- The distance from a plan point to a polygon's boundary.
+local function edge_dist(P, x, z)
+  local best = math.huge
+  for i = 1, #P do best = math.min(best, pt_seg({ x, z }, P[i], P[i % #P + 1])) end
+  return best
+end
+
+-- True when a polygon is simple (no two non-adjacent edges touch or cross).
+local function simple(P)
+  local n = #P
+  for i = 1, n do
+    for j = i + 2, n do
+      if not (i == 1 and j == n) then
+        if seg_seg(P[i], P[i % n + 1], P[j], P[j % n + 1]) < 1e-6 then return false end
+      end
+    end
+  end
+  return true
+end
 
 local function has_level(z, off)
   for _, l in ipairs(z.levels or { 0 }) do if math.abs(l - off) < 0.01 then return true end end
@@ -236,7 +475,7 @@ local function split_ranges(z, side, off, side_walls)
   if not side_walls or side == up or side == OPP[up] then return {} end
   local c = (z.chamfer or 0) + 0.75
   local lo, hi = wall_span(z, side)
-  local mid = (up == "+x" or up == "-x") and z.pos[1] or z.pos[3]
+  local mid = (up == "+x" or up == "-x") and (x0 + x1) / 2 or (z0 + z1) / 2
   local positive_up = (up == "+x" or up == "+z")
   local low_is_lo = positive_up
   if off == 0 then
@@ -324,7 +563,7 @@ def("courtyard", {
 
 def("pit", {
   class = "indoor", min = { 22, 26 }, max = { 34, 34 }, levels = { 0 }, loops = 1, chamfer = 3,
-  summary = "A room around a 4 m pit with a plank bridge across it and stairs down on both sides.",
+  summary = "A room around a 10 m chasm with a plank bridge across it and a walkway round its rim (no way down: the bridge is the short way over).",
   height = function() return 8 end,
 })
 
@@ -496,6 +735,14 @@ def("overlook", {
   height = function() return 10 end,
 })
 
+-- Traced spaces --------------------------------------------------------------------------------
+
+def("poly", {
+  class = "traced", min = { 4, 4 }, max = { 64, 64 }, levels = { 0 }, loops = 0, chamfer = 0, repeatable = true, poly = true,
+  summary = "A traced space of any simple polygon plan: zone.outline lists 3-64 world points {x, z} (either winding; pos = {x, floor, z}, size and pos x/z follow from the outline). A room with a raised ceiling bay when it is big enough, or a yard under the sky (zone.sky = true); low cover on its clear floor. Free links attach on any edge (a_side / b_side = the edge's number: edge i runs from point i to point i + 1); join it to a neighbour to make one space.",
+  height = function(z) if z.sky then return 10 end return clamp(std_height(zone_area(z)), 4, 9) end,
+})
+
 -- ---------------------------------------------------------------------------------------------
 -- Link geometry (shared by the generator, the checker and the builder)
 -- ---------------------------------------------------------------------------------------------
@@ -516,6 +763,8 @@ end
 
 -- Geometry between two zones: the separating axis, the walls and their shared span.
 local function link_frame(za, zb)
+  if za.archetype == "poly" or zb.archetype == "poly" then return nil, "a poly zone takes free links only" end
+  if not same_rot(zone_rot(za), zone_rot(zb)) then return nil, "their rot differs" end
   local ax0, az0, ax1, az1 = rect_of(za)
   local bx0, bz0, bx1, bz1 = rect_of(zb)
   local gx = math.max(bx0 - ax1, ax0 - bx1)
@@ -535,19 +784,43 @@ local function link_frame(za, zb)
   return f
 end
 
+-- A zone's plan centre in world coordinates.
+local function centre_of(z)
+  if z.archetype == "poly" then
+    local p = poly_of(z)
+    if p then local x0, z0, x1, z1 = bbox(p) return (x0 + x1) / 2, (z0 + z1) / 2 end
+  end
+  return z.pos[1], z.pos[3]
+end
+
+-- The wall of a rectangle zone that faces another zone best (its own sides).
+local function facing_side(z, other)
+  local ox, oz = centre_of(other)
+  local lx, lz = to_local(zone_rot(z), ox, oz)
+  local cx, cz = local_centre(z)
+  local dx, dz = (lx - cx) / math.max(1, z.size[1]), (lz - cz) / math.max(1, z.size[2])
+  if math.abs(dx) > math.abs(dz) then return dx > 0 and "+x" or "-x" end
+  return dz > 0 and "+z" or "-z"
+end
+
 -- The floor a link meets on zone z (joined to other) when it gives no a_y / b_y: the zone's floor, or a graded
--- road's top floor (pos.y + rise) at its exit wall.
-local function end_floor(z, other)
+-- road's top floor (pos.y + rise) at its exit wall (side: the wall the link leaves by, when the link names it).
+local function end_floor(z, other, side)
   if z.archetype == "road" and other and type(z.params) == "table" and (z.params.rise or 0) ~= 0 then
-    local f = link_frame(z, other)
-    if f and f.side_a == heading_of(z) then return z.pos[2] + z.params.rise end
+    local s = side
+    if s == nil then
+      local f = link_frame(z, other)
+      if f then s = f.side_a elseif other.pos and other.size then s = facing_side(z, other) end
+    end
+    if s == heading_of(z) then return z.pos[2] + z.params.rise end
   end
   return z.pos[2]
 end
 
 -- The port floors of a link on its two zones: a_y / b_y, else end_floor.
 local function link_ys(l, za, zb)
-  return l.a_y or end_floor(za, zb), l.b_y or end_floor(zb, za)
+  if l.type == "join" then return za.pos[2], zb.pos[2] end
+  return l.a_y or end_floor(za, zb, l.a_side), l.b_y or end_floor(zb, za, l.b_side)
 end
 
 -- How far apart two zones must be for a link of this type (the rise from the port floors; without zones, from
@@ -593,112 +866,1023 @@ local function port_bands(l, za, zb, graph)
   return { ay, ay + H }, { by, by + H }
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- Free links and joins (shared by the resolver, the checker, the preview and the builder)
+-- ---------------------------------------------------------------------------------------------
+
+-- A link that asks to be routed freely: a path, or a side or point for one of its ports.
+local function wants_free(l) return l.path ~= nil or l.a_side ~= nil or l.b_side ~= nil or l.a_at ~= nil or l.b_at ~= nil end
+
+-- The vertical extent a zone fills: floor to ceiling, with sunken courts, pits and a finale's pit below, and an
+-- open-air platform's underside and masts.
+local function zone_band(z)
+  local A = LA[z.archetype]
+  if A and A.open_air then return z.pos[2] - 14, z.pos[2] + 30 end
+  local lo, hi = z.pos[2], z.pos[2] + (z.height or 6)
+  if A and A.extra_levels then for _, off in ipairs(A.extra_levels(z)) do lo = math.min(lo, z.pos[2] + off) end end
+  if z.archetype == "pit" then lo = z.pos[2] - DATA.pit_depth elseif z.archetype == "finale" then lo = z.pos[2] - 2.5 end
+  if z.archetype == "road" and type(z.params) == "table" and type(z.params.rise) == "number" then
+    if z.params.rise > 0 then hi = hi + z.params.rise else lo = lo + z.params.rise end
+  end
+  return lo, hi
+end
+
+-- The local plan point of a rectangle zone's wall at along-wall coordinate c.
+local function wall_point(z, side, c)
+  local w = wall_coord(z, side)
+  if side == "+x" or side == "-x" then return { w, c } end
+  return { c, w }
+end
+
+-- The angle in degrees between two plan directions (unit vectors).
+local function angle_of(u, v) return math.deg(math.acos(clamp(u[1] * v[1] + u[2] * v[2], -1, 1))) end
+
+-- A polyline of half width hw as mitred quads: each joint's left (L) and right (R) point is computed once on the
+-- 1/1024 m grid and shared by the segments meeting there. straight[i] = {s0, s1}: the stretch of segment i (metres
+-- from its start point) where it has its full width. Returns nil and the reason when a segment is too short for
+-- the turns at its ends.
+local function mitre(pts, hw)
+  local n = #pts
+  local dirs, lens = {}, {}
+  for i = 1, n - 1 do
+    local dx, dz = pts[i + 1][1] - pts[i][1], pts[i + 1][2] - pts[i][2]
+    local L = math.sqrt(dx * dx + dz * dz)
+    if L < 1e-6 then return nil, "two points of its path coincide" end
+    dirs[i], lens[i] = { dx / L, dz / L }, L
+  end
+  local Lp, Rp, over, turns = {}, {}, {}, {}
+  for i = 1, n do
+    local p = pts[i]
+    if i == 1 or i == n then
+      local d = dirs[(i == 1) and 1 or (n - 1)]
+      Lp[i] = { p[1] - d[2] * hw, p[2] + d[1] * hw }
+      Rp[i] = { p[1] + d[2] * hw, p[2] - d[1] * hw }
+      over[i], turns[i] = 0, 0
+    else
+      local d1, d2 = dirs[i - 1], dirs[i]
+      local th = math.acos(clamp(d1[1] * d2[1] + d1[2] * d2[2], -1, 1))
+      turns[i] = math.deg(th)
+      if turns[i] > 179 then return nil, "it turns back on itself at path point " .. (i - 1) end
+      local mx, mz = -d1[2] - d2[2], d1[1] + d2[1]
+      local ml = math.sqrt(mx * mx + mz * mz)
+      mx, mz = mx / ml, mz / ml
+      local k = hw / (mx * -d2[2] + mz * d2[1])
+      Lp[i] = { p[1] + mx * k, p[2] + mz * k }
+      Rp[i] = { p[1] - mx * k, p[2] - mz * k }
+      over[i] = hw * math.tan(th / 2)
+    end
+    Lp[i] = { snapv(Lp[i][1], 1024), snapv(Lp[i][2], 1024) }
+    Rp[i] = { snapv(Rp[i][1], 1024), snapv(Rp[i][2], 1024) }
+  end
+  local M = { pts = pts, dirs = dirs, lens = lens, L = Lp, R = Rp, turns = turns, quads = {}, straight = {}, hw = hw, length = 0 }
+  for i = 1, n - 1 do
+    local d = dirs[i]
+    local dl = (Lp[i + 1][1] - Lp[i][1]) * d[1] + (Lp[i + 1][2] - Lp[i][2]) * d[2]
+    local dr = (Rp[i + 1][1] - Rp[i][1]) * d[1] + (Rp[i + 1][2] - Rp[i][2]) * d[2]
+    if dl < 0.25 or dr < 0.25 then
+      return nil, "segment " .. i .. " (" .. fmt(lens[i]) .. " m) is too short for the turns at its ends (it needs " ..
+        fmt(over[i] + over[i + 1] + 0.25) .. " m)"
+    end
+    M.quads[i] = ccw({ Rp[i], Rp[i + 1], Lp[i + 1], Lp[i] })
+    M.straight[i] = { over[i], lens[i] - over[i + 1] }
+    M.length = M.length + lens[i]
+  end
+  return M
+end
+
+-- Segment k of a mitred polyline shortened by a metres at its start and b at its end (its plan quad).
+local function trim_quad(M, k, a, b)
+  local d = M.dirs[k]
+  local function mv(p, s) return { p[1] + d[1] * s, p[2] + d[2] * s } end
+  return ccw({ mv(M.R[k], a), mv(M.R[k + 1], -b), mv(M.L[k + 1], -b), mv(M.L[k], a) })
+end
+
+-- The left and right points of a mitred polyline's segment k at s metres from its start point (on its side lines).
+local function side_points(M, k, s)
+  local d = M.dirs[k]
+  local function on(A, B)
+    local a = (A[1] - M.pts[k][1]) * d[1] + (A[2] - M.pts[k][2]) * d[2]
+    local b = (B[1] - M.pts[k][1]) * d[1] + (B[2] - M.pts[k][2]) * d[2]
+    local f = (s - a) / (b - a)
+    return { A[1] + (B[1] - A[1]) * f, A[2] + (B[2] - A[2]) * f }
+  end
+  return on(M.L[k], M.L[k + 1]), on(M.R[k], M.R[k + 1])
+end
+
 -- Resolves every link: frame, centre along the walls, ports. With rng, missing offsets are chosen at random in
 -- the free span (the generator); without, the centre of the widest free span (deterministic builds of edited
--- graphs). Returns plan = {zones, links[i] = {link, za, zb, f, c, W, ba, bb}, ports[zone_id] = {...}, errors}.
-local function resolve(graph, rng, keep)
-  local plan = { zones = {}, links = {}, ports = {}, errors = {} }
+-- graphs). Joins are resolved first (their spans follow from the plan), then the classic links (two facing walls
+-- of rectangle zones of one rot), then the free links (any heading, routed clear of the zones and the links
+-- resolved before them). Returns plan = {zones, links[i] = {link, za, zb, mode ("classic", "free" or "join"),
+-- ok, f, c, W, ba, bb, pa, pb, side_a, side_b, pts, M ...}, ports[zone_id] = {...}, foot, errors}.
+-- resolver(graph, rng, keep) is the resolver's state with its link routines (X.join, X.classic, X.free, X.one);
+-- resolve runs it over the graph's links; route_ctx / route_link / route_drop route single links against it.
+local function resolver(graph, rng, keep)
+  local plan = { zones = {}, links = {}, ports = {}, errors = {}, foot = {}, wpoly = {} }
   for _, z in ipairs(graph.zones or {}) do
     if type(z) == "table" and z.id ~= nil then plan.zones[z.id] = z plan.ports[z.id] = {} end
   end
+  -- the wall spans in use per zone and side (a rectangle zone's "+x" ..., a poly zone's edge number)
   local used = {}
   local function used_of(id, side)
-    local k = id .. side
-    used[k] = used[k] or {}
-    return used[k]
+    local u = used[id]
+    if not u then u = {} used[id] = u end
+    local s = u[side]
+    if not s then s = {} u[side] = s end
+    return s
   end
   local function err(l, rule, msg)
     plan.errors[#plan.errors + 1] = { severity = "error", rule = rule, link = l.id, message = "link " .. tostring(l.id) .. ": " .. msg }
   end
-  for i, l in ipairs(graph.links or {}) do
-    local za, zb = plan.zones[l.a], plan.zones[l.b]
-    local P = { link = l, za = za, zb = zb, index = i }
-    plan.links[i] = P
-    if za and zb and za ~= zb then
-      local f, why = link_frame(za, zb)
-      if not f then
-        err(l, "geometry", "zones " .. za.id .. " and " .. zb.id .. " cannot be joined: " .. why .. ".")
+  local wbox = {}
+  local function wpoly(z)
+    local p = plan.wpoly[z.id]
+    if not p then p = zone_poly(z) plan.wpoly[z.id] = p wbox[z.id] = bbox_box(p) end
+    return p, wbox[z.id]
+  end
+  local function add_port(z, p) table.insert(plan.ports[z.id], p) return p end
+
+  -- Classic links ---------------------------------------------------------------------------------
+  -- final = false: a free-method graph tries the classic geometry first and routes the link freely when it fails.
+  local function classic(P, final)
+    local l, za, zb = P.link, P.za, P.zb
+    local f, why = link_frame(za, zb)
+    if not f then
+      if final then err(l, "geometry", "zones " .. za.id .. " and " .. zb.id .. " cannot be joined: " .. why .. ".") end
+      return false
+    end
+    local W = port_width(l)
+    local need = gap_need(l, za, zb)
+    if f.gap < need - EPS then
+      if not final then return false end
+      err(l, "geometry", "the " .. fmt(f.gap) .. " m gap between " .. za.id .. " and " .. zb.id .. " is too short for a " .. l.type ..
+        " (needs " .. fmt(need) .. " m).")
+    end
+    local oa, ob = port_offsets(l, za, zb)
+    local ra = ranges_of(za, f.side_a, oa)
+    local rb = ranges_of(zb, f.side_b, ob)
+    local free = intersect(intersect(ra, rb), { { f.lo, f.hi } })
+    local ba, bb = port_bands(l, za, zb, graph)
+    for _, s in ipairs(used_of(za.id, f.side_a)) do
+      if s.y0 < ba[2] + 0.5 and s.y1 > ba[1] - 0.5 then free = subtract(free, s.lo - 1.5, s.hi + 1.5) end
+    end
+    for _, s in ipairs(used_of(zb.id, f.side_b)) do
+      if s.y0 < bb[2] + 0.5 and s.y1 > bb[1] - 0.5 then free = subtract(free, s.lo - 1.5, s.hi + 1.5) end
+    end
+    -- Centre positions: each free span shrunk by half the width.
+    local centres = {}
+    for _, s in ipairs(free) do
+      if s[2] - s[1] >= W - EPS then centres[#centres + 1] = { s[1] + W / 2, s[2] - W / 2 } end
+    end
+    local c = nil
+    if l.offset ~= nil then
+      for _, s in ipairs(centres) do if l.offset >= s[1] - EPS and l.offset <= s[2] + EPS then c = l.offset end end
+      if c == nil and not rng then
+        if not final then return false end
+        err(l, "geometry", "its offset " .. fmt(l.offset) .. " does not fit a free " .. fmt(W) .. " m span on both walls (" ..
+          za.id .. " " .. f.side_a .. " at " .. fmt(oa) .. " m, " .. zb.id .. " " .. f.side_b .. " at " .. fmt(ob) .. " m).")
+      end
+    end
+    if c == nil and #centres > 0 then
+      if rng then
+        -- l.prefer = -1 / +1 keeps the opening in the low / high half of the shared span when it can
+        local pool = centres
+        if l.prefer then
+          local mid = (f.lo + f.hi) / 2
+          local half = {}
+          for _, s in ipairs(centres) do
+            local lo, hi = s[1], s[2]
+            if l.prefer < 0 then hi = math.min(hi, mid - 1) else lo = math.max(lo, mid + 1) end
+            if hi >= lo then half[#half + 1] = { lo, hi } end
+          end
+          if #half > 0 then pool = half end
+        end
+        local s = pool[rng.int(1, #pool)]
+        c = q4(rng.range(s[1], s[2]))
+        c = clamp(c, s[1], s[2])
       else
-        P.f = f
-        local W = port_width(l)
-        P.W = W
-        local need = gap_need(l, za, zb)
-        if f.gap < need - EPS then
-          err(l, "geometry", "the " .. fmt(f.gap) .. " m gap between " .. za.id .. " and " .. zb.id .. " is too short for a " .. l.type ..
-            " (needs " .. fmt(need) .. " m).")
-        end
-        local oa, ob = port_offsets(l, za, zb)
-        local ra = ranges_of(za, f.side_a, oa)
-        local rb = nil
-        if l.type == "drop" then rb = ranges_of(zb, f.side_b, ob) else rb = ranges_of(zb, f.side_b, ob) end
-        local free = intersect(intersect(ra, rb), { { f.lo, f.hi } })
-        P.ba, P.bb = port_bands(l, za, zb, graph)
-        for _, s in ipairs(used_of(za.id, f.side_a)) do
-          if s.y0 < P.ba[2] + 0.5 and s.y1 > P.ba[1] - 0.5 then free = subtract(free, s.lo - 1.5, s.hi + 1.5) end
-        end
-        for _, s in ipairs(used_of(zb.id, f.side_b)) do
-          if s.y0 < P.bb[2] + 0.5 and s.y1 > P.bb[1] - 0.5 then free = subtract(free, s.lo - 1.5, s.hi + 1.5) end
-        end
-        -- Centre positions: each free span shrunk by half the width.
-        local centres = {}
-        for _, s in ipairs(free) do
-          if s[2] - s[1] >= W - EPS then centres[#centres + 1] = { s[1] + W / 2, s[2] - W / 2 } end
-        end
-        local c = nil
-        if l.offset ~= nil then
-          for _, s in ipairs(centres) do if l.offset >= s[1] - EPS and l.offset <= s[2] + EPS then c = l.offset end end
-          if c == nil and not rng then
-            err(l, "geometry", "its offset " .. fmt(l.offset) .. " does not fit a free " .. fmt(W) .. " m span on both walls (" ..
-              za.id .. " " .. f.side_a .. " at " .. fmt(oa) .. " m, " .. zb.id .. " " .. f.side_b .. " at " .. fmt(ob) .. " m).")
-          end
-        end
-        if c == nil and #centres > 0 then
-          if rng then
-            -- l.prefer = -1 / +1 keeps the opening in the low / high half of the shared span when it can
-            local pool = centres
-            if l.prefer then
-              local mid = (f.lo + f.hi) / 2
-              local half = {}
-              for _, s in ipairs(centres) do
-                local lo, hi = s[1], s[2]
-                if l.prefer < 0 then hi = math.min(hi, mid - 1) else lo = math.max(lo, mid + 1) end
-                if hi >= lo then half[#half + 1] = { lo, hi } end
-              end
-              if #half > 0 then pool = half end
-            end
-            local s = pool[rng.int(1, #pool)]
-            c = q4(rng.range(s[1], s[2]))
-            c = clamp(c, s[1], s[2])
-          else
-            local best, bw = nil, -1
-            for _, s in ipairs(centres) do if s[2] - s[1] > bw then best, bw = s, s[2] - s[1] end end
-            c = q4((best[1] + best[2]) / 2)
-            c = clamp(c, best[1], best[2])
-          end
-        end
-        if c == nil then
-          if l.offset == nil or rng then
-            err(l, "geometry", "no free " .. fmt(W) .. " m span on both walls (" .. za.id .. " " .. f.side_a .. " at level +" .. fmt(oa) ..
-              " m, " .. zb.id .. " " .. f.side_b .. " at level +" .. fmt(ob) .. " m); move the zones so their walls overlap more, or change the levels.")
-          end
-        else
-          P.c = c
-          if keep then l.offset = c end
-          local ua, ub = used_of(za.id, f.side_a), used_of(zb.id, f.side_b)
-          ua[#ua + 1] = { lo = c - W / 2, hi = c + W / 2, y0 = P.ba[1], y1 = P.ba[2] }
-          ub[#ub + 1] = { lo = c - W / 2, hi = c + W / 2, y0 = P.bb[1], y1 = P.bb[2] }
-          local fya, fyb = link_ys(l, za, zb)
-          local pa = { side = f.side_a, lo = c - W / 2, hi = c + W / 2, y0 = P.ba[1], y1 = P.ba[2], link = l, wall = f.wa, floor = fya }
-          local pb = { side = f.side_b, lo = c - W / 2, hi = c + W / 2, y0 = P.bb[1], y1 = P.bb[2], link = l, wall = f.wb, floor = fyb }
-          if l.type == "drop" then pb.drop_to = fyb end
-          table.insert(plan.ports[za.id], pa)
-          table.insert(plan.ports[zb.id], pb)
-          P.pa, P.pb = pa, pb
+        local best, bw = nil, -1
+        for _, s in ipairs(centres) do if s[2] - s[1] > bw then best, bw = s, s[2] - s[1] end end
+        c = q4((best[1] + best[2]) / 2)
+        c = clamp(c, best[1], best[2])
+      end
+    end
+    if c == nil then
+      if not final then return false end
+      P.f, P.W, P.ba, P.bb = f, W, ba, bb
+      if l.offset == nil or rng then
+        err(l, "geometry", "no free " .. fmt(W) .. " m span on both walls (" .. za.id .. " " .. f.side_a .. " at level +" .. fmt(oa) ..
+          " m, " .. zb.id .. " " .. f.side_b .. " at level +" .. fmt(ob) .. " m); move the zones so their walls overlap more, or change the levels.")
+      end
+      return false
+    end
+    -- the passage between the two walls keeps a wall's thickness from every other zone
+    if f.gap > 1.25 then
+      local a, b = math.min(f.wa, f.wb), math.max(f.wa, f.wb)
+      local q = (f.axis == "x") and { { a, c - W / 2 }, { b, c - W / 2 }, { b, c + W / 2 }, { a, c + W / 2 } } or
+        { { c - W / 2, a }, { c + W / 2, a }, { c + W / 2, b }, { c - W / 2, b } }
+      local rot = zone_rot(za)
+      for i, p in ipairs(q) do local x, zz = to_world(rot, p[1], p[2]) q[i] = { x, zz } end
+      local qb = bbox_box(q)
+      for _, z in ipairs(graph.zones) do
+        if z ~= za and z ~= zb and type(z) == "table" and z.id ~= nil and poly_near(q, wpoly(z), DATA.min_wall - 0.01, qb, wbox[z.id]) then
+          if not final then return false end
+          err(l, "geometry", "its passage between " .. za.id .. " and " .. zb.id .. " runs through zone " .. z.id .. " or within " .. fmt(DATA.min_wall) ..
+            " m of it; move the zones, or give the link a path around it.")
+          return false
         end
       end
     end
+    P.f, P.W, P.ba, P.bb = f, W, ba, bb
+    P.mode, P.ok, P.c = "classic", true, c
+    P.side_a, P.side_b = f.side_a, f.side_b
+    if keep then l.offset = c end
+    local ua, ub = used_of(za.id, f.side_a), used_of(zb.id, f.side_b)
+    ua[#ua + 1] = { lo = c - W / 2, hi = c + W / 2, y0 = P.ba[1], y1 = P.ba[2] }
+    ub[#ub + 1] = { lo = c - W / 2, hi = c + W / 2, y0 = P.bb[1], y1 = P.bb[2] }
+    local fya, fyb = link_ys(l, za, zb)
+    local pa = { side = f.side_a, lo = c - W / 2, hi = c + W / 2, y0 = P.ba[1], y1 = P.ba[2], link = l, wall = f.wa, floor = fya,
+      pt = wall_point(za, f.side_a, c), nrm = { DIRV[f.side_a][1], DIRV[f.side_a][2] } }
+    local pb = { side = f.side_b, lo = c - W / 2, hi = c + W / 2, y0 = P.bb[1], y1 = P.bb[2], link = l, wall = f.wb, floor = fyb,
+      pt = wall_point(zb, f.side_b, c), nrm = { DIRV[f.side_b][1], DIRV[f.side_b][2] } }
+    if l.type == "drop" then pb.drop_to = fyb end
+    table.insert(plan.ports[za.id], pa)
+    table.insert(plan.ports[zb.id], pb)
+    P.pa, P.pb = pa, pb
+    -- its plan footprint in world coordinates (free links keep clear of it)
+    local a, b = math.min(f.wa, f.wb), math.max(f.wa, f.wb)
+    local x0, z0, x1, z1
+    if f.axis == "x" then x0, x1, z0, z1 = a, b, c - W / 2, c + W / 2 else x0, x1, z0, z1 = c - W / 2, c + W / 2, a, b end
+    local rot = zone_rot(za)
+    local poly = {}
+    for i, q in ipairs({ { x0, z0 }, { x1, z0 }, { x1, z1 }, { x0, z1 } }) do
+      local x, zz = to_world(rot, q[1], q[2])
+      poly[i] = { x, zz }
+    end
+    local lo = math.min(fya, fyb)
+    if l.type == "bridge" and graph.class ~= "open_air" then lo = lo - (l.depth or DATA.chasm_depth) end
+    plan.foot[#plan.foot + 1] = { poly = poly, band = { lo, math.max(fya, fyb) + link_height(l, graph) }, link = l, id = l.id }
+    return true
   end
-  return plan
+
+  -- Joins -----------------------------------------------------------------------------------------
+  local function join(P)
+    local l, za, zb = P.link, P.za, P.zb
+    P.mode = "join"
+    local names = za.id .. " and " .. zb.id
+    if math.abs(za.pos[2] - zb.pos[2]) > DATA.max_step + EPS then
+      err(l, "level", "the join between " .. names .. " has floors " .. fmt(math.abs(za.pos[2] - zb.pos[2])) ..
+        " m apart; joined zones are one space (floors within " .. fmt(DATA.max_step) .. " m).")
+      return
+    end
+    local bot = math.max(za.pos[2], zb.pos[2])
+    local top = math.min(za.pos[2] + (za.height or 6), zb.pos[2] + (zb.height or 6))
+    P.y0, P.y1 = bot, top
+    P.ext, P.ext_quads = nil, {}
+    local function narrow(w)
+      err(l, "geometry", "the join between " .. names .. " shares only " .. fmt(w) .. " m of boundary (an opening of at least 3 m).")
+    end
+    local function apart()
+      err(l, "geometry", "zones " .. names .. " do not touch or overlap along one wall (a join opens two zones that touch or overlap into one space; zones that are not joined stand " ..
+        fmt(DATA.min_wall) .. " m apart).")
+    end
+    local ra, rb = za.archetype ~= "poly", zb.archetype ~= "poly"
+    if ra and rb then
+      if not same_rot(zone_rot(za), zone_rot(zb)) then
+        err(l, "geometry", "the join between " .. names .. " needs both rectangle zones at one rot, wall to wall (trace one as a poly zone to join across frames).")
+        return
+      end
+      local ax0, az0, ax1, az1 = rect_of(za)
+      local bx0, bz0, bx1, bz1 = rect_of(zb)
+      local gx, gz = math.max(bx0 - ax1, ax0 - bx1), math.max(bz0 - az1, az0 - bz1)
+      local f = nil
+      if math.abs(gx) <= 0.05 and gz < -EPS then
+        f = { axis = "x" }
+        if bx0 >= ax1 - 0.05 then f.side_a, f.side_b, f.wa, f.wb = "+x", "-x", ax1, bx0 else f.side_a, f.side_b, f.wa, f.wb = "-x", "+x", ax0, bx1 end
+        f.lo, f.hi = math.max(az0, bz0), math.min(az1, bz1)
+      elseif math.abs(gz) <= 0.05 and gx < -EPS then
+        f = { axis = "z" }
+        if bz0 >= az1 - 0.05 then f.side_a, f.side_b, f.wa, f.wb = "+z", "-z", az1, bz0 else f.side_a, f.side_b, f.wa, f.wb = "-z", "+z", az0, bz1 end
+        f.lo, f.hi = math.max(ax0, bx0), math.min(ax1, bx1)
+      end
+      if not f then apart() return end
+      local free = intersect(intersect(ranges_of(za, f.side_a, 0), ranges_of(zb, f.side_b, 0)), { { f.lo, f.hi } })
+      for _, e in ipairs({ { za, f.side_a }, { zb, f.side_b } }) do
+        for _, s in ipairs(used_of(e[1].id, e[2])) do if s.y0 < top and s.y1 > bot then free = subtract(free, s.lo - 1.5, s.hi + 1.5) end end
+      end
+      local best = nil
+      for _, s in ipairs(free) do if not best or s[2] - s[1] > best[2] - best[1] then best = s end end
+      if not best or best[2] - best[1] < 3 - EPS then narrow(best and (best[2] - best[1]) or 0) return end
+      local lo, hi = best[1], best[2]
+      for _, e in ipairs({ { za, f.side_a, f.wa }, { zb, f.side_b, f.wb } }) do
+        local u = used_of(e[1].id, e[2])
+        u[#u + 1] = { lo = lo, hi = hi, y0 = bot, y1 = top }
+        add_port(e[1], { side = e[2], lo = lo, hi = hi, y0 = e[1].pos[2], y1 = top, link = l, wall = e[3], floor = e[1].pos[2], join = true,
+          pt = wall_point(e[1], e[2], (lo + hi) / 2), nrm = { DIRV[e[2]][1], DIRV[e[2]][2] } })
+      end
+      P.side_a, P.side_b = f.side_a, f.side_b
+      P.ext = { zone = za, axis = f.axis, w0 = math.min(f.wa, f.wb) - 0.5, w1 = math.max(f.wa, f.wb) + 0.5, lo = lo, hi = hi }
+      P.span = hi - lo
+      P.ok = true
+      return
+    end
+    if ra or rb then
+      -- a rectangle zone and a poly zone: the poly must reach over one wall of the rectangle
+      local Hz, Q = za, zb
+      if not ra then Hz, Q = zb, za end
+      local rot = zone_rot(Hz)
+      local q = {}
+      for i, p in ipairs(wpoly(Q)) do local x, zz = to_local(rot, p[1], p[2]) q[i] = { x, zz } end
+      local x0, z0, x1, z1 = rect_of(Hz)
+      local found = {}
+      for _, side in ipairs(SIDES) do
+        local function probe(dl)
+          local a, b = nil, nil
+          if side == "+x" then a, b = { x1 + dl, z0 }, { x1 + dl, z1 }
+          elseif side == "-x" then a, b = { x0 - dl, z0 }, { x0 - dl, z1 }
+          elseif side == "+z" then a, b = { x0, z1 + dl }, { x1, z1 + dl }
+          else a, b = { x0, z0 - dl }, { x1, z0 - dl } end
+          local base = (side == "+x" or side == "-x") and z0 or x0
+          local out = {}
+          for _, iv in ipairs(seg_inside(q, a, b)) do out[#out + 1] = { base + iv[1], base + iv[2] } end
+          return out
+        end
+        -- (the opening's air box runs 0.5 m into the poly: the span is where the poly covers the wall line out to
+        -- 0.5 m, a quarter metre in from the poly's walls at each end, so no end of the box lies on or along one of
+        -- the poly's walls; an air box ending on another brush's oblique face leaves an open seam in the compile)
+        local best = nil
+        for _, s in ipairs(intersect(probe(0.05), probe(0.5))) do
+          if s[2] - s[1] > 0.75 and (not best or s[2] - s[1] > best[2] - best[1]) then best = s end
+        end
+        if best then found[#found + 1] = { side, { best[1] + 0.25, best[2] - 0.25 } } end
+      end
+      if #found == 0 then apart() return end
+      if #found > 1 then
+        err(l, "geometry", "the join between " .. names .. " runs round a corner of " .. Hz.id .. " (its " .. found[1][1] .. " and " .. found[2][1] ..
+          " walls); the shared boundary must lie on one wall of a rectangle zone.")
+        return
+      end
+      local side, lo, hi = found[1][1], found[1][2][1], found[1][2][2]
+      if hi - lo < 3 - EPS then narrow(hi - lo) return end
+      local inside_range = false
+      local rr = ranges_of(Hz, side, 0)
+      for _, r in ipairs(rr) do if lo >= r[1] - 0.05 and hi <= r[2] + 0.05 then inside_range = true end end
+      if not inside_range then
+        local w0 = wall_span(Hz, side)
+        local txt = {}
+        for _, r in ipairs(rr) do txt[#txt + 1] = fmt(r[1] - w0) .. "-" .. fmt(r[2] - w0) .. " m" end
+        err(l, "geometry", "the join between " .. names .. " opens " .. fmt(lo - w0) .. "-" .. fmt(hi - w0) .. " m along " .. Hz.id .. "'s " .. side ..
+          " wall (measured from its corner), outside the openings that wall takes (" .. (#txt > 0 and table.concat(txt, ", ") or "none") .. ").")
+        return
+      end
+      local w = wall_coord(Hz, side)
+      local u = used_of(Hz.id, side)
+      u[#u + 1] = { lo = lo, hi = hi, y0 = bot, y1 = top }
+      add_port(Hz, { side = side, lo = lo, hi = hi, y0 = Hz.pos[2], y1 = top, link = l, wall = w, floor = Hz.pos[2], join = true,
+        pt = wall_point(Hz, side, (lo + hi) / 2), nrm = { DIRV[side][1], DIRV[side][2] } })
+      local p0, p1, pm = wall_point(Hz, side, lo), wall_point(Hz, side, hi), wall_point(Hz, side, (lo + hi) / 2)
+      local ax, az = to_world(rot, p0[1], p0[2])
+      local bx, bz = to_world(rot, p1[1], p1[2])
+      local mx, mz = to_world(rot, pm[1], pm[2])
+      local nx, nz = to_world(rot, DIRV[side][1], DIRV[side][2])
+      -- the poly's edge nearest the opening carries its port
+      local qp = poly_of(Q)
+      local edge, ed = 1, math.huge
+      for i = 1, #qp do local d = pt_seg({ mx, mz }, qp[i], qp[i % #qp + 1]) if d < ed then edge, ed = i, d end end
+      add_port(Q, { side = edge, seg = { { ax, az }, { bx, bz } }, pt = { mx, mz }, nrm = { -nx, -nz }, lo = 0, hi = hi - lo, y0 = Q.pos[2], y1 = top,
+        link = l, floor = Q.pos[2], join = true })
+      if Hz == za then P.side_a, P.side_b = side, edge else P.side_a, P.side_b = edge, side end
+      P.ext = { zone = Hz, axis = (side == "+x" or side == "-x") and "x" or "z", w0 = w - 0.5, w1 = w + 0.5, lo = lo, hi = hi }
+      P.span = hi - lo
+      P.ok = true
+      return
+    end
+    -- two poly zones: shared stretches of antiparallel edges on one line, else the boundary of one inside the other
+    local pa, pb = poly_of(za), poly_of(zb)
+    local segs = {}
+    for i = 1, #pa do
+      local a, _, t, L, n = poly_edge(pa, i)
+      for j = 1, #pb do
+        local c, d, u = poly_edge(pb, j)
+        if t[1] * u[1] + t[2] * u[2] < -0.9998 then
+          local dc = math.abs((c[1] - a[1]) * n[1] + (c[2] - a[2]) * n[2])
+          local dd = math.abs((d[1] - a[1]) * n[1] + (d[2] - a[2]) * n[2])
+          if dc < 0.05 and dd < 0.05 then
+            local sc = (c[1] - a[1]) * t[1] + (c[2] - a[2]) * t[2]
+            local sd = (d[1] - a[1]) * t[1] + (d[2] - a[2]) * t[2]
+            local s0, s1 = math.max(0, math.min(sc, sd)), math.min(L, math.max(sc, sd))
+            if s1 - s0 > 0.1 then segs[#segs + 1] = { i = i, j = j, s0 = s0, s1 = s1, a = a, t = t, n = n } end
+          end
+        end
+      end
+    end
+    if #segs == 0 then
+      if poly_dist((wpoly(za)), (wpoly(zb))) > 0 then apart() return end
+      local B = wpoly(zb)
+      for i = 1, #pa do
+        local a, b, t, _, n = poly_edge(pa, i)
+        for _, iv in ipairs(seg_inside(B, a, b)) do segs[#segs + 1] = { i = i, s0 = iv[1], s1 = iv[2], a = a, t = t, n = n, overlap = true } end
+      end
+    end
+    local total = 0
+    for _, s in ipairs(segs) do total = total + (s.s1 - s.s0) end
+    if total < 3 - EPS then if total <= 0 then apart() else narrow(total) end return end
+    for _, s in ipairs(segs) do
+      local p0 = { s.a[1] + s.t[1] * s.s0, s.a[2] + s.t[2] * s.s0 }
+      local p1 = { s.a[1] + s.t[1] * s.s1, s.a[2] + s.t[2] * s.s1 }
+      local pm = { (p0[1] + p1[1]) / 2, (p0[2] + p1[2]) / 2 }
+      local n = s.n
+      local ua = used_of(za.id, s.i)
+      ua[#ua + 1] = { lo = s.s0, hi = s.s1, y0 = bot, y1 = top }
+      add_port(za, { side = s.i, seg = { p0, p1 }, pt = pm, nrm = { n[1], n[2] }, lo = s.s0, hi = s.s1, y0 = za.pos[2], y1 = top, link = l, floor = za.pos[2], join = true })
+      local j = s.j
+      if not j then
+        j, s.jd = 1, math.huge
+        for k = 1, #pb do local d = pt_seg(pm, pb[k], pb[k % #pb + 1]) if d < s.jd then j, s.jd = k, d end end
+      end
+      local c, _, u = poly_edge(pb, j)
+      local l0 = (p0[1] - c[1]) * u[1] + (p0[2] - c[2]) * u[2]
+      local l1 = (p1[1] - c[1]) * u[1] + (p1[2] - c[2]) * u[2]
+      local ub = used_of(zb.id, j)
+      ub[#ub + 1] = { lo = math.min(l0, l1), hi = math.max(l0, l1), y0 = bot, y1 = top }
+      add_port(zb, { side = j, seg = { p0, p1 }, pt = pm, nrm = { -n[1], -n[2] }, lo = math.min(l0, l1), hi = math.max(l0, l1), y0 = zb.pos[2], y1 = top,
+        link = l, floor = zb.pos[2], join = true })
+      if not s.overlap then
+        -- an air strip across the shared line, half a metre into each zone (the two outlines need not meet exactly)
+        P.ext_quads[#P.ext_quads + 1] = ccw({ { p0[1] - n[1] * 0.5, p0[2] - n[2] * 0.5 }, { p1[1] - n[1] * 0.5, p1[2] - n[2] * 0.5 },
+          { p1[1] + n[1] * 0.5, p1[2] + n[2] * 0.5 }, { p0[1] + n[1] * 0.5, p0[2] + n[2] * 0.5 } })
+      end
+    end
+    P.side_a, P.side_b = segs[1].i, segs[1].j
+    P.span = total
+    P.ok = true
+  end
+
+  -- Free links ------------------------------------------------------------------------------------
+  local function bands_meet(s, band) return s.y0 < band[2] + 0.5 and s.y1 > band[1] - 0.5 end
+
+  -- The walls (rectangle zones) or edges (poly zones) of z that take a w m opening at port level off: {side, ivs}
+  -- with ivs the intervals its centre may take (along the wall in the zone's frame, along the edge from its start).
+  local function openings(z, off, W, band, only)
+    local out = {}
+    if z.archetype == "poly" then
+      if not has_level(z, off) then return out end
+      local p = poly_of(z)
+      for i = 1, #p do
+        if only == nil or only == i then
+          local _, _, _, L = poly_edge(p, i)
+          if L > 1.5 + EPS then
+            local free = { { 0.75, L - 0.75 } }
+            for _, s in ipairs(used_of(z.id, i)) do if bands_meet(s, band) then free = subtract(free, s.lo - 0.75, s.hi + 0.75) end end
+            local ivs = {}
+            for _, s in ipairs(free) do if s[2] - s[1] >= W - EPS then ivs[#ivs + 1] = { s[1] + W / 2, s[2] - W / 2 } end end
+            if #ivs > 0 then out[#out + 1] = { side = i, ivs = ivs } end
+          end
+        end
+      end
+      return out
+    end
+    for _, side in ipairs(SIDES) do
+      if only == nil or only == side then
+        local free = ranges_of(z, side, off)
+        for _, s in ipairs(used_of(z.id, side)) do if bands_meet(s, band) then free = subtract(free, s.lo - 1.5, s.hi + 1.5) end end
+        local ivs = {}
+        for _, s in ipairs(free) do if s[2] - s[1] >= W - EPS then ivs[#ivs + 1] = { s[1] + W / 2, s[2] - W / 2 } end end
+        if #ivs > 0 then out[#out + 1] = { side = side, ivs = ivs } end
+      end
+    end
+    return out
+  end
+
+  -- The world point, world outward normal, local point and local normal of the opening at c on (z, side).
+  local function port_geo(z, side, c)
+    if z.archetype == "poly" then
+      local a, _, t, _, n = poly_edge(poly_of(z), side)
+      local pt = { a[1] + t[1] * c, a[2] + t[2] * c }
+      return pt, n, pt, n
+    end
+    local lp = wall_point(z, side, c)
+    local rot = zone_rot(z)
+    local wx, wz = to_world(rot, lp[1], lp[2])
+    local nx, nz = to_world(rot, DIRV[side][1], DIRV[side][2])
+    return { wx, wz }, { nx, nz }, lp, { DIRV[side][1], DIRV[side][2] }
+  end
+  -- The along-wall (or along-edge) coordinate of world point q's projection on (z, side).
+  local function project(z, side, q)
+    if z.archetype == "poly" then
+      local a, _, t = poly_edge(poly_of(z), side)
+      return (q[1] - a[1]) * t[1] + (q[2] - a[2]) * t[2]
+    end
+    local lx, lz = to_local(zone_rot(z), q[1], q[2])
+    if side == "+x" or side == "-x" then return lz end
+    return lx
+  end
+  local function nearest(ivs, c)
+    local best, bd = nil, math.huge
+    for _, iv in ipairs(ivs) do
+      local v = clamp(c, iv[1], iv[2])
+      if math.abs(v - c) < bd then best, bd = v, math.abs(v - c) end
+    end
+    return best
+  end
+  local function place(z, o, q)
+    local c = nearest(o.ivs, snapv(project(z, o.side, q), 16))
+    local pt, n, lp, ln = port_geo(z, o.side, c)
+    return { side = o.side, ivs = o.ivs, c = c, pt = pt, n = n, lp = lp, ln = ln }
+  end
+  local function ranked(z, opts, at, tgt)
+    local list = {}
+    for _, o in ipairs(opts) do
+      local k = place(z, o, at or tgt)
+      if at then
+        k.score = -math.sqrt((at[1] - k.pt[1]) ^ 2 + (at[2] - k.pt[2]) ^ 2)
+      else
+        local dx, dz = tgt[1] - k.pt[1], tgt[2] - k.pt[2]
+        local L = math.sqrt(dx * dx + dz * dz)
+        k.score = L > 1e-9 and (dx * k.n[1] + dz * k.n[2]) / L or 0
+      end
+      list[#list + 1] = k
+    end
+    -- best facing first (a stable insertion: the walls keep their order on ties)
+    for i = 2, #list do
+      local c, j = list[i], i - 1
+      while j >= 1 and list[j].score < c.score - 1e-9 do list[j + 1] = list[j] j = j - 1 end
+      list[j + 1] = c
+    end
+    return list
+  end
+  local function pt2(v) if type(v) == "table" then return { v[1] or v.x, v[2] or v.z } end return nil end
+  local function snapp(p) return { snapv(p[1], 1024), snapv(p[2], 1024) } end
+  local function ahead(p, n, k) return snapp({ p[1] + n[1] * k, p[2] + n[2] * k }) end
+
+  -- What a free link's plan would run into: other zones (closer than a wall), its own zones away from its ports,
+  -- and other links on the same storey.
+  -- (broad phase: the route's box and each quad's box keep the polygon tests to what lies within a wall of it)
+  local function conflicts(P, M, band, trim_a, trim_b)
+    local nq = #M.quads
+    local qbs = {}
+    local rb = nil
+    for k, q in ipairs(M.quads) do
+      local b = bbox_box(q)
+      qbs[k] = b
+      if not rb then rb = { b[1], b[2], b[3], b[4] }
+      else rb[1], rb[2], rb[3], rb[4] = math.min(rb[1], b[1]), math.min(rb[2], b[2]), math.max(rb[3], b[3]), math.max(rb[4], b[4]) end
+    end
+    local need0 = DATA.min_wall - 0.01
+    for _, z in ipairs(graph.zones) do
+      local zl, zh = zone_band(z)
+      if band[1] < zh + DATA.min_wall and band[2] > zl - DATA.min_wall then
+        local zp, zb_ = wpoly(z)
+        if box_gap(rb, zb_) < need0 + 1e-9 then
+          local own_a, own_b = z == P.za, z == P.zb
+          for k, q in ipairs(M.quads) do
+            local first, last = own_a and k == 1, own_b and k == nq
+            local poly, need, pb = q, need0, qbs[k]
+            if first or last then
+              -- the stub leaving the wall: only coming back into the zone counts
+              poly, need = trim_quad(M, k, first and (trim_a or 0.05) or 0, last and (trim_b or 0.05) or 0), 1e-3
+              pb = nil
+            end
+            if poly_near(poly, zp, need, pb, zb_) then
+              if own_a or own_b then return "it runs back into its own zone " .. z.id .. " or within " .. fmt(DATA.min_wall) .. " m of it" end
+              return "it enters zone " .. z.id .. " or passes within " .. fmt(DATA.min_wall) .. " m of it"
+            end
+          end
+        end
+      end
+    end
+    for _, f in ipairs(plan.foot) do
+      if f.link ~= P.link and band[1] < f.band[2] + DATA.min_wall and band[2] > f.band[1] - DATA.min_wall then
+        local fb = f.box
+        if not fb then fb = bbox_box(f.poly) f.box = fb end
+        if box_gap(rb, fb) < need0 + 1e-9 then
+          for k, q in ipairs(M.quads) do
+            if poly_near(q, f.poly, need0, qbs[k], fb) then
+              return "it crosses link " .. tostring(f.id) .. " or runs within " .. fmt(DATA.min_wall) .. " m of it on the same storey"
+            end
+          end
+        end
+      end
+    end
+    return nil
+  end
+
+  local function free(P)
+    local l, za, zb = P.link, P.za, P.zb
+    P.mode, P.free = "free", true
+    if not FREE_TYPES[l.type] then
+      local why = (za.archetype == "poly" or zb.archetype == "poly") and "a poly zone takes free links only" or
+        (not same_rot(zone_rot(za), zone_rot(zb))) and "the zones' rot differs" or "the link gives a path or a port side"
+      err(l, "geometry", "a " .. l.type .. " cannot be a free link (" .. why .. "): drops, lifts and windows join two facing walls of rectangle zones of one rot; free links are corridors, doorways, roads, bridges, stairs and ramps.")
+      return
+    end
+    local open_air = graph.class == "open_air"
+    local straight = (l.type == "bridge") or open_air
+    local W = port_width(l)
+    local hw = W / 2
+    P.W = W
+    local ya, yb = link_ys(l, za, zb)
+    P.ya, P.yb = ya, yb
+    local oa, ob = ya - za.pos[2], yb - zb.pos[2]
+    P.ba, P.bb = port_bands(l, za, zb, graph)
+    local H = link_height(l, graph)
+    local band = { math.min(ya, yb), math.max(ya, yb) + H }
+    if l.type == "bridge" and not open_air then band[1] = band[1] - (l.depth or DATA.chasm_depth) end
+    P.band = band
+    local explicit = l.path ~= nil
+    local wps = {}
+    if type(l.path) == "table" then for i, q in ipairs(l.path) do wps[i] = pt2(q) end end
+    local at_a, at_b = pt2(l.a_at), pt2(l.b_at)
+    local cax, caz = centre_of(za)
+    local cbx, cbz = centre_of(zb)
+    local tgt_a = wps[1] or at_b or { cbx, cbz }
+    local tgt_b = wps[#wps] or at_a or { cax, caz }
+    local opts_a = openings(za, oa, W, P.ba, l.a_side)
+    local opts_b = openings(zb, ob, W, P.bb, l.b_side)
+    for _, e in ipairs({ { opts_a, za, oa, l.a_side }, { opts_b, zb, ob, l.b_side } }) do
+      if #e[1] == 0 then
+        local where = (type(e[4]) == "number") and (" edge " .. e[4]) or (e[4] and (" " .. e[4] .. " wall") or "")
+        err(l, "geometry", "the port has no room: " .. e[2].id .. "'s" .. (where ~= "" and where or " walls") .. " take no free " .. fmt(W) ..
+          " m opening at level +" .. fmt(e[3]) .. " m (corners, other ports and the archetype's own openings are kept clear).")
+        return
+      end
+    end
+    local rise = math.abs(ya - yb)
+    local run = (l.type == "stair") and stair_run(rise) or ((l.type == "ramp") and ramp_run(rise) or 0)
+    local s = hw + DATA.min_wall
+    local function aligned(ka, kb)
+      local dx, dz = kb.pt[1] - ka.pt[1], kb.pt[2] - ka.pt[2]
+      return ka.n[1] * kb.n[1] + ka.n[2] * kb.n[2] < -0.9999 and dx * ka.n[1] + dz * ka.n[2] > 0.5 and math.abs(dx * ka.n[2] - dz * ka.n[1]) < 0.02
+    end
+    -- Line two ports on facing parallel walls up across the gap (a straight link square to both walls).
+    local function align(ka, kb)
+      local spans = {}
+      for _, iv in ipairs(kb.ivs) do
+        local p0 = port_geo(zb, kb.side, iv[1])
+        local p1 = port_geo(zb, kb.side, iv[2])
+        local u0, u1 = project(za, ka.side, p0), project(za, ka.side, p1)
+        spans[#spans + 1] = { math.min(u0, u1), math.max(u0, u1) }
+      end
+      local ov = intersect(ka.ivs, spans)
+      if #ov == 0 then return nil end
+      local c = nearest(ov, ka.c)
+      local snapped = snapv(c, 16)
+      for _, iv in ipairs(ov) do if snapped >= iv[1] - EPS and snapped <= iv[2] + EPS then c = snapped end end
+      local pt, n, lp, ln = port_geo(za, ka.side, c)
+      local a2 = { side = ka.side, ivs = ka.ivs, c = c, pt = pt, n = n, lp = lp, ln = ln }
+      local b2 = place(zb, kb, pt)
+      if aligned(a2, b2) then return a2, b2 end
+      -- (a turned wall: the opening square across from it, off the 1/16 m steps along the wall)
+      local cb = nearest(kb.ivs, project(zb, kb.side, pt))
+      local pb, nb, lpb, lnb = port_geo(zb, kb.side, cb)
+      b2 = { side = kb.side, ivs = kb.ivs, c = cb, pt = pb, n = nb, lp = lpb, ln = lnb }
+      if aligned(a2, b2) then return a2, b2 end
+      return nil
+    end
+    local function routes(ka, kb)
+      local Pa, na, Pb, nb = ka.pt, ka.n, kb.pt, kb.n
+      if straight then return { { Pa, Pb } } end
+      local function on_ray(p, n, q)
+        local dx, dz = q[1] - p[1], q[2] - p[2]
+        return dx * n[1] + dz * n[2] >= 1 - 1e-6 and math.abs(dx * n[2] - dz * n[1]) < 1e-3
+      end
+      if explicit then
+        if #wps == 0 then
+          if aligned(ka, kb) then return { { Pa, Pb } } end
+          return { { Pa, ahead(Pa, na, s), ahead(Pb, nb, s), Pb } }
+        end
+        -- (a waypoint within a metre of a stub's end is that stub's end, e.g. a path written back by a resolve)
+        local function far_from(p, q) return (p[1] - q[1]) ^ 2 + (p[2] - q[2]) ^ 2 >= 1 end
+        local pts = { Pa }
+        if not on_ray(Pa, na, wps[1]) and far_from(ahead(Pa, na, s), wps[1]) then pts[#pts + 1] = ahead(Pa, na, s) end
+        for _, q in ipairs(wps) do pts[#pts + 1] = q end
+        if not on_ray(Pb, nb, wps[#wps]) and far_from(ahead(Pb, nb, s), wps[#wps]) then pts[#pts + 1] = ahead(Pb, nb, s) end
+        pts[#pts + 1] = Pb
+        return { pts }
+      end
+      local out = {}
+      if aligned(ka, kb) then out[#out + 1] = { Pa, Pb } end
+      local A1, B1 = ahead(Pa, na, s), ahead(Pb, nb, s)
+      local dx, dz = B1[1] - A1[1], B1[2] - A1[2]
+      local dl = math.sqrt(dx * dx + dz * dz)
+      local straight2, turning = nil, 0
+      if dl >= 1 then
+        local d = { dx / dl, dz / dl }
+        local ta, tb = angle_of(na, d), angle_of(d, { -nb[1], -nb[2] })
+        if ta <= 60 + EPS and tb <= 60 + EPS then straight2, turning = { Pa, A1, B1, Pb }, ta + tb end
+      end
+      -- one bend where the two stub lines meet
+      local bend = nil
+      local den = na[1] * nb[2] - na[2] * nb[1]
+      if math.abs(den) > 1e-6 then
+        local ex, ez = Pb[1] - Pa[1], Pb[2] - Pa[2]
+        local t = (ex * nb[2] - ez * nb[1]) / den
+        local u = (ex * na[2] - ez * na[1]) / den
+        if t >= s - EPS and u >= s - EPS then bend = { Pa, ahead(Pa, na, t), Pb } end
+      end
+      -- the straight run first, unless it zigzags (turns much more than the single bend would)
+      if straight2 and bend and turning > angle_of(na, { -nb[1], -nb[2] }) + 10 then out[#out + 1] = bend out[#out + 1] = straight2
+      else
+        if straight2 then out[#out + 1] = straight2 end
+        if bend then out[#out + 1] = bend end
+      end
+      -- dog-legs: out along each normal, then across
+      local D = (Pb[1] - Pa[1]) * na[1] + (Pb[2] - Pa[2]) * na[2]
+      local E = (Pa[1] - Pb[1]) * nb[1] + (Pa[2] - Pb[2]) * nb[2]
+      for _, t in ipairs({ s, D / 2, D - s, s + 6 }) do
+        for _, u in ipairs({ s, E / 2, E - s, s + 6 }) do
+          if t >= s - EPS and u >= s - EPS then out[#out + 1] = { Pa, ahead(Pa, na, t), ahead(Pb, nb, u), Pb } end
+        end
+      end
+      return out
+    end
+    local function evaluate(ka, kb, pts)
+      -- segment lengths and turns first (their messages name the path's own fault), then the mitred shape
+      local dirs = {}
+      for i = 1, #pts - 1 do
+        local dx, dz = pts[i + 1][1] - pts[i][1], pts[i + 1][2] - pts[i][2]
+        local L = math.sqrt(dx * dx + dz * dz)
+        if L < 1 - EPS then return nil, "segment " .. i .. " is only " .. fmt(L) .. " m long (at least 1 m)" end
+        dirs[i] = { dx / L, dz / L }
+      end
+      for i = 2, #pts - 1 do
+        local t = angle_of(dirs[i - 1], dirs[i])
+        if t > 90 + 0.01 then return nil, "it turns " .. fmt(t) .. " degrees at path point " .. (i - 1) .. " (at most 90: add a waypoint to split the turn)" end
+      end
+      local M, why = mitre(pts, hw)
+      if not M then return nil, why end
+      if straight then
+        local d = M.dirs[1]
+        local ta, tb = angle_of(ka.n, d), angle_of(kb.n, { -d[1], -d[2] })
+        if ta > 45 + EPS or tb > 45 + EPS then
+          return nil, "it leaves " .. (ta > 45 + EPS and za.id or zb.id) .. "'s wall " .. fmt(math.max(ta, tb)) .. " degrees off square (a " .. l.type .. " runs straight, at most 45 degrees off square)"
+        end
+        local need = 2
+        if l.type == "bridge" then need = math.max(4, rise * 1.2 + 2) elseif l.type == "ramp" then need = rise + 2 end
+        if M.lens[1] < need - EPS then return nil, "its " .. fmt(M.lens[1]) .. " m span is too short for a " .. l.type .. " (needs " .. fmt(need) .. " m)" end
+        for _, e in ipairs({ { ka, ta }, { kb, tb } }) do
+          local extra = hw / math.cos(math.rad(e[2])) - hw
+          local fits = false
+          for _, iv in ipairs(e[1].ivs) do if e[1].c - extra >= iv[1] - EPS and e[1].c + extra <= iv[2] + EPS then fits = true end end
+          if not fits then return nil, "its opening widens to " .. fmt(W + 2 * extra) .. " m at the oblique crossing, which its wall does not take there" end
+        end
+      elseif run > 0 then
+        local best = 0
+        for _, st in ipairs(M.straight) do best = math.max(best, st[2] - st[1]) end
+        if best < run + 1 - EPS then
+          return nil, "its longest straight segment is " .. fmt(best) .. " m, too short for the " .. fmt(run) .. " m " .. l.type .. " (it needs " .. fmt(run + 1) .. " m)"
+        end
+      end
+      return M
+    end
+    -- the plan test of a route that has the right shape
+    local function clear_of(ka, kb, M)
+      local trim_a, trim_b = 0.05, 0.05
+      if straight then
+        local d = M.dirs[1]
+        trim_a = 0.05 + hw * math.tan(math.rad(angle_of(ka.n, d)))
+        trim_b = 0.05 + hw * math.tan(math.rad(angle_of(kb.n, { -d[1], -d[2] })))
+      end
+      return conflicts(P, M, band, trim_a, trim_b)
+    end
+    local la = ranked(za, opts_a, at_a, tgt_a)
+    local lb = ranked(zb, opts_b, at_b, tgt_b)
+    local pairs_ = {}
+    local na_, nb_ = math.min(explicit and 1 or 3, #la), math.min(explicit and 1 or 3, #lb)
+    for i = 1, na_ do for j = 1, nb_ do pairs_[#pairs_ + 1] = { i, j } end end
+    for i = 2, #pairs_ do
+      local c, j = pairs_[i], i - 1
+      while j >= 1 and (pairs_[j][1] + pairs_[j][2] > c[1] + c[2]) do pairs_[j + 1] = pairs_[j] j = j - 1 end
+      pairs_[j + 1] = c
+    end
+    local chosen, why1, whyc = nil, nil, nil
+    for _, pr in ipairs(pairs_) do
+      local ka, kb = la[pr[1]], lb[pr[2]]
+      if not explicit then
+        if not at_b then kb = place(zb, kb, ka.pt) end
+        if not at_a then ka = place(za, ka, kb.pt) end
+        if not at_a and not at_b and ka.n[1] * kb.n[1] + ka.n[2] * kb.n[2] < -0.9999 then
+          local a2, b2 = align(ka, kb)
+          if a2 then ka, kb = a2, b2 end
+        end
+      end
+      if straight then
+        -- an oblique crossing widens the opening: keep each port that much further from its range's ends
+        for _ = 1, 3 do
+          local dx, dz = kb.pt[1] - ka.pt[1], kb.pt[2] - ka.pt[2]
+          local L = math.sqrt(dx * dx + dz * dz)
+          if L < 1e-6 then break end
+          local d = { dx / L, dz / L }
+          local function refit(k, z, dir)
+            local th = math.min(60, angle_of(k.n, dir))
+            local extra = hw / math.cos(math.rad(th)) - hw
+            local ivs = {}
+            for _, iv in ipairs(k.ivs) do if iv[2] - iv[1] >= 2 * extra then ivs[#ivs + 1] = { iv[1] + extra, iv[2] - extra } end end
+            if #ivs == 0 then return k end
+            local c = nearest(ivs, k.c)
+            if math.abs(c - k.c) < 1e-6 then return k end
+            local pt, n, lp, ln = port_geo(z, k.side, c)
+            return { side = k.side, ivs = k.ivs, c = c, pt = pt, n = n, lp = lp, ln = ln }
+          end
+          ka = refit(ka, za, d)
+          kb = refit(kb, zb, { -d[1], -d[2] })
+        end
+      end
+      -- port variants: as placed, and each port moved to where its stub line meets the other's (one clean bend);
+      -- of the routes that work, the one that turns least (a bend counts 10 degrees) wins
+      local variants = { { ka, kb } }
+      -- (ports placed near given points on facing parallel walls: also lined up square across the gap, which a plan
+      -- moved or turned and snapped to the grid needs)
+      if not explicit and (at_a or at_b) and ka.n[1] * kb.n[1] + ka.n[2] * kb.n[2] < -0.9999 and not aligned(ka, kb) then
+        local a2, b2 = align(ka, kb)
+        if a2 then variants[#variants + 1] = { a2, b2 } end
+      end
+      if not explicit and not straight then
+        local D = math.sqrt((kb.pt[1] - ka.pt[1]) ^ 2 + (kb.pt[2] - ka.pt[2]) ^ 2)
+        for _, f in ipairs({ 1, 0.5 }) do
+          if not at_a then variants[#variants + 1] = { place(za, ka, { kb.pt[1] + kb.n[1] * D * f, kb.pt[2] + kb.n[2] * D * f }), kb } end
+          if not at_b then variants[#variants + 1] = { ka, place(zb, kb, { ka.pt[1] + ka.n[1] * D * f, ka.pt[2] + ka.n[2] * D * f }) } end
+        end
+      end
+      local cands = {}
+      -- (a route the port variants repeat is measured once: the first of equals is the one taken)
+      local seen = {}
+      for _, v in ipairs(variants) do
+        for _, pts in ipairs(routes(v[1], v[2])) do
+          local key = {}
+          for i, q in ipairs(pts) do key[i] = string.format("%.17g %.17g", q[1], q[2]) end
+          key = table.concat(key, ";")
+          if not seen[key] then
+            seen[key] = true
+            local M, why = evaluate(v[1], v[2], pts)
+            if M then
+              local score = 10 * (#pts - 2)
+              for i = 2, #pts - 1 do score = score + M.turns[i] end
+              cands[#cands + 1] = { v[1], v[2], pts, M, score, #cands }
+            end
+            why1 = why1 or why
+          end
+        end
+      end
+      -- stable insertion by score (few candidates)
+      for i = 2, #cands do
+        local c, j = cands[i], i - 1
+        while j >= 1 and cands[j][5] > c[5] + 1e-6 do cands[j + 1] = cands[j] j = j - 1 end
+        cands[j + 1] = c
+      end
+      for _, c in ipairs(cands) do
+        -- (a trial route has a budget of plan tests: P.budget)
+        if P.budget then
+          P.budget = P.budget - 1
+          if P.budget < 0 then break end
+        end
+        local why = clear_of(c[1], c[2], c[4])
+        if not why then chosen = c break end
+        whyc = whyc or why
+      end
+      if chosen or (P.budget and P.budget < 0) then break end
+    end
+    if not chosen then
+      why1 = whyc or why1
+      if explicit then
+        err(l, "geometry", "its path from " .. za.id .. " to " .. zb.id .. " does not work: " .. (why1 or "no route") .. ".")
+      else
+        err(l, "geometry", "no clear route for the " .. l.type .. " from " .. za.id .. " to " .. zb.id .. ": " .. (why1 or "no route") ..
+          (straight and "; a " .. l.type .. " here runs straight from wall to wall: move the zones so two of their walls face each other." or
+            "; give it a path (waypoints {x, z} in world metres) around what is in the way, or move the zones."))
+      end
+      return
+    end
+    local ka, kb, pts, M = chosen[1], chosen[2], chosen[3], chosen[4]
+    P.pts, P.M, P.hw, P.length = pts, M, hw, M.length
+    P.side_a, P.side_b = ka.side, kb.side
+    P.straight = straight
+    local function half_of(k, d)
+      if not straight then return hw end
+      return hw / math.cos(math.rad(angle_of(k.n, d)))
+    end
+    local d1, dn = M.dirs[1], M.dirs[#M.dirs]
+    local function port(z, k, half, bnd, floor)
+      local p = { side = k.side, lo = k.c - half, hi = k.c + half, y0 = bnd[1], y1 = bnd[2], link = l, floor = floor, free = true,
+        pt = k.lp, nrm = k.ln, world = k.pt, wnrm = k.n }
+      if z.archetype == "poly" then
+        local _, _, t = poly_edge(poly_of(z), k.side)
+        p.seg = { { k.pt[1] - t[1] * half, k.pt[2] - t[2] * half }, { k.pt[1] + t[1] * half, k.pt[2] + t[2] * half } }
+      else
+        p.wall = wall_coord(z, k.side)
+      end
+      add_port(z, p)
+      local u = used_of(z.id, k.side)
+      u[#u + 1] = { lo = p.lo, hi = p.hi, y0 = bnd[1], y1 = bnd[2] }
+      return p
+    end
+    P.pa = port(za, ka, half_of(ka, d1), P.ba, ya)
+    P.pb = port(zb, kb, half_of(kb, { -dn[1], -dn[2] }), P.bb, yb)
+    for _, q in ipairs(M.quads) do plan.foot[#plan.foot + 1] = { poly = q, band = band, link = l, id = l.id } end
+    P.ok = true
+    if keep then
+      l.a_side, l.b_side = ka.side, kb.side
+      l.a_at, l.b_at = { ka.pt[1], ka.pt[2] }, { kb.pt[1], kb.pt[2] }
+      local inner = {}
+      for i = 2, #pts - 1 do inner[#inner + 1] = { pts[i][1], pts[i][2] } end
+      -- (a straight route keeps no path: its ports line up again wherever the plan is moved or turned)
+      if #inner > 0 or l.path ~= nil then l.path = inner end
+    end
+  end
+
+  local X = { graph = graph, plan = plan, used = used, join = join, free = free }
+  -- A link that is not a join: classic, true when it needs a free route after all (the classic geometry failed on
+  -- a free-method graph, or it is free to begin with).
+  function X.classic(P)
+    local l, za, zb = P.link, P.za, P.zb
+    local rect = za.archetype ~= "poly" and zb.archetype ~= "poly"
+    if rect and same_rot(zone_rot(za), zone_rot(zb)) and not wants_free(l) then
+      if graph.method == "free" and FREE_TYPES[l.type] then return not classic(P, false) end
+      classic(P, true)
+      return false
+    end
+    return true
+  end
+  -- One link on its own: a join, a classic link, or (failing the classic geometry on a free graph) a free route.
+  function X.one(P)
+    if not (P.za and P.zb and P.za ~= P.zb) then return end
+    if P.link.type == "join" then join(P) return end
+    if X.classic(P) then free(P) end
+  end
+  return X
+end
+
+local function resolve(graph, rng, keep)
+  local X = resolver(graph, rng, keep)
+  local plan = X.plan
+  -- Joins, then classic links, then free links (each in list order).
+  for i, l in ipairs(graph.links or {}) do
+    local za, zb = plan.zones[l.a], plan.zones[l.b]
+    plan.links[i] = { link = l, za = za, zb = zb, index = i }
+  end
+  for _, P in ipairs(plan.links) do
+    if P.za and P.zb and P.za ~= P.zb and P.link.type == "join" then X.join(P) end
+  end
+  local frees = {}
+  for _, P in ipairs(plan.links) do
+    if P.za and P.zb and P.za ~= P.zb and P.link.type ~= "join" and X.classic(P) then frees[#frees + 1] = P end
+  end
+  for _, P in ipairs(frees) do X.free(P) end
+  return plan, X
+end
+
+-- A routing context: the graph resolved once (resolve without rng, keep off), to route single links against.
+local function route_ctx(graph)
+  local _, X = resolve(graph, nil, false)
+  return X
+end
+
+-- Routes one more link l against a routing context, as resolve would route it after the context's links: returns
+-- P (the plan entry: mode, ok, ports, pts, length ...) and the error messages for it. Unless it is dropped with
+-- route_drop, the link stays in the context (its ports, wall spans and footprint keep later links clear). budget:
+-- at most this many candidate routes are tested against the plan (a trial that gives up early reports no route).
+local function route_link(X, l, budget)
+  local plan = X.plan
+  local function zone(id)
+    local z = plan.zones[id]
+    if z then return z end
+    for _, q in ipairs(X.graph.zones) do
+      if q.id == id then plan.zones[id] = q plan.ports[id] = plan.ports[id] or {} return q end
+    end
+    return nil
+  end
+  local za, zb = zone(l.a), zone(l.b)
+  local P = { link = l, za = za, zb = zb, index = #plan.links + 1, budget = budget }
+  local snap = { errors = #plan.errors, foot = #plan.foot, ports = {}, used = {} }
+  for _, z in ipairs({ za, zb }) do
+    if z then
+      snap.ports[z.id] = #plan.ports[z.id]
+      local u = X.used[z.id]
+      local lens = {}
+      if u then for side, list in pairs(u) do lens[side] = #list end end
+      snap.used[z.id] = lens
+    end
+  end
+  P.snap = snap
+  X.one(P)
+  plan.links[#plan.links + 1] = P
+  local errs = {}
+  for i = snap.errors + 1, #plan.errors do errs[#errs + 1] = plan.errors[i].message end
+  return P, errs
+end
+
+-- Takes the last link routed with route_link back out of its context.
+local function route_drop(X, P)
+  local plan, snap = X.plan, P.snap
+  if plan.links[#plan.links] == P then plan.links[#plan.links] = nil end
+  local function cut(list, n) for i = #list, n + 1, -1 do list[i] = nil end end
+  cut(plan.errors, snap.errors)
+  cut(plan.foot, snap.foot)
+  for id, n in pairs(snap.ports) do cut(plan.ports[id], n) end
+  for id, lens in pairs(snap.used) do
+    local u = X.used[id]
+    if u then for side, list in pairs(u) do cut(list, lens[side] or 0) end end
+  end
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -848,7 +2032,11 @@ local function layout_area(graph, plan)
   for _, z in ipairs(graph.zones) do a = a + zone_area(z) end
   if plan then
     for _, P in ipairs(plan.links) do
-      if P.f and P.W and WALK[P.link.type] then a = a + P.f.gap * (P.link.type == "bridge" and P.W - 1 or P.W) end
+      if P.mode == "free" and P.ok and WALK[P.link.type] then
+        a = a + P.length * (P.link.type == "bridge" and P.W - 1 or P.W)
+      elseif P.mode ~= "free" and P.f and P.W and WALK[P.link.type] then
+        a = a + P.f.gap * (P.link.type == "bridge" and P.W - 1 or P.W)
+      end
     end
   end
   return a
@@ -880,6 +2068,114 @@ end
 -- kit.check_layout
 -- ---------------------------------------------------------------------------------------------
 
+-- The bridge links that serve no route (the checker's intent rule, the grader's G27 reading of a redundant bridge):
+-- measured on the zone graph (zone centres, walkable links), a bridge whose zones the other links already join with a
+-- walk at most 1.25x their straight distance + 8 m. Payload layouts want several routes over each boundary (P05), so
+-- parallel crossings there are routes in their own right. Returns {link, walk, direct}[] in link order.
+local function redundant_bridges(graph)
+  local out = {}
+  if graph.gametype == "payload" then return out end
+  local byid = {}
+  for _, z in ipairs(graph.zones) do byid[z.id] = z end
+  local function dist(a, b)
+    local ax, az = centre_of(a)
+    local bx, bz = centre_of(b)
+    local dx, dy, dz = ax - bx, (a.pos[2] or 0) - (b.pos[2] or 0), az - bz
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+  end
+  for _, br in ipairs(graph.links) do
+    if br.type == "bridge" and byid[br.a] and byid[br.b] then
+      local d = { [br.a] = 0 }
+      local done, via = {}, {}
+      while true do
+        local u, du = nil, math.huge
+        for k, v in pairs(d) do if not done[k] and v < du then u, du = k, v end end
+        if u == nil or u == br.b then break end
+        done[u] = true
+        for _, l in ipairs(graph.links) do
+          local parallel = (l.a == br.a and l.b == br.b) or (l.a == br.b and l.b == br.a)
+          if l ~= br and not parallel and WALK[l.type or ""] and (l.a == u or l.b == u) then
+            local v = l.a == u and l.b or l.a
+            if byid[v] then
+              local nd = du + dist(byid[u], byid[v])
+              if d[v] == nil or nd < d[v] then d[v], via[v] = nd, { l, u } end
+            end
+          end
+        end
+      end
+      local direct = dist(byid[br.a], byid[br.b])
+      if d[br.b] ~= nil and d[br.b] <= 1.25 * direct + 8 then
+        -- (the other route, as its links)
+        local path, v = {}, br.b
+        while via[v] do path[#path + 1] = via[v][1] v = via[v][2] end
+        out[#out + 1] = { link = br, walk = d[br.b], direct = direct, path = path }
+      end
+    end
+  end
+  return out
+end
+
+-- A composed graph's bridges, settled before it is routed. The generators compose crossings by geometry; a bridge the
+-- redundant-bridge rule would flag (the other links already join its zones almost as directly) is settled, one at a
+-- time, the first way that works:
+--   * it goes, when both of its zones keep two other ways in;
+--   * a bridge on the short way round goes instead, when both of that bridge's zones keep two ways in and the graph is
+--     left with fewer redundant bridges (in a triangle of crossings, the flagged one is then the only way across);
+--   * it becomes the climb it really is: a stair in the bridge's own route, between floors a level or more apart;
+--   * else it stays, and the checker judges the graph.
+local function settle_bridges(G)
+  local byid = {}
+  for _, z in ipairs(G.zones) do byid[z.id] = z end
+  local function degrees(without)
+    local deg = {}
+    for _, o in ipairs(G.links) do
+      if o ~= without and WALK[o.type or ""] then deg[o.a] = (deg[o.a] or 0) + 1 deg[o.b] = (deg[o.b] or 0) + 1 end
+    end
+    return deg
+  end
+  local function without(link)
+    local kept = {}
+    for _, o in ipairs(G.links) do if o ~= link then kept[#kept + 1] = o end end
+    return kept
+  end
+  local keep = {}
+  for _ = 1, #G.links do
+    local list = redundant_bridges(G)
+    local r = nil
+    for _, e in ipairs(list) do if not keep[e.link] then r = e break end end
+    if not r then break end
+    local l = r.link
+    local deg = degrees(l)
+    local settled = false
+    if (deg[l.a] or 0) >= 2 and (deg[l.b] or 0) >= 2 then
+      G.links = without(l)
+      settled = true
+    else
+      for _, q in ipairs(r.path or {}) do
+        if q.type == "bridge" then
+          local dq = degrees(q)
+          if (dq[q.a] or 0) >= 2 and (dq[q.b] or 0) >= 2 then
+            local saved = G.links
+            G.links = without(q)
+            if #redundant_bridges(G) < #list then settled = true break end
+            G.links = saved
+          end
+        end
+      end
+    end
+    if not settled then
+      local ya, yb = link_ys(l, byid[l.a], byid[l.b])
+      if math.abs(ya - yb) >= (G.step or DATA.step) - 0.5 - EPS then
+        l.type = "stair"
+        l.style = nil
+      else
+        keep[l] = true
+      end
+    end
+  end
+  for i, l in ipairs(G.links) do l.id = "l" .. i end
+end
+
 local function violation(list, severity, rule, msg, zone, link)
   list[#list + 1] = { severity = severity, rule = rule, message = msg, zone = zone, link = link }
 end
@@ -900,12 +2196,45 @@ local function check(graph)
       if ids[z.id] then violation(V, "error", "schema", "zone id " .. z.id .. " is used twice.", z.id) end
       ids[z.id] = z
       local A = LA[z.archetype or ""]
+      local poly_bad = nil
+      if A and A.poly then
+        -- a traced zone: its outline is the plan; pos x/z and size follow from it when missing
+        local o = z.outline
+        if type(o) ~= "table" or #o < 3 or #o > 64 then poly_bad = "needs outline = 3 to 64 world points {x, z}"
+        else
+          for k, q in ipairs(o) do
+            if type(q) ~= "table" or type(q[1] or q.x) ~= "number" or type(q[2] or q.z) ~= "number" then poly_bad = "outline[" .. k .. "] must be a point {x, z}" break end
+          end
+        end
+        local p = (poly_bad == nil) and poly_of(z) or nil
+        if p then
+          for k = 1, #p do
+            local q, r = p[k], p[k % #p + 1]
+            if math.abs(q[1] - r[1]) + math.abs(q[2] - r[2]) < 0.25 then poly_bad = "outline points " .. k .. " and " .. (k % #p + 1) .. " are closer than 0.25 m" break end
+          end
+          if not poly_bad and not simple(p) then poly_bad = "the outline is not a simple polygon (its edges cross or touch; list the points in order around the plan)" end
+          if not poly_bad and math.abs(area2(p)) < 16 then poly_bad = "the outline encloses less than 16 m2" end
+        end
+        if poly_bad == nil and (type(z.pos) ~= "table" or type(z.pos[2]) ~= "number") then poly_bad = "needs pos = {x, floor, z} (the floor height; x and z may be left out)" end
+        if poly_bad == nil then
+          local x0, z0, x1, z1 = bbox(p)
+          if type(z.pos[1]) ~= "number" then z.pos[1] = (x0 + x1) / 2 end
+          if type(z.pos[3]) ~= "number" then z.pos[3] = (z0 + z1) / 2 end
+          if type(z.size) ~= "table" then z.size = { x1 - x0, z1 - z0 } end
+          if z.rot ~= nil and norm_rot(z.rot) ~= 0 then poly_bad = "takes no rot (its outline is in world coordinates)" end
+        end
+      end
+      if A ~= nil and z.rot ~= nil and type(z.rot) ~= "number" then
+        violation(V, "error", "schema", "zone " .. z.id .. ": rot must be a yaw in degrees (got " .. tostring(z.rot) .. ").", z.id)
+      end
       if A == nil then violation(V, "error", "schema", "zone " .. z.id .. ": unknown archetype '" .. tostring(z.archetype) .. "' (kit.layout_archetypes{} lists them).", z.id)
+      elseif poly_bad then
+        violation(V, "error", "schema", "zone " .. z.id .. " (poly) " .. poly_bad .. ".", z.id)
       elseif type(z.pos) ~= "table" or type(z.size) ~= "table" or type(z.pos[1]) ~= "number" or type(z.size[2]) ~= "number" then
         violation(V, "error", "schema", "zone " .. z.id .. " needs pos = {x, y, z} and size = {w, d}.", z.id)
       else
         local mn = A.dims and A.dims(z, A.min) or A.min
-        if z.size[1] < mn[1] - EPS or z.size[2] < mn[2] - EPS then
+        if not A.poly and (z.size[1] < mn[1] - EPS or z.size[2] < mn[2] - EPS) then
           violation(V, "error", "size", "zone " .. z.id .. " (" .. z.archetype .. ") is " .. fmt(z.size[1]) .. " x " .. fmt(z.size[2]) ..
             " m; the archetype needs at least " .. fmt(mn[1]) .. " x " .. fmt(mn[2]) .. " m" ..
             (A.dims and (" (heading " .. heading_of(z) .. ")") or "") .. ".", z.id)
@@ -934,28 +2263,66 @@ local function check(graph)
     else
       l.id = l.id or ("l" .. i)
       if not LINK_TYPES[l.type or ""] then violation(V, "error", "schema", "link " .. l.id .. ": unknown type '" .. tostring(l.type) ..
-        "' (corridor, doorway, stair, ramp, drop, bridge, window, lift, road).", nil, l.id) end
+        "' (corridor, doorway, stair, ramp, drop, bridge, window, lift, road, join).", nil, l.id) end
       if not ids[l.a or ""] or not ids[l.b or ""] then violation(V, "error", "schema", "link " .. l.id .. " joins unknown zones (" ..
-        tostring(l.a) .. ", " .. tostring(l.b) .. ").", nil, l.id) end
+        tostring(l.a) .. ", " .. tostring(l.b) .. ").", nil, l.id)
+      elseif l.a == l.b then violation(V, "error", "schema", "link " .. l.id .. " joins zone " .. l.a .. " to itself.", nil, l.id)
+      else
+        -- free-link fields: path = waypoints {x, z}; a_side / b_side = a wall ("+x" ...) or a poly zone's edge number;
+        -- a_at / b_at = a world point {x, z} the port sits near
+        local function point_ok(q) return type(q) == "table" and type(q[1] or q.x) == "number" and type(q[2] or q.z) == "number" end
+        if l.path ~= nil then
+          local ok = type(l.path) == "table" and #l.path <= 64
+          if ok then for _, q in ipairs(l.path) do if not point_ok(q) then ok = false end end end
+          if not ok then violation(V, "error", "schema", "link " .. l.id .. ": path must list up to 64 waypoints {x, z} (world metres).", nil, l.id) end
+        end
+        for _, e in ipairs({ { "a_side", l.a_side, ids[l.a] }, { "b_side", l.b_side, ids[l.b] } }) do
+          if e[2] ~= nil then
+            local z = e[3]
+            if z.archetype == "poly" then
+              local np = type(z.outline) == "table" and #z.outline or 0
+              if type(e[2]) ~= "number" or e[2] ~= math.floor(e[2]) or e[2] < 1 or e[2] > np then
+                violation(V, "error", "schema", "link " .. l.id .. ": " .. e[1] .. " must be an edge number 1-" .. np .. " of poly zone " .. z.id .. " (edge i runs from outline point i to i + 1).", nil, l.id)
+              end
+            elseif not DIRV[e[2]] then
+              violation(V, "error", "schema", "link " .. l.id .. ": " .. e[1] .. " must be \"+x\", \"-x\", \"+z\" or \"-z\" (zone " .. z.id .. "'s own walls).", nil, l.id)
+            end
+          end
+        end
+        for _, e in ipairs({ { "a_at", l.a_at }, { "b_at", l.b_at } }) do
+          if e[2] ~= nil and not point_ok(e[2]) then violation(V, "error", "schema", "link " .. l.id .. ": " .. e[1] .. " must be a world point {x, z}.", nil, l.id) end
+        end
+      end
     end
   end
   for _, v in ipairs(V) do if v.severity == "error" then return V, nil end end
 
   -- Geometry: plans apart, links resolvable, levels valid.
   local zs = graph.zones
+  local joined = {}
+  for _, l in ipairs(graph.links) do if l.type == "join" then joined[l.a .. "\0" .. l.b] = true joined[l.b .. "\0" .. l.a] = true end end
+  local wp, wb = {}, {}
+  for i, z in ipairs(zs) do wp[i] = zone_poly(z) wb[i] = bbox_box(wp[i]) end
   for i = 1, #zs do
     for j = i + 1, #zs do
       local a, b = zs[i], zs[j]
-      local ax0, az0, ax1, az1 = rect_of(a)
-      local bx0, bz0, bx1, bz1 = rect_of(b)
       local m = (LA[a.archetype].open_air and LA[b.archetype].open_air) and 2 or DATA.min_wall
-      if ax0 < bx1 + m - EPS and bx0 < ax1 + m - EPS and az0 < bz1 + m - EPS and bz0 < az1 + m - EPS then
+      local close = false
+      if a.archetype ~= "poly" and b.archetype ~= "poly" and zone_rot(a) == 0 and zone_rot(b) == 0 then
+        local ax0, az0, ax1, az1 = rect_of(a)
+        local bx0, bz0, bx1, bz1 = rect_of(b)
+        close = ax0 < bx1 + m - EPS and bx0 < ax1 + m - EPS and az0 < bz1 + m - EPS and bz0 < az1 + m - EPS
+      else
+        close = poly_near(wp[i], wp[j], m - EPS, wb[i], wb[j])
+      end
+      if close and not joined[a.id .. "\0" .. b.id] then
         violation(V, "error", "geometry", "zones " .. a.id .. " and " .. b.id .. " overlap or stand closer than " .. fmt(m) .. " m.", a.id)
       end
     end
   end
   for _, l in ipairs(graph.links) do
     local za, zb = ids[l.a], ids[l.b]
+    if l.type ~= "join" then
     local oa, ob = port_offsets(l, za, zb)
     if l.type ~= "drop" and l.type ~= "window" and not has_level(za, oa) then
       violation(V, "error", "level", "link " .. l.id .. ": a_y " .. fmt(za.pos[2] + oa) .. " is not a port level of " .. za.id ..
@@ -996,6 +2363,15 @@ local function check(graph)
     if rise > step + ((graph.class == "open_air") and 2 or 1) + EPS and l.type ~= "window" and l.type ~= "drop" then
       violation(V, "error", "level", "link " .. l.id .. " climbs " .. fmt(rise) .. " m; links span one level (" .. fmt(step) .. " m) at most.", nil, l.id)
     end
+    end
+  end
+  -- The intent layer: a bridge link joins two zones that are otherwise worse-connected. Measured on the zone graph
+  -- (zone centres, walkable links): when the other links already join its zones with a walk at most 1.25x the
+  -- straight distance + 8 m, the bridge serves no route (the grader's G27 reading of a redundant bridge).
+  for _, r in ipairs(redundant_bridges(graph)) do
+    local br = r.link
+    violation(V, "rule", "purpose", "link " .. br.id .. " is a bridge between " .. br.a .. " and " .. br.b .. ", which the other links already join with a " ..
+      fmt(r.walk) .. " m walk (" .. fmt(r.direct) .. " m apart): a bridge must join places that are otherwise far apart; drop it or join zones the layout keeps apart.", nil, br.id)
   end
   local plan = resolve(graph, nil, false)
   for _, e in ipairs(plan.errors) do V[#V + 1] = e end
@@ -1006,6 +2382,12 @@ local function check(graph)
   local adj = adjacency(graph, idx)
   local n = #zs
   local area = layout_area(graph, plan)
+  for _, P in ipairs(plan.links) do
+    if P.mode == "free" and P.ok and (P.link.type == "corridor" or P.link.type == "doorway") and P.length > 60 + EPS then
+      violation(V, "rule", "link", "link " .. P.link.id .. " is a " .. fmt(P.length) .. " m " .. P.link.type ..
+        " (free corridors run at most 60 m: put a zone on the way).", nil, P.link.id)
+    end
+  end
   local nooks = 0
   for i, z in ipairs(zs) do
     local deg = #adj[i]
@@ -1130,7 +2512,8 @@ local function check(graph)
   for _, z in ipairs(zs) do
     local found = false
     for _, o in ipairs(zs) do
-      if o.archetype == z.archetype and math.abs((2 * cx - z.pos[1]) - o.pos[1]) < 1.5 and math.abs(z.pos[3] - o.pos[3]) < 1.5 then
+      if o.archetype == z.archetype and math.abs((2 * cx - z.pos[1]) - o.pos[1]) < 1.5 and math.abs(z.pos[3] - o.pos[3]) < 1.5 and
+        ang_diff(zone_rot(o), -zone_rot(z)) < 1 then
         found = true
         if o ~= z and team and o.palette and z.palette and o.palette.team == z.palette.team and o.palette.theme == z.palette.theme and
           o.palette.variant == z.palette.variant then pairs_ok = false end
@@ -1237,8 +2620,14 @@ local function check(graph)
       local turned, uphill = false, false
       local prev = nil
       local spine = cart.zones or {}
-      -- The cart's way between two consecutive spine zones: a road, bridge, doorway or corridor joining them; its
-      -- walls give the side the cart leaves one zone by and enters the next by (any heading).
+      -- The world outward direction of a zone's wall (or a poly zone's edge).
+      local function side_dir(z, side)
+        if type(side) == "number" then local _, _, _, _, nn = poly_edge(poly_of(z), side) return nn end
+        local x, zz = to_world(zone_rot(z), DIRV[side][1], DIRV[side][2])
+        return { x, zz }
+      end
+      -- The cart's way between two consecutive spine zones: a road, bridge, doorway, corridor or join between them;
+      -- its ports give the side the cart leaves one zone by and enters the next by (any heading).
       local sides = {}
       for i = 1, #spine do sides[i] = {} end
       for i = 1, #spine - 1 do
@@ -1247,14 +2636,17 @@ local function check(graph)
           local found = nil
           for _, P in ipairs(plan.links) do
             local l = P.link
-            if P.f and P.c and CART_LINK[l.type] and ((l.a == a and l.b == b) or (l.a == b and l.b == a)) then found = P break end
+            if P.ok and CART_LINK[l.type] and ((l.a == a and l.b == b) or (l.a == b and l.b == a)) then found = P break end
           end
           if not found then
-            violation(V, "rule", "payload", "the cart cannot go from " .. a .. " to " .. b .. ": consecutive cart zones need a road, bridge, doorway or corridor between them.", a)
+            violation(V, "rule", "payload", "the cart cannot go from " .. a .. " to " .. b .. ": consecutive cart zones need a road, bridge, doorway, corridor or join between them.", a)
           else
             local fwd = found.link.a == a
-            sides[i].exit = fwd and found.f.side_a or found.f.side_b
-            sides[i + 1].entry = fwd and found.f.side_b or found.f.side_a
+            sides[i].exit = fwd and found.side_a or found.side_b
+            sides[i + 1].entry = fwd and found.side_b or found.side_a
+            -- a free road that bends turns the track
+            if found.mode == "free" and found.M and ang_diff(yaw_of(found.M.dirs[1][1], found.M.dirs[1][2]),
+              yaw_of(found.M.dirs[#found.M.dirs][1], found.M.dirs[#found.M.dirs][2])) >= 20 - EPS then turned = true end
           end
         end
       end
@@ -1272,18 +2664,29 @@ local function check(graph)
           if F.rise > 0 then uphill = true end
           for _, e in ipairs({ { "entry", "enters", F.entry }, { "exit", "leaves", F.exit } }) do
             if sd[e[1]] and sd[e[1]] ~= e[3] then
-              violation(V, "rule", "payload", "the cart " .. e[2] .. " road " .. id .. " by its " .. sd[e[1]] .. " side, but a road heading " .. F.heading .. " is " ..
+              violation(V, "rule", "payload", "the cart " .. e[2] .. " road " .. id .. " by its " .. tostring(sd[e[1]]) .. " side, but a road heading " .. F.heading .. " is " ..
                 (e[1] == "entry" and "entered" or "left") .. " by its " .. e[3] .. " end: set the road's params.heading to the way the cart travels.", id)
             end
           end
-          if prev and (prev.heading ~= F.heading or math.abs(prev.centre - F.centre) > 3) then turned = true end
-          prev = { heading = F.heading, centre = F.centre }
+          -- world heading and centre line
+          local rot = zone_rot(z)
+          local hx, hz = to_world(rot, DIRV[F.heading][1], DIRV[F.heading][2])
+          local cx, cz = to_world(rot, F.xz(0, F.centre))
+          local yaw = yaw_of(hx, hz)
+          if prev then
+            local off = math.abs((cx - prev.cx) * hz - (cz - prev.cz) * hx)
+            if ang_diff(prev.yaw, yaw) >= 20 - EPS or off > 3 then turned = true end
+          end
+          prev = { yaw = yaw, cx = cx, cz = cz }
         elseif z then
           -- a zone the cart crosses at an angle turns the track
-          if sd.entry and sd.exit and sd.exit ~= OPP[sd.entry] then turned = true end
+          if sd.entry and sd.exit then
+            local en, ex = side_dir(z, sd.entry), side_dir(z, sd.exit)
+            if angle_of({ -en[1], -en[2] }, ex) >= 20 - EPS then turned = true end
+          end
           if z.archetype == "finale" and sd.entry and sd.entry ~= OPP[heading_of(z)] then
-            violation(V, "rule", "payload", "the cart enters the finale " .. id .. " by its " .. sd.entry .. " side, but the finale's cart ramp faces " .. OPP[heading_of(z)] ..
-              ": set its params.heading to " .. OPP[sd.entry] .. ".", id)
+            violation(V, "rule", "payload", "the cart enters the finale " .. id .. " by its " .. tostring(sd.entry) .. " side, but the finale's cart ramp faces " .. OPP[heading_of(z)] ..
+              ": set its params.heading to " .. tostring(OPP[sd.entry] or "the side the cart enters by") .. ".", id)
           end
         end
       end
@@ -1352,7 +2755,7 @@ local function check(graph)
   return V, plan
 end
 
----@kit kit.check_layout{graph} → violation[] — Checks a layout graph against the c.1-1 rules before anything is built: schema and geometry (zones apart, every link fits its walls, levels and gaps), degree >= 2 except reward nooks, no articulation zone with >= 10% of the area behind it, cycle rank per 1,000 m2, 2 node-disjoint routes between hubs and objectives, 3+ floor levels 4.5-10 m apart joined by 2+ kinds of vertical link, archetype variety, mirror symmetry only for team modes, and the CTF / KOTH / payload / open-air rules and the size budget. A link without a_y / b_y meets each zone at its floor (a graded road's top floor at its exit end). Payload tracks run on any heading: a road zone's params.heading is the way the cart travels through it (entered on the opposite end), the cart turns inside the zones between roads, consecutive cart zones need a road, bridge, doorway or corridor between them, and a bridge outside open-air layouts spans a chasm between two floors at one level. A hand-made zone without levels, height or chamfer gets its archetype's. Each violation is {severity ("error": cannot build; "rule": a design rule), rule, message, zone?, link?}.
+---@kit kit.check_layout{graph} → violation[] — Checks a layout graph against the c.1-1 rules before anything is built: schema and geometry (zones apart, every link fits its walls, levels and gaps), degree >= 2 except reward nooks, no articulation zone with >= 10% of the area behind it, cycle rank per 1,000 m2, 2 node-disjoint routes between hubs and objectives, 3+ floor levels 4.5-10 m apart joined by 2+ kinds of vertical link, archetype variety, mirror symmetry only for team modes, and the CTF / KOTH / payload / open-air rules and the size budget. A link without a_y / b_y meets each zone at its floor (a graded road's top floor at its exit end). Payload tracks run on any heading: a road zone's params.heading is the way the cart travels through it (entered on the opposite end), the cart turns inside the zones between roads, consecutive cart zones need a road, bridge, doorway or corridor between them, and a bridge outside open-air layouts spans a chasm between two floors at one level. Free-form plans: zone.rot turns a zone's plan (its sides stay its own), a poly zone's outline is its world plan, a link that is not straight between facing walls of two rectangle zones of one rot is free (path waypoints, a_side / b_side, a_at / b_at, or routed clear of the zones and links), and a join opens two touching zones into one space; the checker reports overlaps and clearances in world coordinates, free links that bend more than 90 degrees, run under 1 m a segment, enter or pass within 1 m of a zone or cross another link on its storey, or lack the straight a stair or ramp needs, and joins that do not touch. A hand-made zone without levels, height or chamfer gets its archetype's. Each violation is {severity ("error": cannot build; "rule": a design rule), rule, message, zone?, link?}.
 ---@opt graph: table — Required: a kit.layout graph (possibly edited).
 function kit.check_layout(t)
   check_keys("kit.check_layout", t, { "graph" })
@@ -1387,17 +2790,6 @@ local function height_for(A, z, step)
   return 0
 end
 
--- Sizes a zone for an area: aspect ratio from the stream, clamped to the archetype, even metres.
-local function size_zone(A, area, rng, elongate)
-  local ar = rng.range(0.8, 1.25)
-  if elongate then ar = elongate end
-  local w = math.sqrt(area * ar)
-  local d = area / w
-  w = clamp(even(w), A.min[1], A.max[1])
-  d = clamp(even(d), A.min[2], A.max[2])
-  return { w, d }
-end
-
 -- Finishes a zone from its archetype: levels, chamfer, height, palette defaults.
 local function finish_zone(z, step)
   local A = LA[z.archetype]
@@ -1412,574 +2804,21 @@ local function finish_zone(z, step)
   return z
 end
 
--- Picks an archetype from choices, at most repeat_max uses and never the same as the listed neighbours.
-local function pick_arch(rng, choices, used, avoid)
-  local cand = {}
-  for _, a in ipairs(choices) do
-    local ok = (used[a] or 0) < DATA.repeat_max or LA[a].repeatable
-    for _, b in ipairs(avoid or {}) do if b == a then ok = false end end
-    if ok then cand[#cand + 1] = a end
-  end
-  if #cand == 0 then
-    for _, a in ipairs(choices) do if (used[a] or 0) < DATA.repeat_max or LA[a].repeatable then cand[#cand + 1] = a end end
-  end
-  if #cand == 0 then cand = copy_list(choices) end
-  local a = rng.pick(cand)
-  used[a] = (used[a] or 0) + 1
-  return a
-end
-
 local function widest(r) local w = 0 for _, s in ipairs(r) do w = math.max(w, s[2] - s[1]) end return w end
-
--- The best pair of port offsets for an edge between two zones on their facing walls: the smallest climb
--- (0 or one step), among the levels whose walls take ports. Returns oa, ob, diff (b - a) or nil.
-local function level_pair(za, zb, side_a, side_b, step, rng, prefer_climb, slack)
-  local best, bd = nil, math.huge
-  local opts = {}
-  for _, oa in ipairs(za.levels) do
-    for _, ob in ipairs(zb.levels) do
-      if widest(ranges_of(za, side_a, oa)) >= 4.5 and widest(ranges_of(zb, side_b, ob)) >= 4.5 then
-        local diff = (zb.pos[2] + ob) - (za.pos[2] + oa)
-        if math.abs(diff) <= step + (slack or 0.5) + EPS then opts[#opts + 1] = { oa, ob, diff } end
-      end
-    end
-  end
-  if #opts == 0 then return nil end
-  for _, o in ipairs(opts) do
-    local score = math.abs(o[3]) + (rng and rng.float() * 0.01 or 0)
-    if prefer_climb then score = -score end
-    if score < bd then best, bd = o, score end
-  end
-  return best[1], best[2], best[3]
-end
-
--- A grid layout: cells -> zones, candidate edges -> links, then pruning, link kinds, gaps and positions.
--- cfg = {cols, rows, cells = {[key] = {c, r, role, choices, level, weight, team, mirror_of, palette, lane, params}},
---        edges = {{ka, kb, required?, parallel?}}, target_area, prune, kinds, open_air, mirror_cols}
-local function grid_layout(G, rng, cfg)
-  local step = G.step
-  local cells = cfg.cells
-  local keys = {}
-  for r = 0, cfg.rows - 1 do for c = 0, cfg.cols - 1 do local k = c .. "," .. r if cells[k] then keys[#keys + 1] = k end end end
-  -- 1. Archetypes and sizes (mirrored cells copy their twin afterwards).
-  local used = {}
-  local wsum = 0
-  for _, k in ipairs(keys) do wsum = wsum + (cells[k].weight or 1) end
-  local per = cfg.target_area * 0.84 / wsum
-  local zones = {}
-  -- The neighbours each cell must reach: the side they lie on and their level.
-  local nbrs = {}
-  for _, e in ipairs(cfg.edges) do
-    local ca, cb = cells[e[1]], cells[e[2]]
-    if ca and cb then
-      local sa = (cb.c > ca.c and "+x") or (cb.c < ca.c and "-x") or (cb.r > ca.r and "+z") or "-z"
-      nbrs[e[1]] = nbrs[e[1]] or {}
-      nbrs[e[2]] = nbrs[e[2]] or {}
-      table.insert(nbrs[e[1]], { side = sa, level = cb.level or 0 })
-      table.insert(nbrs[e[2]], { side = OPP[sa], level = ca.level or 0 })
-    end
-  end
-  local function fits(z, k)
-    for _, n in ipairs(nbrs[k] or {}) do
-      local ok = false
-      for _, oa in ipairs(z.levels) do
-        if math.abs(z.pos[2] + oa - n.level * step) <= step + (cfg.open_air and 1.5 or 0.5) + EPS and widest(ranges_of(z, n.side, oa)) >= 5 then ok = true end
-      end
-      if not ok then return false end
-    end
-    return true
-  end
-  for _, k in ipairs(keys) do
-    local cell = cells[k]
-    if not cell.mirror_of then
-      local avoid = {}
-      for _, dk in ipairs({ (cell.c - 1) .. "," .. cell.r, cell.c .. "," .. (cell.r - 1), (cell.c + 1) .. "," .. cell.r, cell.c .. "," .. (cell.r + 1) }) do
-        if zones[dk] then avoid[#avoid + 1] = zones[dk].archetype end
-      end
-      -- Floors sit on their level or half a metre above it (a step at the door): more floor-height classes.
-      local off = (cell.offset ~= nil) and cell.offset or ((cell.role == "hub" or cell.role == "hill" or cell.role == "base" or cell.role == "span"
-        or cell.role == "checkpoint" or cell.auto_level) and 0 or (cfg.open_air and rng.pick({ 0, 0.5, 1, 1.5 }) or (rng.chance(0.45) and 0.5 or 0)))
-      -- The archetype (and a split's raised side) that reaches every neighbour, in random order of the choices.
-      local order = {}
-      if cell.archetype then order[1] = cell.archetype
-      else
-        local first = pick_arch(rng, cell.choices, used, avoid)
-        used[first] = used[first] - 1
-        order[1] = first
-        local rest = {}
-        for _, a in ipairs(cell.choices) do if a ~= first and ((used[a] or 0) < DATA.repeat_max or LA[a].repeatable) then rest[#rest + 1] = a end end
-        rng.shuffle(rest)
-        for _, a in ipairs(rest) do order[#order + 1] = a end
-      end
-      local z = nil
-      local found = false
-      for _, a in ipairs(order) do
-        local A = LA[a]
-        local splits = { (cell.params and cell.params.split) or "+x" }
-        if A.ranges == nil or not (a == "split" or a == "tower" or a == "terrace") then splits = { splits[1] }
-        elseif not cell.fixed_split then for _, d in ipairs(SIDES) do if d ~= splits[1] then splits[#splits + 1] = d end end end
-        for _, sp in ipairs(splits) do
-          local cand = { archetype = a, role = cell.role, cell = { cell.c, cell.r }, team = cell.team, lane = cell.lane, params = {}, palette = cell.palette }
-          if cell.params then for pk, pv in pairs(cell.params) do cand.params[pk] = pv end end
-          cand.params.split = sp
-          cand.size = cell.size and { math.max(cell.size[1], A.min[1]), math.max(cell.size[2], A.min[2]) } or size_zone(A, per * (cell.weight or 1), rng, cell.elongate)
-          cand.pos = { 0, (cell.level or 0) * step + off, 0 }
-          finish_zone(cand, step)
-          if z == nil then z = cand end
-          if fits(cand, k) then z, found = cand, true break end
-        end
-        if found then break end
-      end
-      if not found and not cell.archetype then
-        local uni = cfg.open_air and { "isle", "deck", "garden", "gantry", "outpost", "plaza", "mast" } or { "hall", "colonnade", "storage", "courtyard", "pit" }
-        table.sort(uni, function(p, q) local up, uq = used[p] or 0, used[q] or 0 if up ~= uq then return up < uq end return p < q end)
-        for _, a in ipairs(uni) do
-          local A = LA[a]
-          local cand = { archetype = a, role = cell.role, cell = { cell.c, cell.r }, team = cell.team, lane = cell.lane, params = {}, palette = cell.palette }
-          if cell.params then for pk, pv in pairs(cell.params) do cand.params[pk] = pv end end
-          cand.size = { clamp(z.size[1], A.min[1], A.max[1]), clamp(z.size[2], A.min[2], A.max[2]) }
-          cand.pos = { 0, z.pos[2], 0 }
-          finish_zone(cand, step)
-          if fits(cand, k) then z = cand break end
-        end
-      end
-      used[z.archetype] = (used[z.archetype] or 0) + 1
-      zones[k] = z
-    end
-  end
-  for _, k in ipairs(keys) do
-    local cell = cells[k]
-    if cell.mirror_of then
-      local t = zones[cell.mirror_of]
-      local z = { archetype = t.archetype, role = cell.role or t.role, cell = { cell.c, cell.r }, team = cell.team, lane = t.lane,
-        size = { t.size[1], t.size[2] }, pos = { 0, t.pos[2], 0 }, params = {}, palette = cell.palette, twin = cell.mirror_of }
-      for pk, pv in pairs(t.params or {}) do z.params[pk] = pv end
-      if z.params.split then z.params.split = (z.params.split == "+x" and "-x") or (z.params.split == "-x" and "+x") or z.params.split end
-      zones[k] = z
-    end
-  end
-  for _, k in ipairs(keys) do finish_zone(zones[k], step) end
-  -- Hubs on "auto" take the base level that reaches the most neighbours within one step.
-  for _, k in ipairs(keys) do
-    local cell, z = cells[k], zones[k]
-    if cell.auto_level then
-      local best, bn = 0, -1
-      for b = cfg.min_level or 0, cfg.max_level or 2 do
-        local n = 0
-        for _, dk in ipairs({ (cell.c - 1) .. "," .. cell.r, cell.c .. "," .. (cell.r - 1), (cell.c + 1) .. "," .. cell.r, cell.c .. "," .. (cell.r + 1) }) do
-          local o = zones[dk]
-          if o then
-            local ok = false
-            for _, oa in ipairs(z.levels) do for _, ob in ipairs(o.levels) do
-              if math.abs(b * step + oa - (o.pos[2] + ob)) <= step + EPS then ok = true end
-            end end
-            if ok then n = n + 1 end
-          end
-        end
-        if n > bn then best, bn = b, n end
-      end
-      z.pos[2] = best * step
-    end
-  end
-
-  -- 2. Area fit: one rescale of the free zones toward the target.
-  local total = 0
-  for _, k in ipairs(keys) do total = total + zone_area(zones[k]) end
-  local s = math.sqrt(cfg.target_area * 0.84 / total)
-  if math.abs(s - 1) > 0.05 then
-    for _, k in ipairs(keys) do
-      local z = zones[k]
-      local A = LA[z.archetype]
-      if not cells[k].size then
-        z.size = { clamp(even(z.size[1] * s), A.min[1], A.max[1]), clamp(even(z.size[2] * s), A.min[2], A.max[2]) }
-      end
-      finish_zone(z, step)
-    end
-    for _, k in ipairs(keys) do
-      local cell = cells[k]
-      if cell.mirror_of then zones[k].size = { zones[cell.mirror_of].size[1], zones[cell.mirror_of].size[2] } finish_zone(zones[k], step) end
-    end
-  end
-
-  -- 3. Column widths and row depths; provisional positions (the gaps are sized in step 7).
-  local function place(colgap, rowgap)
-    local cw, rd = {}, {}
-    for c = 0, cfg.cols - 1 do cw[c] = 0 end
-    for r = 0, cfg.rows - 1 do rd[r] = 0 end
-    for _, k in ipairs(keys) do
-      local z, cell = zones[k], cells[k]
-      cw[cell.c] = math.max(cw[cell.c], z.size[1])
-      rd[cell.r] = math.max(rd[cell.r], z.size[2])
-    end
-    if cfg.mirror_cols then
-      for c = 0, cfg.cols - 1 do local m = cfg.cols - 1 - c local v = math.max(cw[c], cw[m]) cw[c], cw[m] = v, v end
-    end
-    local X, Z = {}, {}
-    local x = 0
-    for c = 0, cfg.cols - 1 do
-      if cw[c] == 0 then cw[c] = 12 end
-      X[c] = x + cw[c] / 2
-      x = x + cw[c] + (colgap[c] or 0)
-    end
-    local zz = 0
-    for r = 0, cfg.rows - 1 do
-      if rd[r] == 0 then rd[r] = 12 end
-      Z[r] = zz + rd[r] / 2
-      zz = zz + rd[r] + (rowgap[r] or 0)
-    end
-    local ox, oz = x - (colgap[cfg.cols - 1] or 0), zz - (rowgap[cfg.rows - 1] or 0)
-    for _, k in ipairs(keys) do
-      local z, cell = zones[k], cells[k]
-      z.pos[1] = X[cell.c] - ox / 2 + (cell.jx or 0)
-      z.pos[3] = Z[cell.r] - oz / 2 + (cell.jz or 0)
-      z.home = { q2(X[cell.c] - ox / 2), q2(Z[cell.r] - oz / 2 + (cell.align_z or 0)) }
-    end
-    return cw, rd
-  end
-
-  -- Jitter inside the cell slack (mirrored twins mirror it), kept small so walls stay overlapping.
-  local cw0, rd0 = place({}, {})
-  for _, k in ipairs(keys) do
-    local cell, z = cells[k], zones[k]
-    if not cell.mirror_of and not cell.fixed then
-      local sx = math.min(cell.jx_range or 3, (cw0[cell.c] - z.size[1]) / 2)
-      local sz = math.min(3, (rd0[cell.r] - z.size[2]) / 2)
-      cell.jx = (cell.centre_x or cfg.mirror_cols and cell.c == (cfg.cols - 1) / 2) and 0 or q2(rng.range(-sx, sx))
-      cell.jz = q2(rng.range(-sz, sz))
-      if cell.align then
-        -- pinned to one end of its row band
-        local slack = (rd0[cell.r] - z.size[2]) / 2
-        cell.align_z = q2((cell.align == "south") and -slack or slack)
-        cell.jz = cell.align_z
-      end
-    end
-  end
-  for _, k in ipairs(keys) do
-    local cell = cells[k]
-    if cell.mirror_of then cell.jx = -(cells[cell.mirror_of].jx or 0) cell.jz = cells[cell.mirror_of].jz or 0 end
-  end
-
-  -- 4. Candidate edges with their port levels.
-  local function compute_edges()
-    local out = {}
-    for ci, e in ipairs(cfg.edges) do
-      local za, zb = zones[e[1]], zones[e[2]]
-      if za and zb then
-        local ca, cb = cells[e[1]], cells[e[2]]
-        local side_a = (cb.c > ca.c and "+x") or (cb.c < ca.c and "-x") or (cb.r > ca.r and "+z") or "-z"
-        local oa, ob, diff = level_pair(za, zb, side_a, OPP[side_a], step, rng, e.climb, cfg.open_air and 1.5 or 0.5)
-        if oa ~= nil then
-          out[#out + 1] = { ka = e[1], kb = e[2], za = za, zb = zb, oa = oa, ob = ob, diff = diff, required = e.required,
-            parallel = e.parallel, side = side_a, twin = e.twin, kind = e.kind, id = #out + 1, cfg = ci }
-        end
-      end
-    end
-    return out
-  end
-  local edges = compute_edges()
-  -- A zone that reaches fewer than two neighbours swaps to an archetype with ports on every wall.
-  do
-    local twinned = {}
-    for _, k in ipairs(keys) do if cells[k].mirror_of then twinned[cells[k].mirror_of] = true end end
-    local deg = {}
-    for _, k in ipairs(keys) do deg[k] = 0 end
-    for _, e in ipairs(edges) do deg[e.ka] = deg[e.ka] + 1 deg[e.kb] = deg[e.kb] + 1 end
-    local changed = false
-    local fallback = cfg.open_air and { "isle", "deck", "garden", "gantry", "outpost", "plaza", "mast" } or { "hall", "colonnade", "storage", "courtyard", "pit", "tunnel" }
-    for _, k in ipairs(keys) do
-      local cell, z = cells[k], zones[k]
-      if deg[k] < 2 and cell.role ~= "nook" and not cell.archetype and not cell.mirror_of and not twinned[k] then
-        local old, old_size = z.archetype, { z.size[1], z.size[2] }
-        for _, a in ipairs(fallback) do
-          if a ~= old and ((used[a] or 0) < DATA.repeat_max) then
-            local A = LA[a]
-            z.archetype = a
-            z.size = { clamp(old_size[1], A.min[1], A.max[1]), clamp(old_size[2], A.min[2], A.max[2]) }
-            finish_zone(z, step)
-            if fits(z, k) then
-              used[old] = math.max(0, (used[old] or 1) - 1)
-              used[a] = (used[a] or 0) + 1
-              cell.jx, cell.jz = 0, 0
-              changed = true
-              break
-            end
-            z.archetype, z.size = old, old_size
-            finish_zone(z, step)
-          end
-        end
-      end
-    end
-    if changed then edges = compute_edges() end
-  end
-
-  -- 5. Pruning: drop optional edges at random while degree, 2-connectivity and the loop target hold.
-  local function graph_ok(es)
-    local deg, adjk = {}, {}
-    for _, k in ipairs(keys) do deg[k] = 0 adjk[k] = {} end
-    for _, e in ipairs(es) do
-      deg[e.ka] = deg[e.ka] + 1 deg[e.kb] = deg[e.kb] + 1
-      adjk[e.ka][#adjk[e.ka] + 1] = e.kb adjk[e.kb][#adjk[e.kb] + 1] = e.ka
-    end
-    for _, k in ipairs(keys) do
-      if cells[k].role ~= "nook" and deg[k] < 2 then return false end
-      if deg[k] < 1 then return false end
-    end
-    -- connected after removing any one non-nook zone (no articulation zones beyond nooks)
-    for _, skip in ipairs(keys) do
-      local seen, stack, cnt = { [skip] = true }, {}, 0
-      local start = nil
-      for _, k in ipairs(keys) do if k ~= skip and cells[k].role ~= "nook" then start = k break end end
-      if start then
-        stack[1] = start seen[start] = true
-        while #stack > 0 do
-          local u = table.remove(stack)
-          cnt = cnt + 1
-          for _, v in ipairs(adjk[u]) do if not seen[v] then seen[v] = true stack[#stack + 1] = v end end
-        end
-        local need = 0
-        for _, k in ipairs(keys) do if k ~= skip and (cells[k].role ~= "nook") then need = need + 1 end end
-        local got = 0
-        for _, k in ipairs(keys) do if k ~= skip and cells[k].role ~= "nook" and seen[k] then got = got + 1 end end
-        if got < need then return false end
-      end
-    end
-    local internal = 0
-    for _, k in ipairs(keys) do internal = internal + (zones[k].loops or 0) end
-    if #es - #keys + 1 + internal < cfg.min_rank then return false end
-    -- the zones' own loops are estimates: the links alone keep at least 60% of the target
-    if #es - #keys + 1 < math.ceil(cfg.min_rank * 0.6) then return false end
-    return true
-  end
-  if cfg.prune and cfg.prune > 0 then
-    local order = {}
-    for i, e in ipairs(edges) do if not e.required and not e.twin then order[#order + 1] = i end end
-    rng.shuffle(order)
-    local removed = {}
-    for _, i in ipairs(order) do
-      if rng.chance(cfg.prune) then
-        local trial = {}
-        for j, e in ipairs(edges) do
-          if j ~= i and not removed[j] and not (removed[e.twin_of or -1]) and not (e.twin_of == i) then trial[#trial + 1] = e end
-        end
-        if graph_ok(trial) then
-          removed[i] = true
-          for j, e in ipairs(edges) do if e.twin_of == i then removed[j] = true end end
-        end
-      end
-    end
-    local kept = {}
-    for j, e in ipairs(edges) do if not removed[j] then kept[#kept + 1] = e end end
-    edges = kept
-  end
-
-  -- 6. Link kinds: climbs alternate kinds per level pair (stair first, then ramp / drop / lift / bridge).
-  local per_pair = {}
-  local links = {}
-  for _, e in ipairs(edges) do
-    local n_par = e.parallel or 1
-    for p = 1, n_par do
-      local l = { a = e.ka, b = e.kb, a_y = e.za.pos[2] + e.oa, b_y = e.zb.pos[2] + e.ob, edge = e, par = p }
-      if e.kind then l.type = e.kind
-      elseif math.abs(e.diff) <= 0.5 + EPS then
-        l.type = cfg.open_air and "bridge" or "corridor"
-      else
-        local lo, hi = math.min(l.a_y, l.b_y), math.max(l.a_y, l.b_y)
-        local pk = lo .. "/" .. hi
-        per_pair[pk] = (per_pair[pk] or 0) + 1
-        local nth = per_pair[pk]
-        local low_zone = (l.a_y < l.b_y) and e.za or e.zb
-        local high_y = hi
-        local can_drop = not cfg.open_air and LA[low_zone.archetype].tall and (high_y + DATA.corridor_height <= low_zone.pos[2] + low_zone.height - 0.5)
-        local kinds = nil
-        if cfg.open_air then
-          kinds = { "bridge", "stair", "bridge", "stair" }
-        else
-          kinds = { "stair", can_drop and "drop" or "ramp", "ramp", can_drop and "drop" or "stair" }
-          if cfg.lifts and nth == 3 then kinds[3] = "lift" end
-        end
-        local t = kinds[((nth - 1) % #kinds) + 1]
-        if nth > #kinds then t = rng.pick(kinds) end
-        l.type = t
-        if t == "drop" and l.a_y < l.b_y then l.a, l.b, l.a_y, l.b_y = l.b, l.a, l.b_y, l.a_y end
-      end
-      if l.type == "corridor" then l.width = rng.pick(DATA.corridor_widths) end
-      if l.type == "bridge" then l.width = rng.pick({ 3, 3.5, 4 }) l.style = rng.pick({ "truss", "plank", "girder", "truss" }) end
-      if l.type == "stair" or l.type == "ramp" then l.width = rng.pick({ 3.5, 4, 4.5 }) end
-      if l.type == "drop" then l.width = 4 end
-      if l.type == "lift" then l.width = 4 end
-      links[#links + 1] = l
-    end
-  end
-  -- Every pair of adjacent levels gets at least two kinds of vertical connection (zone stairs count): a second
-  -- climb becomes a ramp (or a drop into a tall zone) when the pair has only one kind.
-  do
-    local pairs_k = {}
-    local function lv(y) return math.floor(y / step + 0.25) end
-    local function key(a, b) return math.min(lv(a), lv(b)) .. "/" .. math.max(lv(a), lv(b)) end
-    local function kinds_of(k) pairs_k[k] = pairs_k[k] or { n = 0 } return pairs_k[k] end
-    local function add(k, t) local e = kinds_of(k) if not e[t] then e[t] = true e.n = e.n + 1 end end
-    for _, k in ipairs(keys) do
-      local z = zones[k]
-      if #z.levels > 1 then
-        local kk = key(z.pos[2], z.pos[2] + z.levels[2])
-        if z.archetype == "split" or z.archetype == "tower" or z.archetype == "terrace" then add(kk, "stair") add(kk, "ramp")
-        else add(kk, "stair") end
-      end
-      if z.archetype == "sunken" then add(key(z.pos[2] - 4.5, z.pos[2]), "stair") add(key(z.pos[2] - 4.5, z.pos[2]), "drop") end
-      if z.archetype == "mound" then add(key(z.pos[2], z.pos[2] + 4.5), "stair") add(key(z.pos[2], z.pos[2] + 4.5), "ramp") end
-    end
-    for _, l in ipairs(links) do
-      -- (mirror twins copy their twin's kind below, so they do not count here)
-      if math.abs(l.a_y - l.b_y) > 0.5 and l.type ~= "window" and not l.edge.twin then add(key(l.a_y, l.b_y), l.type) end
-    end
-    for _, l in ipairs(links) do
-      local k = key(l.a_y, l.b_y)
-      local e = pairs_k[k]
-      if e and e.n < 2 and math.abs(l.a_y - l.b_y) > 0.5 and not l.edge.kind and not l.edge.twin then
-        local alt = cfg.open_air and "stair" or "ramp"
-        if l.type == alt then alt = cfg.open_air and "bridge" or "stair" end
-        if not e[alt] then
-          l.type = alt
-          if alt == "ramp" or alt == "stair" then l.width = l.width or 4 end
-          if alt == "bridge" then l.width = 3.5 l.style = l.style or "plank" end
-          add(k, alt)
-        end
-      end
-    end
-  end
-  -- Mirror twins take their twin's kind and width.
-  for _, l in ipairs(links) do
-    if l.edge.twin then
-      for _, m in ipairs(links) do
-        if m.edge.cfg == l.edge.twin and m.par == l.par then
-          l.type, l.width, l.style = m.type, m.width, m.style
-          if (m.a_y > m.b_y) ~= (l.a_y > l.b_y) and l.type == "drop" then l.a, l.b, l.a_y, l.b_y = l.b, l.a, l.b_y, l.a_y end
-        end
-      end
-    end
-  end
-
-  -- 7. Gaps per column and row boundary from what crosses them.
-  local colgap, rowgap = {}, {}
-  for c = 0, cfg.cols - 2 do colgap[c] = q2(rng.range(cfg.gap[1], cfg.gap[2])) end
-  for r = 0, cfg.rows - 2 do rowgap[r] = q2(rng.range(cfg.gap[1], cfg.gap[2])) end
-  for _, l in ipairs(links) do
-    local ca, cb = cells[l.a], cells[l.b]
-    local need = gap_need(l) + 1
-    if ca.r == cb.r then
-      local c = math.min(ca.c, cb.c)
-      colgap[c] = math.max(colgap[c], need)
-    else
-      local r = math.min(ca.r, cb.r)
-      rowgap[r] = math.max(rowgap[r], need)
-    end
-  end
-  if cfg.mirror_cols then
-    for c = 0, cfg.cols - 2 do local m = cfg.cols - 2 - c local v = math.max(colgap[c], colgap[m]) colgap[c], colgap[m] = v, v end
-  end
-  for c = 0, cfg.cols - 2 do colgap[c] = q2(colgap[c]) end
-  for r = 0, cfg.rows - 2 do rowgap[r] = q2(rowgap[r]) end
-  place(colgap, rowgap)
-  -- Gap widening where the jitter ate into a link's need.
-  for _, k in ipairs(keys) do zones[k].pos[1] = q2(zones[k].pos[1]) zones[k].pos[3] = q2(zones[k].pos[3]) end
-
-  -- 8. Emit into the graph with ids.
-  local id_of = {}
-  local order = {}
-  for _, k in ipairs(keys) do order[#order + 1] = k end
-  for i, k in ipairs(order) do
-    local z = zones[k]
-    z.id = cfg.prefix and (cfg.prefix .. i) or ("z" .. (#G.zones + 1))
-    id_of[k] = z.id
-    G.zones[#G.zones + 1] = z
-  end
-  for _, k in ipairs(order) do local z = zones[k] if z.twin then z.mirror_of = id_of[z.twin] z.twin = nil end end
-  for _, l in ipairs(links) do
-    l.a, l.b = id_of[l.a], id_of[l.b]
-    l.edge, l.par = nil, nil
-    l.id = "l" .. (#G.links + 1)
-    G.links[#G.links + 1] = l
-  end
-  return zones, id_of, cells
-end
-
--- Assigns link offsets (random in the free spans) and, when a link does not fit, re-centres its zones' jitter.
-local function fix_offsets(G, rng)
-  for pass = 1, 4 do
-    for _, l in ipairs(G.links) do l.offset = nil end
-    local plan = resolve(G, rng, true)
-    if #plan.errors == 0 then return plan end
-    -- First narrow the failing links to their minimum width, then re-centre their zones.
-    local narrowed = false
-    if pass == 1 then
-      for _, e in ipairs(plan.errors) do
-        for _, l in ipairs(G.links) do
-          if l.id == e.link and l.width and l.type ~= "road" then
-            local min = (l.type == "bridge") and 3 or 3.5
-            if l.width > min then l.width = min narrowed = true end
-          end
-        end
-      end
-    end
-    -- Centre the zones of each failing link in their cells (drop jitter) and retry.
-    local byid = {}
-    for _, z in ipairs(G.zones) do byid[z.id] = z end
-    for _, e in ipairs(narrowed and {} or plan.errors) do
-      for _, l in ipairs(G.links) do
-        if l.id == e.link then
-          for _, zid in ipairs({ l.a, l.b }) do
-            local z = byid[zid]
-            if z and z.home then z.pos[1], z.pos[3] = z.home[1], z.home[2] end
-          end
-        end
-      end
-    end
-  end
-  for _, l in ipairs(G.links) do l.offset = nil end
-  return resolve(G, rng, true)
-end
-
--- Mirrors offsets of twin links (team modes): a link along x keeps its z, a link along z mirrors its x about the
--- axis; links of the centre column sit on the axis.
-local function mirror_offsets(G, axis_x)
-  local byid = {}
-  for _, z in ipairs(G.zones) do byid[z.id] = z end
-  local twin = {}
-  for _, z in ipairs(G.zones) do if z.mirror_of then twin[z.id] = z.mirror_of twin[z.mirror_of] = z.id end end
-  local used = {}
-  for _, l in ipairs(G.links) do
-    local za, zb = byid[l.a], byid[l.b]
-    if za.mirror_of or zb.mirror_of then
-      local ta, tb = twin[l.a] or l.a, twin[l.b] or l.b
-      for _, m in ipairs(G.links) do
-        if not used[m] and m ~= l and m.type == l.type and ((m.a == ta and m.b == tb) or (m.a == tb and m.b == ta))
-          and not byid[m.a].mirror_of and not byid[m.b].mirror_of then
-          used[m] = true
-          local f = link_frame(za, zb)
-          if f and m.offset then
-            if f.axis == "x" then l.offset = m.offset else l.offset = q4(2 * axis_x - m.offset) end
-          end
-          break
-        end
-      end
-    elseif not twin[l.a] and not twin[l.b] then
-      local f = link_frame(za, zb)
-      if f and f.axis == "z" and math.abs(za.pos[1] - axis_x) < 0.01 and math.abs(zb.pos[1] - axis_x) < 0.01 then l.offset = axis_x end
-    end
-  end
-end
-
-local function finalize(G)
-  G.area = layout_area(G, resolve(G, nil, false))
-  G.levels = floor_levels(G)
-  return G
-end
 
 -- Spawn groups spread over zones by area (DM, KOTH).
 local function spread_spawns(G, total, filter)
   local list = {}
   for _, z in ipairs(G.zones) do if filter(z) then list[#list + 1] = z end end
-  table.sort(list, function(a, b) if zone_area(a) ~= zone_area(b) then return zone_area(a) > zone_area(b) end return a.id < b.id end)
+  -- biggest first, ties by id (an insertion sort on the areas, measured once)
+  local ar = {}
+  for i, z in ipairs(list) do ar[i] = { z = z, a = zone_area(z) } end
+  for i = 2, #ar do
+    local c, j = ar[i], i - 1
+    while j >= 1 and (ar[j].a < c.a or (ar[j].a == c.a and ar[j].z.id > c.z.id)) do ar[j + 1] = ar[j] j = j - 1 end
+    ar[j + 1] = c
+  end
+  for i, e in ipairs(ar) do list[i] = e.z end
   local counts = {}
   local n = #list
   local share = math.max(1, math.ceil(n * 0.75))
@@ -2029,482 +2868,6 @@ local POOL = {
   open_air = { "isle", "deck", "garden", "gantry", "outpost", "plaza", "mast" },
   open_air_hub = { "ring", "hangar" },
 }
-
-local function gen_dm(G, rng, t)
-  local B = G.budget
-  local cols, rows = B.grid[1], B.grid[2]
-  local open = G.class == "open_air"
-  local nz = rng.int(B.zones[1], math.min(B.zones[2], cols * rows))
-  if open then nz = math.min(nz, 14) end
-  -- Cells: start full, drop corner cells at random down to nz.
-  local cells, keys = {}, {}
-  for r = 0, rows - 1 do for c = 0, cols - 1 do local k = c .. "," .. r cells[k] = { c = c, r = r } keys[#keys + 1] = k end end
-  local hubs = {}
-  local hc, hr = math.floor((cols - 1) / 2), math.floor((rows - 1) / 2)
-  hubs[1] = hc .. "," .. hr
-  if B.hubs[1] >= 2 then hubs[2] = math.min(cols - 1, hc + 2) .. "," .. math.min(rows - 1, hr + 1) end
-  local removable = {}
-  for _, k in ipairs(keys) do
-    local c = cells[k]
-    local corner = (c.c == 0 or c.c == cols - 1) and (c.r == 0 or c.r == rows - 1)
-    local edge = (c.c == 0 or c.c == cols - 1 or c.r == 0 or c.r == rows - 1)
-    local hub = false
-    for _, h in ipairs(hubs) do if h == k then hub = true end end
-    if not hub and (corner or (edge and cols * rows - nz > 4)) then removable[#removable + 1] = k end
-  end
-  rng.shuffle(removable)
-  local present = cols * rows
-  local nook_slots = {}
-  -- Removing a cell must leave every remaining cell with two neighbours (no zone born a dead end).
-  local function nbr_count(c, r)
-    local n = 0
-    for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do if cells[(c + d[1]) .. "," .. (r + d[2])] then n = n + 1 end end
-    return n
-  end
-  for _, k in ipairs(removable) do
-    if present > nz and cells[k] then
-      local c0 = cells[k]
-      cells[k] = nil
-      local ok = true
-      for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
-        local nk = (c0.c + d[1]) .. "," .. (c0.r + d[2])
-        if cells[nk] and nbr_count(c0.c + d[1], c0.r + d[2]) < 2 then ok = false end
-      end
-      if ok then present = present - 1 nook_slots[#nook_slots + 1] = k else cells[k] = c0 end
-    end
-  end
-  -- Levels: a gradient across the grid plus noise, split in thirds (low, middle, high).
-  local ang = rng.range(0, 2 * math.pi)
-  local vals = {}
-  for _, k in ipairs(keys) do
-    local c = cells[k]
-    if c then vals[#vals + 1] = { k, math.cos(ang) * c.c + math.sin(ang) * c.r + rng.range(-0.45, 0.45) } end
-  end
-  table.sort(vals, function(a, b) return a[2] < b[2] end)
-  for i, v in ipairs(vals) do cells[v[1]].level = math.min(2, math.floor((i - 1) * 3 / #vals)) end
-  -- Hubs sit on the ground level BEFORE the smoothing below, so their neighbours come down to within one level of
-  -- them (forcing a hub down afterwards left level-2 neighbours two storeys above it: unlinkable, and the lost hub
-  -- links cost small open-air layouts their loops).
-  for _, h in ipairs(hubs) do if cells[h] then cells[h].level = 0 end end
-  -- Neighbours never sit two levels apart (a link climbs one level).
-  for _ = 1, 6 do
-    local changed = false
-    for _, k in ipairs(keys) do
-      local c = cells[k]
-      if c then
-        for _, d in ipairs({ { 1, 0 }, { 0, 1 } }) do
-          local o = cells[(c.c + d[1]) .. "," .. (c.r + d[2])]
-          if o and math.abs(c.level - o.level) >= 2 then
-            if c.level > o.level then c.level = c.level - 1 else o.level = o.level - 1 end
-            changed = true
-          end
-        end
-      end
-    end
-    if not changed then break end
-  end
-  for _, h in ipairs(hubs) do if cells[h] then cells[h].level = 0 end end
-  local themes = G.themes
-  for _, k in ipairs(keys) do
-    local c = cells[k]
-    if c then
-      c.role = "room"
-      c.choices = open and POOL.open_air or POOL.indoor
-      c.palette = { theme = themes[(c.level % #themes) + 1], variant = 1 + ((c.c + c.r) % 3) }
-      c.params = { split = rng.pick({ "+x", "-x", "+z", "-z" }) }
-    end
-  end
-  for i, h in ipairs(hubs) do
-    if cells[h] then
-      cells[h].role = "hub"
-      cells[h].choices = open and POOL.open_air_hub or POOL.hub
-      cells[h].weight = 1.9
-      cells[h].palette = { theme = themes[math.min(#themes, 3)], variant = i }
-      cells[h].params = { depth = 4.5 }
-      cells[h].auto_level = true
-    end
-  end
-  -- Edges: every orthogonal neighbour pair; hubs get a second (parallel) link to two neighbours.
-  local edges = {}
-  for _, k in ipairs(keys) do
-    local c = cells[k]
-    if c then
-      for _, d in ipairs({ { 1, 0 }, { 0, 1 } }) do
-        local nk = (c.c + d[1]) .. "," .. (c.r + d[2])
-        if cells[nk] then
-          local par = nil
-          if (c.role == "hub" or cells[nk].role == "hub") and not open and rng.chance(0.5) then par = 2 end
-          edges[#edges + 1] = { k, nk, parallel = par }
-        end
-      end
-    end
-  end
-  -- A reward nook in one empty cell beside the grid, when the area allows it.
-  local nooks = 0
-  local max_nooks = math.floor(G.target_area / DATA.nook_area)
-  if not open then
-    for _, k in ipairs(nook_slots) do
-      if nooks < math.min(1, max_nooks) then
-        local sc = { k:match("^(%-?%d+),(%-?%d+)$") }
-        local c, r = tonumber(sc[1]), tonumber(sc[2])
-        local nb = nil
-        for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
-          local nk = (c + d[1]) .. "," .. (r + d[2])
-          if cells[nk] and cells[nk].role ~= "hub" and not nb then nb = nk end
-        end
-        if nb then
-          cells[k] = { c = c, r = r, role = "nook", archetype = "nook", weight = 0.18, level = cells[nb].level,
-            palette = { theme = cells[nb].palette.theme, variant = 3 } }
-          edges[#edges + 1] = { k, nb, required = true }
-          nooks = nooks + 1
-        end
-      end
-    end
-  end
-  grid_layout(G, rng, {
-    cols = cols, rows = rows, cells = cells, edges = edges, target_area = G.target_area, prune = open and 0 or 0.4,
-    min_rank = math.ceil((G.size_class == "L" and DATA.cycle_per_1000_L or DATA.cycle_per_1000) * G.target_area / 1000),
-    gap = open and { 12, 18 } or { 6, 11 }, open_air = open, lifts = (G.size_class == "L" or G.size_class == "M") and not open,
-  })
-  -- Spawns: by the per-spawn budget, over 75% of the zones (never the nook).
-  local per = (B.per_spawn[1] + B.per_spawn[2]) / 2
-  local total = clamp(math.floor(G.target_area / per + 0.5), 4, 40)
-  spread_spawns(G, total, function(z) return z.role ~= "nook" end)
-end
-
-local function gen_ctf(G, rng, t)
-  local open = G.class == "open_air"
-  local cols, rows = 5, 3
-  local cells = {}
-  local themes = G.themes
-  -- Lanes: row 0 the high lane, row 1 the middle (bases), row 2 the flank (tunnel) lane.
-  -- the high lane a level up, the flank lane a level down: three storeys (spec a.2: a lane at another height)
-  local lane_level = { [0] = 1, [1] = 0, [2] = -1 }
-  local centre_high = false
-  local used = {}
-  local function cell(c, r, o)
-    o.c, o.r = c, r
-    cells[c .. "," .. r] = o
-    return o
-  end
-  local red_cols = { 0, 1 }
-  for _, c in ipairs(red_cols) do
-    for r = 0, rows - 1 do
-      local o = { level = lane_level[r], lane = r, team = "red", palette = { theme = themes[(c % #themes) + 1], variant = 1 + r, team = "red" } }
-      -- Sizes keep the flags 50-115 m apart: the lanes run along x, so zones are narrow in x and deep in z.
-      local deep = rng.pick({ 22, 24, 26 })
-      if c == 0 and r == 1 then
-        o.role = "base"
-        o.choices = open and { "tower", "terrace" } or { "gallery" }
-        o.size = open and { 24, 26 } or { 18, 26 }
-        o.fixed = true
-        -- the base's upper deck faces the high lane (row 0, toward -z)
-        o.params = { split = "-z" }
-        o.fixed_split = true
-      elseif c == 0 then
-        o.role = "spawn"
-        o.choices = open and { "deck", "isle", "garden", "outpost", "gantry" } or { "hall", "storage", "colonnade", "courtyard" }
-        o.size = { 16, 20 }
-      elseif r == 2 then
-        o.role = "flank"
-        o.choices = open and { "garden", "isle", "gantry" } or { "tunnel", "storage" }
-        o.size = { open and 18 or 12, deep }
-      else
-        o.role = "room"
-        o.choices = open and { "isle", "deck", "garden", "gantry", "outpost" } or { "hall", "colonnade", "pit", "courtyard" }
-        o.size = { 18, deep }
-      end
-      o.params = o.params or { split = rng.pick({ "+x", "-x" }) }
-      cell(c, r, o)
-    end
-  end
-  -- Centre column: the mid hub, the high crossing and the low flank, neutral palettes.
-  cell(2, 0, { level = centre_high and 2 or 1, lane = 0, role = "room", centre_x = true, size = { 18, 22 },
-    choices = open and { "deck", "garden", "isle", "outpost" } or { "hall", "colonnade", "courtyard" }, palette = { theme = themes[3] or themes[1], variant = 1 } })
-  cell(2, 1, { level = 0, lane = 1, role = "hub", centre_x = true, params = { depth = 4.5 }, size = open and { 26, 30 } or { 28, 30 },
-    choices = open and { "ring", "hangar" } or { "arena", "sunken", "atrium" }, palette = { theme = themes[3] or themes[1], variant = 2 } })
-  cell(2, 2, { level = -1, lane = 2, role = "flank", centre_x = true, size = { 14, 24 },
-    choices = open and { "garden", "isle", "gantry" } or { "tunnel", "storage", "pit" }, palette = { theme = themes[3] or themes[1], variant = 3 } })
-  -- Blue half mirrors the red one.
-  for _, c in ipairs(red_cols) do
-    for r = 0, rows - 1 do
-      local src = cells[c .. "," .. r]
-      cell(cols - 1 - c, r, { mirror_of = c .. "," .. r, role = src.role, lane = r, team = "blue",
-        palette = { theme = src.palette.theme, variant = src.palette.variant, team = "blue" } })
-    end
-  end
-  -- Edges: three lanes along x, base cross links, centre cross links; blue twins of red edges.
-  local edges = {}
-  local function edge(a, b, o) o = o or {} o[1], o[2] = a, b edges[#edges + 1] = o return #edges end
-  local function mk(c, r) return c .. "," .. r end
-  local function mirror_key(k) local c, r = k:match("^(%d+),(%d+)$") return (cols - 1 - tonumber(c)) .. "," .. r end
-  local red_edges = {}
-  for r = 0, rows - 1 do
-    red_edges[#red_edges + 1] = edge(mk(0, r), mk(1, r), { required = true })
-    red_edges[#red_edges + 1] = edge(mk(1, r), mk(2, r), { required = true })
-  end
-  red_edges[#red_edges + 1] = edge(mk(0, 1), mk(0, 0), { required = true })
-  red_edges[#red_edges + 1] = edge(mk(0, 1), mk(0, 2), { required = true })
-  red_edges[#red_edges + 1] = edge(mk(1, 0), mk(1, 1), { required = true })
-  if rng.chance(0.6) then red_edges[#red_edges + 1] = edge(mk(1, 1), mk(1, 2), {}) end
-  edge(mk(2, 0), mk(2, 1), { required = true })
-  edge(mk(2, 1), mk(2, 2), { required = true })
-  for _, i in ipairs(red_edges) do
-    local e = edges[i]
-    local o = { required = e.required, climb = e.climb, twin = i }
-    edge(mirror_key(e[1]), mirror_key(e[2]), o)
-  end
-  grid_layout(G, rng, {
-    cols = cols, rows = rows, cells = cells, edges = edges, target_area = G.target_area, prune = 0, min_rank = 0,
-    gap = open and { 6, 7 } or { 5, 7 }, open_air = open, mirror_cols = true,
-  })
-  -- Twin edges: grid_layout recorded twin as the red edge index; link twins share kinds there.
-  -- Flags in the bases; spawns in each team's base and spawn rooms.
-  local base_r, base_b = nil, nil
-  for _, z in ipairs(G.zones) do
-    if z.role == "base" and z.team == "red" then base_r = z end
-    if z.role == "base" and z.team == "blue" then base_b = z end
-  end
-  G.objectives[#G.objectives + 1] = { kind = "flag", team = "red", zone = base_r.id }
-  G.objectives[#G.objectives + 1] = { kind = "flag", team = "blue", zone = base_b.id }
-  local per = (G.budget.per_spawn[1] + G.budget.per_spawn[2]) / 2
-  local team_total = clamp(math.floor(G.target_area / per / 2 + 0.5), 4, 16)
-  for _, team in ipairs({ "red", "blue" }) do
-    local list = {}
-    for _, z in ipairs(G.zones) do if z.team == team and (z.role == "spawn" or z.role == "base") then list[#list + 1] = z end end
-    table.sort(list, function(a, b) return a.id < b.id end)
-    local each = math.floor(team_total / #list)
-    local extra = team_total - each * #list
-    for i, z in ipairs(list) do
-      G.objectives[#G.objectives + 1] = { kind = "spawns", id = "s" .. (#G.objectives + 1), zone = z.id, team = team, count = each + ((i <= extra) and 1 or 0) }
-    end
-  end
-end
-
-local function gen_koth(G, rng, t)
-  local open = G.class == "open_air"
-  local cells = {}
-  local themes = G.themes
-  for r = 0, 2 do
-    for c = 0, 2 do
-      local k = c .. "," .. r
-      if c == 1 and r == 1 then
-        local mode = rng.chance(0.6) and "sunken" or "mound"
-        cells[k] = { c = c, r = r, role = "hill", level = 0, weight = 2.0,
-          archetype = open and "summit" or mode, params = { depth = 4.5 }, palette = { theme = themes[3] or themes[1], variant = 1 } }
-      else
-        local corner = (c ~= 1 and r ~= 1)
-        cells[k] = { c = c, r = r, role = "room", level = corner and rng.int(0, 1) or rng.int(0, 1),
-          choices = open and POOL.open_air or POOL.indoor,
-          palette = { theme = themes[((c + r) % 2) + 1], variant = 1 + ((c * 3 + r) % 3) }, params = { split = rng.pick(SIDES) } }
-      end
-    end
-  end
-  -- Make sure some ring zones sit a level up (3 floor levels with the sunken court or the plinth).
-  local up = 0
-  for _, k in ipairs({ "0,0", "1,0", "2,0", "2,1", "2,2", "1,2", "0,2", "0,1" }) do if cells[k].level == 1 then up = up + 1 end end
-  if up < 2 then cells["2,0"].level = 1 cells["0,2"].level = 1 end
-  if up > 6 then cells["1,0"].level = 0 cells["1,2"].level = 0 end
-  -- A raised hill (or a sky ring) adds no storey below: two corners go a level higher still, their
-  -- ring neighbours a level up, so the layout keeps three storeys.
-  if cells["1,1"].archetype ~= "sunken" then
-    for _, k in ipairs({ "0,0", "2,2" }) do cells[k].level = 2 end
-    for _, k in ipairs({ "1,0", "0,1", "2,1", "1,2" }) do cells[k].level = 1 end
-  end
-  -- Floating rings: the corners keep whole storeys; the four decks around the hill float half a metre apart
-  -- (0, 0.5, 1, 1.5 m) so the floor has real height variety, not one flat ring.
-  if open then
-    for _, k in ipairs({ "0,0", "2,0", "0,2", "2,2" }) do cells[k].offset = 0 end
-    for i, k in ipairs({ "1,0", "2,1", "1,2", "0,1" }) do cells[k].offset = (i - 1) * 0.5 end
-  end
-  local edges = {}
-  local ring = { "0,0", "1,0", "2,0", "2,1", "2,2", "1,2", "0,2", "0,1" }
-  for i = 1, #ring do edges[#edges + 1] = { ring[i], ring[i % #ring + 1], required = true } end
-  local approaches = rng.int(6, 8)
-  local spokes = { "1,0", "2,1", "1,2", "0,1" }
-  rng.shuffle(spokes)
-  for i, k in ipairs(spokes) do
-    edges[#edges + 1] = { k, "1,1", required = true, parallel = (i <= approaches - 4) and 2 or 1 }
-  end
-  grid_layout(G, rng, {
-    cols = 3, rows = 3, cells = cells, edges = edges, target_area = G.target_area, prune = 0, min_rank = 0,
-    gap = open and { 12, 18 } or { 7, 11 }, open_air = open,
-  })
-  local hill = nil
-  for _, z in ipairs(G.zones) do if z.role == "hill" then hill = z end end
-  local radius = math.max(6, math.min(hill.size[1], hill.size[2]) / 2 - 7)
-  G.objectives[#G.objectives + 1] = { kind = "hill", zone = hill.id, radius = radius }
-  local per = (G.budget.per_spawn[1] + G.budget.per_spawn[2]) / 2
-  local total = clamp(math.floor(G.target_area / per + 0.5), 6, 24)
-  local list = {}
-  for _, z in ipairs(G.zones) do if z.role ~= "hill" then list[#list + 1] = z end end
-  -- Alternate teams around the ring so both sides start the same distance from the hill.
-  table.sort(list, function(a, b) return a.id < b.id end)
-  local each = math.max(1, math.floor(total / #list))
-  for i, z in ipairs(list) do
-    G.objectives[#G.objectives + 1] = { kind = "spawns", id = "s" .. (#G.objectives + 1), zone = z.id, count = each }
-  end
-end
-
--- Payload: a start row, then per segment a span row (road) and a checkpoint row (yard; the finale last), with a
--- flank column and a high-ground column that swap sides every segment.
-local function gen_payload(G, rng, t)
-  local themes = G.themes
-  local players = G.players
-  local nseg = 3 + ((players >= 12) and 1 or 0) + ((players >= 20) and 1 or 0)
-  nseg = clamp(nseg, DATA.payload_segments[1], DATA.payload_segments[2])
-  if G.segments then nseg = clamp(G.segments, 3, 5) end
-  local step = G.step
-  local cells = {}
-  local rows = 1 + 2 * nseg
-  -- Segment levels: climbs of one step (at least one), level legs, at most one downhill pay-off.
-  local lv = { [0] = 0 }
-  local downs = 0
-  local ups = 0
-  for s = 1, nseg do
-    local roll = rng.float()
-    local d = nil
-    if s == 1 then d = (roll < 0.5) and 1 or 0
-    elseif roll < 0.5 then d = 1
-    elseif roll < 0.8 or downs >= 1 or lv[s - 1] == 0 then d = 0
-    else d = -1 end
-    if d == -1 then downs = downs + 1 end
-    if d == 1 then ups = ups + 1 end
-    lv[s] = math.max(0, lv[s - 1] + d)
-  end
-  if ups == 0 then lv[nseg] = lv[nseg - 1] + 1 end
-  local tunnel = rng.int(2, nseg)
-  -- Columns: 0 and 2 alternate flank (indoor, at the track level) and high ground (a level up).
-  local flank_pool = { "hall", "storage", "colonnade", "gallery", "pit", "split", "tunnel" }
-  -- High ground: open terraces and courtyards under the sky, or the upper floor of a building.
-  local high_pool = { "overlook", "courtyard", "hall", "colonnade", "gallery" }
-  local used = {}
-  cells["1,0"] = { c = 1, r = 0, role = "spawn", archetype = "start", level = 0, segment = 1, fixed = true,
-    palette = { theme = themes[1], variant = 2, team = "blue" } }
-  local first_flank_col = rng.chance(0.5) and 0 or 2
-  cells[first_flank_col .. ",0"] = { c = first_flank_col, r = 0, role = "staging", archetype = "hall", level = 0, segment = 1,
-    palette = { theme = themes[1], variant = 3, team = "blue" }, weight = 0.7 }
-  used.hall = 1
-  local edges = {}
-  local function E(a, b, o) o = o or {} o[1], o[2] = a, b edges[#edges + 1] = o end
-  E("1,0", "1,1", { required = true, kind = "doorway" })
-  E("1,0", first_flank_col .. ",0", { required = true })
-  for s = 1, nseg do
-    local theme = themes[((s - 1) % #themes) + 1]
-    local rs, rc = 2 * s - 1, 2 * s
-    local flank_col = ((s % 2 == 1) == (first_flank_col == 0)) and 0 or 2
-    local high_col = 2 - flank_col
-    local y_in, y_out = lv[s - 1], lv[s]
-    -- The road: level stretches at both ends (side doors), a grade of at most 15% between.
-    local rise = (y_out - y_in) * step
-    local road_len = (rise ~= 0) and (24 + even(math.abs(rise) / 0.14 + 1)) or rng.pick({ 36, 40, 44 })
-    cells["1," .. rs] = { c = 1, r = rs, role = "span", archetype = "road", level = y_in, segment = s, jx_range = 7,
-      params = { heading = "+z", rise = rise, south = 12, north = 12, tunnel = (s == tunnel) or nil }, palette = { theme = theme, variant = 1 },
-      size = { rng.pick({ 10, 10, 12 }), road_len } }
-    local last = (s == nseg)
-    cells["1," .. rc] = { c = 1, r = rc, role = "checkpoint", archetype = last and "finale" or "yard", level = y_out, segment = s,
-      palette = { theme = last and "bunker" or theme, variant = 2 }, weight = last and 1.8 or 1.25 }
-    -- The span row's side zones sit at the road's two ends: the flank meets the low end, the high ground the top.
-    cells[flank_col .. "," .. rs] = { c = flank_col, r = rs, role = "flank", level = y_in, segment = s, align = "south",
-      choices = flank_pool, palette = { theme = theme, variant = 3 }, params = { split = "+z" },
-      size = { rng.pick({ 18, 20, 22 }), math.min(road_len - 6, rng.pick({ 26, 28, 30 })) } }
-    cells[flank_col .. "," .. rc] = { c = flank_col, r = rc, role = "flank", level = y_out, segment = s,
-      choices = flank_pool, palette = { theme = theme, variant = 1 }, params = { split = "+z" }, size = { rng.pick({ 18, 20, 22 }), rng.pick({ 24, 26 }) } }
-    cells[high_col .. "," .. rs] = { c = high_col, r = rs, role = "high", choices = high_pool, level = y_in + 1, segment = s, align = "north",
-      palette = { theme = theme, variant = 2 }, params = { split = "+z" }, size = { rng.pick({ 18, 20 }), math.min(road_len - 6, rng.pick({ 24, 28, 32 })) } }
-    cells[high_col .. "," .. rc] = { c = high_col, r = rc, role = "high", archetype = (s % 2 == 1) and "overlook" or nil, choices = high_pool,
-      level = y_out + 1, segment = s, palette = { theme = theme, variant = 3 }, size = { rng.pick({ 18, 20 }), rng.pick({ 24, 26 }) } }
-    -- Spine, flank and high routes along the segment, and cross links between the columns.
-    E("1," .. rs, "1," .. rc, { required = true, kind = "road" })
-    E(flank_col .. "," .. rs, flank_col .. "," .. rc, { required = true })
-    E(high_col .. "," .. rs, high_col .. "," .. rc, { required = true })
-    E(flank_col .. "," .. rs, "1," .. rs, { required = true })
-    E("1," .. rs, high_col .. "," .. rs, { required = true })
-    E(flank_col .. "," .. rc, "1," .. rc, { required = true, parallel = 2 })
-    E("1," .. rc, high_col .. "," .. rc, { required = true, kind = (not last) and "drop" or nil })
-    if not last then
-      E(high_col .. "," .. rc, "1," .. rc, { kind = "stair" })
-    end
-    -- Into the next segment: the cart gate, and both side columns.
-    if s > 1 then
-      local prc = 2 * (s - 1)
-      E("1," .. prc, "1," .. rs, { required = true, kind = "road" })
-      E("0," .. prc, "0," .. rs, { required = true })
-      E("2," .. prc, "2," .. rs, { required = true })
-    else
-      E(first_flank_col .. ",0", flank_col .. ",1", { required = true })
-    end
-  end
-  -- Archetype choice for flanks happens in grid_layout (choices); the span-row flank is long.
-  grid_layout(G, rng, {
-    cols = 3, rows = rows, cells = cells, edges = edges, target_area = G.target_area, prune = 0, min_rank = 0, gap = { 7, 10 },
-  })
-  -- Drop links from the overlooks into the yard were set as kind "drop": orient high -> low.
-  local halves = {}
-  local byid = {}
-  for _, z in ipairs(G.zones) do byid[z.id] = z end
-  for _, l in ipairs(G.links) do
-    local za, zb = byid[l.a], byid[l.b]
-    if l.type == "drop" then
-      if l.a_y < l.b_y then l.a, l.b, l.a_y, l.b_y = l.b, l.a, l.b_y, l.a_y end
-      -- the overlook's floor is the high port; the yard floor is the landing
-      l.width = 4
-    end
-    if l.type == "road" then l.width = math.min(za.size[1], zb.size[1], 9) - 1 l.sky = true end
-    -- The checkpoint splits its row at the yard's centre: the side rooms keep a way into the yard on each
-    -- side of that line, so neither half of a side room is a dead end of its segment.
-    if za.cell[2] == zb.cell[2] and za.cell[2] % 2 == 0 and za.cell[2] > 0 and (za.cell[1] == 1 or zb.cell[1] == 1) then
-      local key = (za.id < zb.id) and (za.id .. zb.id) or (zb.id .. za.id)
-      halves[key] = (halves[key] or 0) + 1
-      l.prefer = (halves[key] % 2 == 1) and -1 or 1
-    end
-    if l.type == "stair" and math.abs(l.a_y - l.b_y) < EPS then l.type = "corridor" l.width = 4.5 end
-    za.segment = za.segment or 1
-  end
-  -- Segment index per zone from the cells.
-  for _, z in ipairs(G.zones) do
-    local cell = cells[z.cell[1] .. "," .. z.cell[2]]
-    z.segment = cell.segment
-    if z.archetype == "road" then z.params.tunnel = cell.params.tunnel end
-  end
-  -- Objectives: the cart along the spine, checkpoints at the yards, spawn groups with the hand-off.
-  local spine = {}
-  for r = 1, rows - 1 do
-    for _, z in ipairs(G.zones) do if z.cell[1] == 1 and z.cell[2] == r then spine[#spine + 1] = z.id end end
-  end
-  G.objectives[#G.objectives + 1] = { kind = "cart", zones = spine, attacking_team = "blue" }
-  local function zone_at(c, r) for _, z in ipairs(G.zones) do if z.cell[1] == c and z.cell[2] == r then return z end end end
-  local start = zone_at(1, 0)
-  local staging = zone_at(first_flank_col, 0)
-  local function spawns(zone, team, role, count, group)
-    local id = "s" .. (#G.objectives + 1)
-    G.objectives[#G.objectives + 1] = { kind = "spawns", id = id, zone = zone.id, team = team, role = role, count = count, group = group }
-    return id
-  end
-  -- Every spawn group belongs to the checkpoint it serves: Alpine switches the respawns a checkpoint links ON while
-  -- that checkpoint is the cart's next target and OFF once it is captured, and never touches a respawn no checkpoint
-  -- links (alpinefaction game_patch/multi/gametype.cpp:877-887 rev_should_enable_respawn_point, 986-1000
-  -- koth_update_respawn_points, 2144-2152 the hill's linked respawns). So checkpoint 1 takes the starting groups,
-  -- checkpoint s the attackers' forward group beside checkpoint s-1 and the defenders' hold beside checkpoint s.
-  local first = { spawns(start, "blue", "attack", 6, "cp1"), spawns(staging, "blue", "attack", 2, "cp1") }
-  local flank_cp = {}
-  for s = 1, nseg do
-    local flank_col = ((s % 2 == 1) == (first_flank_col == 0)) and 0 or 2
-    flank_cp[s] = zone_at(flank_col, 2 * s)
-  end
-  first[3] = spawns(flank_cp[1], "red", "defend", 6, "cp1")
-  for s = 1, nseg do
-    local yard = zone_at(1, 2 * s)
-    local cp = { kind = "checkpoint", index = s, zone = yard.id, spawns = {} }
-    if s == 1 then cp.spawns = first
-    else
-      cp.spawns[1] = spawns(flank_cp[s - 1], "blue", "attack", 6, "cp" .. s)
-      cp.spawns[2] = spawns(flank_cp[s], "red", "defend", 6, "cp" .. s)
-    end
-    G.objectives[#G.objectives + 1] = cp
-  end
-  G.segments = nseg
-end
 
 ---@kit kit.layout{gametype?, players?, class?, brief?, seed?, area?, style?, step?, segments?} → graph — Generates a layout graph before any brush: zones (archetype, plan, floor level, palette, role, ground), typed links, objectives (spawn groups, flags, the hill, the payload cart and checkpoints with the spawn hand-off) and the size budget from the player class (DESIGN-QUALITY-SPEC §a.1, §c.1-1, §h). A plain table: edit it, then kit.check_layout, kit.layout_preview and kit.build_layout. The same seed gives the same graph.
 ---@opt gametype: string = "dm" — "dm", "ctf", "koth" or "payload".
@@ -2569,27 +2932,19 @@ function kit.layout(t)
       kind = "layout", version = 1, gametype = gametype, class = class, players = players, size_class = sc, seed = seed,
       brief = t.brief, style = t.style, step = step, target_area = math.floor(target + 0.5), attempt = attempt,
       budget = { area = { B.area[1], B.area[2] }, per_spawn = { B.per_spawn[1], B.per_spawn[2] }, zones = { B.zones[1], B.zones[2] },
-        hubs = { B.hubs[1], B.hubs[2] }, grid = B.grid, target = math.floor(target + 0.5),
+        hubs = { B.hubs[1], B.hubs[2] }, target = math.floor(target + 0.5),
         cycle_per_1000 = (sc == "L") and DATA.cycle_per_1000_L or DATA.cycle_per_1000 },
       zones = {}, links = {}, objectives = {}, segments = t.segments, themes = themes,
     }
     if gametype == "payload" then G.budget.area = { DATA.payload_area_min + 2000, BUDGET.payload.area[2] } end
-    if gametype == "dm" then gen_dm(G, arng, t)
-    elseif gametype == "ctf" then gen_ctf(G, arng, t)
-    elseif gametype == "koth" then gen_koth(G, arng, t)
-    else gen_payload(G, arng, t) end
-    -- Fit every link on its walls (zones of a link that does not fit go back to their cell centres).
-    local plan = fix_offsets(G, arng)
-    if gametype == "ctf" then
-      local cxs = 0
-      for _, z in ipairs(G.zones) do if z.role == "hub" then cxs = z.pos[1] end end
-      mirror_offsets(G, cxs)
-      plan = resolve(G, nil, false)
-      if #plan.errors > 0 then
-        for _, e in ipairs(plan.errors) do for _, l in ipairs(G.links) do if l.id == e.link then l.offset = nil end end end
-        plan = resolve(G, nil, true)
-      end
-    end
+    -- The generator of the gametype (kit_compose.lua: indoor DM, CTF and KOTH; kit_compose_open.lua: their open-air
+    -- class; kit_compose_payload.lua: payload) composes the graph; the resolver then routes and fits every link.
+    local gen = LAYOUT.generators[gametype]
+    if not gen or gen(G, arng, t) ~= true then fail(api, "no layout generator handles gametype " .. gametype .. " (class " .. class .. ").") end
+    -- (every bridge the generator composed must join places that are otherwise far apart, before routing)
+    settle_bridges(G)
+    G.method = "free"
+    local plan = resolve(G, arng, true)
     -- Links that still find no room on their walls are dropped (the rules below then judge the graph).
     if #plan.errors > 0 then
       local bad = {}
@@ -2601,12 +2956,13 @@ function kit.layout(t)
       for i, l in ipairs(G.links) do l.id = "l" .. i end
     end
     for _, z in ipairs(G.zones) do
-      z.home = nil
       -- The per-zone dressing hook (a population pass reads it): the zone theme and a density.
       z.dress = { theme = z.palette and z.palette.theme or themes[1], density = (z.role == "hub" or z.role == "hill") and 1.2 or 1 }
     end
-    finalize(G)
-    local V = check(G)
+    -- (the checker's plan gives the area: one resolve fewer per attempt)
+    local V, cplan = check(G)
+    G.area = layout_area(G, cplan or resolve(G, nil, false))
+    G.levels = floor_levels(G)
     local errors, rules = 0, 0
     for _, v in ipairs(V) do if v.severity == "error" then errors = errors + 1 else rules = rules + 1 end end
     local score = errors * 100 + rules
@@ -2621,7 +2977,7 @@ function kit.layout(t)
   return best
 end
 
----@kit kit.layout_archetypes{} → archetype[] — The zone archetypes kit.layout and kit.build_layout use: {name, class ("indoor", "open_air" or "payload"), min = {w, d} (kit.check_layout refuses smaller zones; a road's {w, d} turns with its heading), max = {w, d} (the sizes kit.layout generates; larger hand-made zones are allowed), levels (port levels; "step" = one level up), loops (inside the zone), summary}.
+---@kit kit.layout_archetypes{} → archetype[] — The zone archetypes kit.layout and kit.build_layout use: {name, class ("indoor", "open_air", "payload" or "traced" for the poly zone), min = {w, d} (kit.check_layout refuses smaller zones; a road's {w, d} turns with its heading), max = {w, d} (the sizes kit.layout generates; larger hand-made zones are allowed), levels (port levels; "step" = one level up), loops (inside the zone), summary}.
 function kit.layout_archetypes(t)
   if t ~= nil then check_keys("kit.layout_archetypes", t, {}) end
   local out = {}
@@ -2637,9 +2993,23 @@ end
 -- kit.layout_preview: a plan before any brush
 -- ---------------------------------------------------------------------------------------------
 
-local LINK_CHAR = { corridor = "=", doorway = "=", stair = "s", ramp = "r", drop = "v", bridge = "b", window = "~", lift = "l", road = "#" }
+local LINK_CHAR = { corridor = "=", doorway = "=", stair = "s", ramp = "r", drop = "v", bridge = "b", window = "~", lift = "l", road = "#", join = "+" }
 
----@kit kit.layout_preview{graph, scale?} → preview — A plan of a layout graph as text (north = +z up, one character per scale metres): zones filled with their level digit and labelled with their letter, links drawn with their type's character (= corridor/doorway, s stair, r ramp, v drop, b bridge, ~ window, l lift, # cart road), objectives marked (R/B flags, H hill, C checkpoints, S spawns). Returns {text, svg, legend[], scale, bounds}.
+-- A resolved link as a world polyline (its centre line from wall to wall) and its width, for drawing.
+local function link_line(P)
+  if not P.ok then return nil end
+  if P.mode == "free" then return P.pts, P.W end
+  if P.mode == "join" then return nil end
+  local g = P.f
+  local rot = zone_rot(P.za)
+  local ax, az, bx, bz
+  if g.axis == "x" then ax, az, bx, bz = g.wa, P.c, g.wb, P.c else ax, az, bx, bz = P.c, g.wa, P.c, g.wb end
+  local x0, z0 = to_world(rot, ax, az)
+  local x1, z1 = to_world(rot, bx, bz)
+  return { { x0, z0 }, { x1, z1 } }, P.W
+end
+
+---@kit kit.layout_preview{graph, scale?} → preview — A plan of a layout graph as text (north = +z up, one character per scale metres): zones filled with their level digit and labelled with their letter (turned zones and traced poly zones drawn as their world outlines), links drawn along their routes with their type's character (= corridor/doorway, s stair, r ramp, v drop, b bridge, ~ window, l lift, # cart road, + join), objectives marked (R/B flags, H hill, C checkpoints, S spawns). Returns {text, svg, legend[], scale, bounds}.
 ---@opt graph: table — Required: a kit.layout graph.
 ---@opt scale: number = fits about 100 columns — Metres per character.
 function kit.layout_preview(t)
@@ -2647,9 +3017,18 @@ function kit.layout_preview(t)
   check_keys(api, t, { "graph", "scale" })
   local G = t.graph
   if type(G) ~= "table" or type(G.zones) ~= "table" then fail(api, "'graph' must be a kit.layout graph.") end
+  local polys = {}
   local x0, z0, x1, z1 = math.huge, math.huge, -math.huge, -math.huge
-  for _, z in ipairs(G.zones) do
-    local a, b, c, d = rect_of(z)
+  for i, z in ipairs(G.zones) do
+    -- a poly zone left without pos x/z or size draws from its outline
+    if z.archetype == "poly" and type(z.pos) == "table" and poly_of(z) then
+      local a, b, c, d = bbox(poly_of(z))
+      if type(z.pos[1]) ~= "number" then z.pos[1] = (a + c) / 2 end
+      if type(z.pos[3]) ~= "number" then z.pos[3] = (b + d) / 2 end
+      if type(z.size) ~= "table" then z.size = { c - a, d - b } end
+    end
+    polys[i] = zone_poly(z)
+    local a, b, c, d = bbox(polys[i])
     x0, z0, x1, z1 = math.min(x0, a), math.min(z0, b), math.max(x1, c), math.max(z1, d)
   end
   if x0 == math.huge then return { text = "(empty layout)", svg = "", legend = {}, scale = 1 } end
@@ -2673,31 +3052,60 @@ function kit.layout_preview(t)
   local letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
   local legend = {}
   for i, z in ipairs(G.zones) do
-    local a, b, c, d = rect_of(z)
+    local p = polys[i]
+    local a, b, c, d = bbox(p)
     local ch = level_digit(z.pos[2])
-    local xx = a
-    while xx <= c do
-      local zz = b
-      while zz <= d do put(xx, zz, ch) zz = zz + scale end
-      xx = xx + scale
+    -- every character cell whose centre lies in the zone's world plan
+    local c0, c1 = math.floor((a - x0) / scale) + 1, math.floor((c - x0) / scale) + 1
+    local r0, r1 = rows - math.floor((d - z0) / (scale * 2)), rows - math.floor((b - z0) / (scale * 2))
+    for r = math.max(1, r0), math.min(rows, r1) do
+      for col = math.max(1, c0), math.min(cols, c1) do
+        local x, zz = x0 + (col - 0.5) * scale, z0 + (rows - r + 0.5) * scale * 2
+        if inside(p, x, zz) then grid[r][col] = ch end
+      end
     end
     local L = letters:sub(((i - 1) % #letters) + 1, ((i - 1) % #letters) + 1)
-    put(z.pos[1], z.pos[3], L)
-    legend[#legend + 1] = string.format("%s %s %s%s %gx%g m, floor %g m (levels +%s)%s", L, z.id, z.archetype, z.role and (" [" .. z.role .. "]") or "",
-      z.size[1], z.size[2], z.pos[2], table.concat(z.levels or { 0 }, ",+"), z.palette and (", " .. (z.palette.theme or "") .. (z.palette.team and ("/" .. z.palette.team) or "")) or "")
+    local cx, cz = centre_of(z)
+    put(cx, cz, L)
+    local rot = zone_rot(z)
+    local shape = (z.archetype == "poly") and string.format("%d-point outline, %.0f m2", #p, zone_area(z)) or string.format("%gx%g m", z.size[1], z.size[2])
+    legend[#legend + 1] = string.format("%s %s %s%s %s%s, floor %g m (levels +%s)%s", L, z.id, z.archetype, z.role and (" [" .. z.role .. "]") or "",
+      shape, rot ~= 0 and string.format(", rot %g", rot) or "", z.pos[2], table.concat(z.levels or { 0 }, ",+"),
+      z.palette and (", " .. (z.palette.theme or "") .. (z.palette.team and ("/" .. z.palette.team) or "")) or "")
   end
   local plan = resolve(G, nil, false)
+  local drawn = {}
   for _, P in ipairs(plan.links) do
-    if P.f and P.c then
+    if P.ok then
       local ch = LINK_CHAR[P.link.type] or "?"
-      local g = P.f
-      local a, b = math.min(g.wa, g.wb), math.max(g.wa, g.wb)
-      local s = a
-      while s <= b + EPS do
-        if g.axis == "x" then put(s, P.c, ch) else put(P.c, s, ch) end
-        s = s + scale * 0.5
+      local line, W = link_line(P)
+      if P.mode == "join" then
+        for _, port in ipairs(plan.ports[P.za.id] or {}) do
+          if port.link == P.link then
+            local a, b = nil, nil
+            if port.seg then a, b = port.seg[1], port.seg[2]
+            else
+              local rot = zone_rot(P.za)
+              local p0, p1 = wall_point(P.za, port.side, port.lo), wall_point(P.za, port.side, port.hi)
+              a, b = { to_world(rot, p0[1], p0[2]) }, { to_world(rot, p1[1], p1[2]) }
+            end
+            line = { a, b }
+          end
+        end
+        W = 0
       end
-      legend[#legend + 1] = string.format("  %s %s %s-%s %g m wide, y %g -> %g", P.link.id, P.link.type, P.link.a, P.link.b, P.W or 0, link_ys(P.link, P.za, P.zb))
+      if line then
+        for k = 1, #line - 1 do
+          local a, b = line[k], line[k + 1]
+          local L = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+          local n = math.max(1, math.ceil(L / (scale * 0.5)))
+          for j = 0, n do put(a[1] + (b[1] - a[1]) * j / n, a[2] + (b[2] - a[2]) * j / n, ch) end
+        end
+        drawn[#drawn + 1] = { P = P, line = line, W = W }
+      end
+      local ya, yb = link_ys(P.link, P.za, P.zb)
+      legend[#legend + 1] = string.format("  %s %s %s-%s %g m wide, y %g -> %g%s", tostring(P.link.id or ("l" .. P.index)), P.link.type, P.link.a, P.link.b, P.W or P.span or 0, ya, yb,
+        (P.mode == "free") and string.format(", free, %.0f m, %d bend(s)", P.length or 0, math.max(0, #P.pts - 2)) or ((P.mode == "join") and string.format(", %.1f m open", P.span or 0) or ""))
     end
   end
   local byid = {}
@@ -2706,7 +3114,12 @@ function kit.layout_preview(t)
     local z = byid[o.zone or ""]
     if z then
       local ch = (o.kind == "flag" and (o.team == "red" and "R" or "B")) or (o.kind == "hill" and "H") or (o.kind == "checkpoint" and "C") or (o.kind == "spawns" and "S") or nil
-      if ch then put(z.pos[1] + (o.kind == "spawns" and z.size[1] * 0.25 or 0), z.pos[3] + (o.kind == "spawns" and z.size[2] * 0.25 or 0), ch) end
+      local cx, cz = centre_of(z)
+      if ch then
+        local ox, oz = 0, 0
+        if o.kind == "spawns" then ox, oz = to_world(zone_rot(z), z.size[1] * 0.25, z.size[2] * 0.25) end
+        put(cx + ox, cz + oz, ch)
+      end
       legend[#legend + 1] = "  " .. o.kind .. (o.team and (" " .. o.team) or "") .. (o.count and (" x" .. o.count) or "") .. " in " .. o.zone ..
         (o.group and (" (" .. o.group .. ")") or "")
     end
@@ -2718,27 +3131,27 @@ function kit.layout_preview(t)
   for _, l in ipairs(legend) do lines[#lines + 1] = l end
   -- An SVG of the same plan (1 px per 0.5 m).
   local px = 2
+  local function X(x) return (x - x0) * px end
+  local function Y(z) return (z1 - z) * px end
   local sv = { string.format('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">',
     math.ceil((x1 - x0) * px), math.ceil((z1 - z0) * px), math.ceil((x1 - x0) * px), math.ceil((z1 - z0) * px)) }
   sv[#sv + 1] = '<rect width="100%" height="100%" fill="#222"/>'
   local shade = { "#6b8", "#8ab", "#ca8", "#c88", "#a8c", "#aaa" }
   for i, z in ipairs(G.zones) do
-    local a, b, c, d = rect_of(z)
     local li = tonumber(level_digit(z.pos[2])) + 1
-    sv[#sv + 1] = string.format('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="%s" stroke="#111"/>',
-      (a - x0) * px, (z1 - d) * px, (c - a) * px, (d - b) * px, shade[((li - 1) % #shade) + 1])
-    sv[#sv + 1] = string.format('<text x="%.1f" y="%.1f" font-size="12" text-anchor="middle">%s %s</text>', (z.pos[1] - x0) * px, (z1 - z.pos[3]) * px, z.id, z.archetype)
+    local pts = {}
+    for _, q in ipairs(polys[i]) do pts[#pts + 1] = string.format("%.1f,%.1f", X(q[1]), Y(q[2])) end
+    sv[#sv + 1] = string.format('<polygon points="%s" fill="%s" stroke="#111"/>', table.concat(pts, " "), shade[((li - 1) % #shade) + 1])
+    local cx, cz = centre_of(z)
+    sv[#sv + 1] = string.format('<text x="%.1f" y="%.1f" font-size="12" text-anchor="middle">%s %s</text>', X(cx), Y(cz), z.id, z.archetype)
   end
-  for _, P in ipairs(plan.links) do
-    if P.f and P.c then
-      local g = P.f
-      local a, b = math.min(g.wa, g.wb), math.max(g.wa, g.wb)
-      local hw = (P.W or 4) / 2
-      local rx, ry, rw, rh = nil, nil, nil, nil
-      if g.axis == "x" then rx, ry, rw, rh = a, P.c + hw, b - a, 2 * hw else rx, ry, rw, rh = P.c - hw, b, 2 * hw, b - a end
-      sv[#sv + 1] = string.format('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="%s"/>', (rx - x0) * px, (z1 - ry) * px, rw * px, rh * px,
-        P.link.type == "corridor" and "#ddd" or P.link.type == "road" and "#eee" or "#fd6")
-    end
+  for _, e in ipairs(drawn) do
+    local pts = {}
+    for _, q in ipairs(e.line) do pts[#pts + 1] = string.format("%.1f,%.1f", X(q[1]), Y(q[2])) end
+    local ty = e.P.link.type
+    local color = (ty == "corridor" and "#ddd") or (ty == "road" and "#eee") or (ty == "join" and "#fff") or "#fd6"
+    sv[#sv + 1] = string.format('<polyline points="%s" fill="none" stroke="%s" stroke-width="%.1f" stroke-linejoin="miter"/>', table.concat(pts, " "), color,
+      math.max(2, (e.W or 0) * px))
   end
   sv[#sv + 1] = "</svg>"
   return { text = table.concat(lines, "\n"), svg = table.concat(sv, "\n"), legend = legend, scale = scale,
@@ -2758,7 +3171,28 @@ end
 local function zone_ctx(gname, z, plan)
   local R = { z = z, id = z.id, name = gname .. "_" .. z.id, A = LA[z.archetype] }
   R.x0, R.z0, R.x1, R.z1 = rect_of(z)
-  R.cx, R.cz, R.w, R.d = z.pos[1], z.pos[3], z.size[1], z.size[2]
+  R.w, R.d = z.size[1], z.size[2]
+  if z.archetype == "poly" then
+    -- a traced zone is built where it is traced: its frame is the world's
+    R.poly = poly_of(z)
+    R.w, R.d = R.x1 - R.x0, R.z1 - R.z0
+    R.area = zone_area(z)
+    -- its middle: the centre of its biggest convex piece (inside the plan whatever its shape)
+    local best, bx, bz = -1, (R.x0 + R.x1) / 2, (R.z0 + R.z1) / 2
+    for _, piece in ipairs(SP.convex_pieces(ccw(R.poly)) or {}) do
+      local a = math.abs(area2(piece))
+      if a > best then
+        best, bx, bz = a, 0, 0
+        for _, q in ipairs(piece) do bx, bz = bx + q[1] / #piece, bz + q[2] / #piece end
+      end
+    end
+    R.cx, R.cz = bx, bz
+  else
+    R.cx, R.cz = local_centre(z)
+  end
+  -- Everything a zone builds is built in its own frame (an axis-aligned plan) and turned into place by rot.
+  R.rot = zone_rot(z)
+  function R.W(x, zz) return to_world(R.rot, x, zz) end
   R.y, R.h, R.c = z.pos[2], z.height or 6, z.chamfer or 0
   R.step = z.levels[2] or 5
   R.pal = palette_of(z)
@@ -2766,8 +3200,171 @@ local function zone_ctx(gname, z, plan)
   R.trim = { texture = R.pal.trims.post }
   R.ports = plan.ports[z.id] or {}
   R.solids, R.spots, R.parts, R.brushes, R.warnings = {}, {}, {}, {}, {}
+  R.flights, R.rails = {}, {} -- the zone's stair records (for their stringers and handrails) and its open edges {a, b, y} (zone frame)
   R.lane = nil
   return R
+end
+
+-- The sign that makes brush:rotate_about("y", ROT_SIGN * yaw) turn local +z toward (sin yaw, cos yaw), i.e. world =
+-- R(rot) . local as to_world computes it.
+local ROT_SIGN = 1
+
+-- Turns the brushes list[from + 1 ..] by yaw degrees about the vertical through (px, pz) (the world origin by default).
+local function turn_list(list, from, yaw, px, py, pz)
+  if yaw == 0 or list == nil then return end
+  for i = (from or 0) + 1, #list do list[i]:rotate_about("y", ROT_SIGN * yaw, px or 0, py or 0, pz or 0) end
+end
+
+-- The brushes of a list of kit records ({brushes} or {brush}) and plain brushes.
+local function rec_brushes(recs)
+  local out = {}
+  for _, r in ipairs(recs) do
+    if type(r) == "table" then
+      if type(r.brushes) == "table" then for _, b in ipairs(r.brushes) do out[#out + 1] = b end
+      elseif r.brush then out[#out + 1] = r.brush end
+    elseif r ~= nil then out[#out + 1] = r end
+  end
+  return out
+end
+
+-- Walls take buried solids: a box a zone builds that ends on one of its walls runs BURY metres into it. A face of
+-- it on the wall's plane would lie on the room's own wall face, and in a turned frame two brushes' faces on one
+-- oblique plane never coincide exactly (their world vertices are rounded apart), which leaves open seams in the
+-- compile under either build method. Buried, the solid crosses the wall instead. One rule for every frame, so a
+-- zone builds the same brushes at any rot; never across a port's opening (the passage stays clear).
+local BURY = 0.25
+
+-- The per-corner UVs of a brush's faces carried over to its reshaped corners: each face's texture mapping is
+-- affine in the face's plane, so a moved corner takes the UV the old mapping gives its new position.
+local function face_frames(b)
+  local list = {}
+  for i, f in ipairs(b.faces) do list[i] = { pts = f.vertices, uvs = f.uvs, n = f.normal } end
+  return list
+end
+
+local function keep_uvs(b, before)
+  for _, f in ipairs(b.faces) do
+    -- the face of the old shape on the same side (a reshaped box keeps its six normals)
+    local n, old = f.normal, nil
+    for _, o in ipairs(before) do if o.n.x * n.x + o.n.y * n.y + o.n.z * n.z > 0.999 then old = o end end
+    local new = f.vertices
+    if old and #old.pts == #new and #new >= 3 then
+      local p0, uv0 = old.pts[1], old.uvs[1]
+      -- the two corners spanning the largest triangle with the first
+      local best, j1, j2 = -1, 2, 3
+      for a = 2, #old.pts - 1 do
+        for c = a + 1, #old.pts do
+          local ax, ay, az = old.pts[a].x - p0.x, old.pts[a].y - p0.y, old.pts[a].z - p0.z
+          local cx, cy, cz = old.pts[c].x - p0.x, old.pts[c].y - p0.y, old.pts[c].z - p0.z
+          local nx, ny, nz = ay * cz - az * cy, az * cx - ax * cz, ax * cy - ay * cx
+          local ar = nx * nx + ny * ny + nz * nz
+          if ar > best then best, j1, j2 = ar, a, c end
+        end
+      end
+      local e1 = { old.pts[j1].x - p0.x, old.pts[j1].y - p0.y, old.pts[j1].z - p0.z }
+      local e2 = { old.pts[j2].x - p0.x, old.pts[j2].y - p0.y, old.pts[j2].z - p0.z }
+      local g11 = e1[1] * e1[1] + e1[2] * e1[2] + e1[3] * e1[3]
+      local g12 = e1[1] * e2[1] + e1[2] * e2[2] + e1[3] * e2[3]
+      local g22 = e2[1] * e2[1] + e2[2] * e2[2] + e2[3] * e2[3]
+      local det = g11 * g22 - g12 * g12
+      if det > 1e-12 then
+        local u1, u2 = old.uvs[j1], old.uvs[j2]
+        local list = {}
+        for k, q in ipairs(new) do
+          local d = { q.x - p0.x, q.y - p0.y, q.z - p0.z }
+          local r1 = e1[1] * d[1] + e1[2] * d[2] + e1[3] * d[3]
+          local r2 = e2[1] * d[1] + e2[2] * d[2] + e2[3] * d[3]
+          local s = (r1 * g22 - r2 * g12) / det
+          local t = (r2 * g11 - r1 * g12) / det
+          list[k] = { uv0.u + s * (u1.u - uv0.u) + t * (u2.u - uv0.u), uv0.v + s * (u1.v - uv0.v) + t * (u2.v - uv0.v) }
+        end
+        f:set_uvs(list)
+      end
+    end
+  end
+end
+
+-- True when no port opening of the zone's wall side meets the span a0..a1 along it at heights y0..y1.
+local function wall_free(R, side, a0, a1, y0, y1)
+  for _, p in ipairs(R.ports) do
+    if p.side == side and a0 < p.hi + 0.5 and a1 > p.lo - 0.5 and y0 < p.y1 and y1 > (p.drop_to or p.y0) - 0.3 then return false end
+  end
+  return true
+end
+
+-- Buries the axis-aligned solid boxes R.brushes[from + 1 ..] that end on the zone's walls (the zone's own frame,
+-- before its turn).
+local function bury_walls(R, from)
+  if R.poly or R.A.open_air then return end
+  for i = from + 1, #R.brushes do
+    local b = R.brushes[i]
+    if not b.air and b.mover == nil then
+      local fs = b.faces
+      local boxy = #fs == 6
+      if boxy then
+        local r = b.rot
+        boxy = math.abs(r.yaw) < 1e-6 and math.abs(r.pitch) < 1e-6 and math.abs(r.roll) < 1e-6
+      end
+      if boxy then
+        for _, f in ipairs(fs) do
+          local n = f.normal
+          if math.abs(n.x) + math.abs(n.y) + math.abs(n.z) > 1.0001 then boxy = false end
+        end
+      end
+      if boxy then
+        local bb = b.bounds
+        local x0, y0, z0, x1, y1, z1 = bb.min.x, bb.min.y, bb.min.z, bb.max.x, bb.max.y, bb.max.z
+        local function on(v, w, len) return math.abs(v - w) < 0.01 and len > 0.05 end
+        local ex0 = (on(x0, R.x0, x1 - x0) and wall_free(R, "-x", z0, z1, y0, y1)) and BURY or 0
+        local ex1 = (on(x1, R.x1, x1 - x0) and wall_free(R, "+x", z0, z1, y0, y1)) and BURY or 0
+        local ez0 = (on(z0, R.z0, z1 - z0) and wall_free(R, "-z", x0, x1, y0, y1)) and BURY or 0
+        local ez1 = (on(z1, R.z1, z1 - z0) and wall_free(R, "+z", x0, x1, y0, y1)) and BURY or 0
+        if ex0 + ex1 + ez0 + ez1 > 0 then
+          local before = face_frames(b)
+          local w, d = x1 - x0, z1 - z0
+          b:scale((w + ex0 + ex1) / w, 1, (d + ez0 + ez1) / d)
+          b:move((ex1 - ex0) / 2, 0, (ez1 - ez0) / 2)
+          -- back onto exact coordinates (the scale leaves float noise), then the old texture mapping
+          geo:snap{ brushes = b, grid = 1 / 1024 }
+          keep_uvs(b, before)
+        end
+      end
+    end
+  end
+end
+
+-- A flight of kit.stairs whose steps are one-riser slabs, each from its nosing back past the top of the flight: the
+-- same solid as full-height steps, but neighbouring steps meet only on level planes (exact in any frame) instead of
+-- on a vertical riser plane, which a turned flight cannot hold exactly, and the flight's top end lies inside what it
+-- climbs onto instead of on its face. Built along an axis dir (before any turn); the steps keep their UVs.
+local function flight(t)
+  local rec = kit.stairs(t)
+  local d = DIRV[t.dir]
+  local riser = t.riser or kit.defaults.riser
+  -- (the slabs reach a quarter metre past the top into what the flight climbs onto, never ending on its face)
+  local back = ((d[1] ~= 0) and rec.top.x or rec.top.z) + (d[1] + d[2]) * BURY
+  for _, b in ipairs(rec.brushes) do
+    local part = b:tags()["kit.part"] or ""
+    if not b.air and not b.detail and part:match("^step%d+$") then
+      local bb = b.bounds
+      local h = bb.max.y - bb.min.y
+      local a0, a1 = (d[1] ~= 0) and bb.min.x or bb.min.z, (d[1] ~= 0) and bb.max.x or bb.max.z
+      local front = (d[1] + d[2] > 0) and a0 or a1
+      local len = math.abs(back - front)
+      if h > riser + 1e-6 or len > (a1 - a0) + 1e-6 then
+        local before = face_frames(b)
+        local f = len / (a1 - a0)
+        b:scale(d[1] ~= 0 and f or 1, riser / h, d[2] ~= 0 and f or 1)
+        local nb = b.bounds
+        local mid = (front + back) / 2
+        b:move(d[1] ~= 0 and (mid - (nb.min.x + nb.max.x) / 2) or 0, (bb.max.y - riser / 2) - (nb.min.y + nb.max.y) / 2,
+          d[2] ~= 0 and (mid - (nb.min.z + nb.max.z) / 2) or 0)
+        geo:snap{ brushes = b, grid = 1 / 1024 }
+        keep_uvs(b, before)
+      end
+    end
+  end
+  return rec
 end
 
 -- A port's approach rectangle inside its zone (x0, z0, x1, z1) and its height band.
@@ -2781,13 +3378,19 @@ local function keepout(R, p, depth)
   return a0, w, a1, w + depth
 end
 
--- True when a box inside the zone stays clear of every port approach (and of the cart lane).
-local function clear(R, x0, z0, x1, z1, y0, y1)
-  for _, p in ipairs(R.ports) do
-    local kx0, kz0, kx1, kz1 = keepout(R, p, p.drop_to and 6 or DATA.keep_depth)
-    local py0 = p.drop_to or p.y0
-    if x0 < kx1 and x1 > kx0 and z0 < kz1 and z1 > kz0 and y0 < p.y1 and y1 > py0 - 0.3 then return false end
-  end
+-- The approach of a port on a poly zone's edge: its opening grown 1 m each way along the edge, depth metres inward.
+local function keepout_poly(p, depth)
+  local a, b = p.seg[1], p.seg[2]
+  local ex, ez = b[1] - a[1], b[2] - a[2]
+  local L = math.max(1e-6, math.sqrt(ex * ex + ez * ez))
+  local tx, tz = ex / L, ez / L
+  local n = p.nrm
+  local a1, b1 = { a[1] - tx, a[2] - tz }, { b[1] + tx, b[2] + tz }
+  return ccw({ a1, b1, { b1[1] - n[1] * depth, b1[2] - n[2] * depth }, { a1[1] - n[1] * depth, a1[2] - n[2] * depth } })
+end
+
+-- True when a box inside the zone stays clear of the cart lane.
+local function lane_clear(R, x0, z0, x1, z1)
   if R.lane then
     for _, seg in ipairs(R.lane) do
       -- seg = {ax, az, bx, bz, half}: distance from the box centre to the lane segment
@@ -2801,6 +3404,20 @@ local function clear(R, x0, z0, x1, z1, y0, y1)
     end
   end
   return true
+end
+
+-- True when a box inside the zone stays clear of every port approach (and of the cart lane).
+local function clear(R, x0, z0, x1, z1, y0, y1)
+  for _, p in ipairs(R.ports) do
+    local py0 = p.drop_to or p.y0
+    if p.seg then
+      if y0 < p.y1 and y1 > py0 - 0.3 and poly_dist(keepout_poly(p, DATA.keep_depth), { { x0, z0 }, { x1, z0 }, { x1, z1 }, { x0, z1 } }) < 1e-6 then return false end
+    else
+      local kx0, kz0, kx1, kz1 = keepout(R, p, p.drop_to and 6 or DATA.keep_depth)
+      if x0 < kx1 and x1 > kx0 and z0 < kz1 and z1 > kz0 and y0 < p.y1 and y1 > py0 - 0.3 then return false end
+    end
+  end
+  return lane_clear(R, x0, z0, x1, z1)
 end
 
 local function add_brush(R, b) if b then R.brushes[#R.brushes + 1] = b end return b end
@@ -2837,8 +3454,10 @@ local function stairs(R, part, x, y, z, dir, rise, width)
   local run = stair_run(rise)
   local dx, dz = DIRV[dir][1], DIRV[dir][2]
   note_solid(R, x - (dz ~= 0 and width / 2 or 0), z - (dx ~= 0 and width / 2 or 0), x + dx * run + (dz ~= 0 and width / 2 or 0), z + dz * run + (dx ~= 0 and width / 2 or 0), y, y + rise)
-  return add_rec(R, kit.stairs{ name = R.name .. "_" .. part, pos = { x, y, z }, dir = dir, rise = rise, width = width, tread = DATA.tread,
+  local rec = add_rec(R, flight{ name = R.name .. "_" .. part, pos = { x, y, z }, dir = dir, rise = rise, width = width, tread = DATA.tread,
     group = false, textures = R.textures })
+  R.flights[#R.flights + 1] = rec
+  return rec
 end
 
 local function ramp(R, part, x, y, z, dir, rise, width, run)
@@ -3060,7 +3679,8 @@ RECIPES.hall = {
     end
     grid_spots(R, R.y, R.x0 + 2.5, R.z0 + 2.5, R.x1 - 2.5, R.z1 - 2.5)
   end,
-  late = function(R) blank_pilasters(R, 4) end,
+  -- (with the room detail pass on, its wall sets take the place of the plain pilasters)
+  late = function(R) if not (R.detail and R.detail.walls) then blank_pilasters(R, 4) end end,
   light_h = function(R) return R.h - 1 end,
 }
 
@@ -3172,6 +3792,11 @@ local function split_inner(R, open_air)
     stairs(R, "up_stairs", sa, R.y, foot, up, s, 3.5)
     ramp(R, "up_ramp", sb, R.y, edge - sign * ramp_run(s), up, s, 3.5)
   end
+  -- the raised half's edge drops a level (railed by the detail pass where nothing climbs onto it; a tower's deck has its own)
+  if not open_air then
+    if along_x then R.rails[#R.rails + 1] = { { edge, z0 }, { edge, z1 }, R.y + s }
+    else R.rails[#R.rails + 1] = { { x0, edge }, { x1, edge }, R.y + s } end
+  end
   -- spots: low half and the raised half
   local lx0, lz0, lx1, lz1 = nil, nil, nil, nil
   if up == "+x" then lx0, lz0, lx1, lz1 = x0, z0, mx - run - 1, z1
@@ -3208,6 +3833,8 @@ local function gallery_band(R, outline, bw, y_top, posts)
     box(R, "gallery_e", R.x1 - bw, y_top - 0.5, R.z0 + bw, R.x1, y_top, R.z1 - bw, { detail = true })
     inner = rect_poly(R.x0 + bw, R.z0 + bw, R.x1 - bw, R.z1 - bw)
   end
+  -- the band's inner edge drops to the floor below: the detail pass rails it (open where a stair or catwalk lands)
+  for i = 1, #inner do R.rails[#R.rails + 1] = { inner[i], inner[i % #inner + 1], y_top } end
   if posts then
     local k = 0
     for i = 1, #inner do
@@ -3329,13 +3956,13 @@ RECIPES.atrium = {
     if long_x then
       local z = R.cz + off
       if clear(R, R.x0 + bw - 0.5, z - 2, R.x1 - bw + 0.5, z + 2, R.y + R.step - 1, R.y + R.step + 3) then
-        add_rec(R, kit.bridge{ name = R.name .. "_catwalk", from = { R.x0 + bw - 0.5, R.y + R.step + 0.125, z }, to = { R.x1 - bw + 0.5, R.y + R.step + 0.125, z },
+        add_rec(R, kit.bridge{ purpose = "quiet", name = R.name .. "_catwalk", from = { R.x0 + bw - 0.5, R.y + R.step + 0.125, z }, to = { R.x1 - bw + 0.5, R.y + R.step + 0.125, z },
           width = 3, style = "truss", depth = 1.6, landmark = false, group = false, textures = R.textures, frame_texture = R.trim.texture })
       end
     else
       local x = R.cx + off
       if clear(R, x - 2, R.z0 + bw - 0.5, x + 2, R.z1 - bw + 0.5, R.y + R.step - 1, R.y + R.step + 3) then
-        add_rec(R, kit.bridge{ name = R.name .. "_catwalk", from = { x, R.y + R.step + 0.125, R.z0 + bw - 0.5 }, to = { x, R.y + R.step + 0.125, R.z1 - bw + 0.5 },
+        add_rec(R, kit.bridge{ purpose = "quiet", name = R.name .. "_catwalk", from = { x, R.y + R.step + 0.125, R.z0 + bw - 0.5 }, to = { x, R.y + R.step + 0.125, R.z1 - bw + 0.5 },
           width = 3, style = "truss", depth = 1.6, landmark = false, group = false, textures = R.textures, frame_texture = R.trim.texture })
       end
     end
@@ -3389,8 +4016,10 @@ RECIPES.sunken = {
     local cx0, cz0, cx1, cz1 = R.x0 + rw, R.z0 + rw, R.x1 - rw, R.z1 - rw
     solid(R, "ring_s", R.x0, yb, R.z0, R.x1, R.y, cz0)
     solid(R, "ring_n", R.x0, yb, cz1, R.x1, R.y, R.z1)
-    solid(R, "ring_w", R.x0, yb, cz0, cx0, R.y, cz1)
-    solid(R, "ring_e", cx1, yb, cz0, R.x1, R.y, cz1)
+    -- (the side pieces run half a metre into the end pieces: no two pieces meet face to face, which a turned
+    -- frame cannot hold exactly)
+    solid(R, "ring_w", R.x0, yb, cz0 - 0.5, cx0, R.y, cz1 + 0.5)
+    solid(R, "ring_e", cx1, yb, cz0 - 0.5, R.x1, R.y, cz1 + 0.5)
     R.solids = {} -- the ring is floor, not an obstacle
     local run = stair_run(depth)
     local off = R.z.params and R.z.params.stair_offset or 4
@@ -3403,7 +4032,7 @@ RECIPES.sunken = {
     grid_spots(R, R.y, R.x0 + 2.5, R.z0 + 2.5, R.x1 - 2.5, R.z0 + 3.5)
     grid_spots(R, R.y, R.x0 + 2.5, R.z1 - 3.5, R.x1 - 2.5, R.z1 - 2.5)
     R.objective_spot = { R.cx, yb, R.cz }
-    R.court = { cx0, cz0, cx1, cz1, yb }
+    R.court = { cx0, cz0, cx1, cz1, yb } -- (its rim stays open: players drop into the court from every side)
   end,
   light_h = function(R) return R.h - 1.5 end,
 }
@@ -3473,16 +4102,22 @@ RECIPES.pit = {
   inner = function(R)
     local m = 6
     local px0, pz0, px1, pz1 = R.x0 + m, R.z0 + m, R.x1 - m, R.z1 - m
-    local depth = 4
-    add_rec(R, kit.floor_section{ name = R.name .. "_pit", min = { px0, R.y, pz0 }, max = { px1, R.y, pz1 }, y = R.y, rise = -depth, textures = R.textures })
-    local run = stair_run(depth)
-    stairs(R, "stairs_s", R.cx - 3, R.y - depth, pz0 + run, "-z", depth, 3)
-    stairs(R, "stairs_n", R.cx + 3, R.y - depth, pz1 - run, "+z", depth, 3)
+    -- A chasm, not a room below: deeper than a survivable drop (DATA.drop_max), so it has no floor to fight on and no
+    -- stairs into it; the plank bridge is the short way across and the rim the long way round. Its air is not the
+    -- zone's floor (no kit.zone tag): spawns, items and dressing by zone name keep to the rim.
+    local depth = DATA.pit_depth
+    local pit = add_rec(R, kit.floor_section{ name = R.name .. "_pit", min = { px0, R.y, pz0 }, max = { px1, R.y, pz1 }, y = R.y, rise = -depth, textures = R.textures })
+    R.untagged = R.untagged or {}
+    for _, b in ipairs((type(pit) == "table" and pit.brushes) or {}) do R.untagged[b.uid] = true end
     -- the plank bridge across the pit along x
-    add_rec(R, kit.bridge{ name = R.name .. "_bridge", from = { px0 - 1, R.y + 0.125, R.cz }, to = { px1 + 1, R.y + 0.125, R.cz }, width = 3, style = "plank",
+    add_rec(R, kit.bridge{ purpose = "quiet", name = R.name .. "_bridge", from = { px0 - 1, R.y + 0.125, R.cz }, to = { px1 + 1, R.y + 0.125, R.cz }, width = 3, style = "plank",
       landmark = false, group = false, texture = R.trim.texture })
-    solid(R, "pit_crate1", px0 + 1, R.y - depth, R.cz + 2.5, px0 + 2.5, R.y - depth + 1.4, R.cz + 4, { detail = true })
-    solid(R, "pit_crate2", px1 - 2.5, R.y - depth, R.cz - 4, px1 - 1, R.y - depth + 1.4, R.cz - 2.5, { detail = true })
+    -- the rim and the deck's sides drop into the chasm: the detail pass rails them (open where the deck lands)
+    for _, e in ipairs({ { { px0, pz0 }, { px1, pz0 } }, { { px1, pz0 }, { px1, pz1 } }, { { px1, pz1 }, { px0, pz1 } }, { { px0, pz1 }, { px0, pz0 } } }) do
+      R.rails[#R.rails + 1] = { e[1], e[2], R.y }
+    end
+    for _, sz in ipairs({ -1.5, 1.5 }) do R.rails[#R.rails + 1] = { { px0 - 1, R.cz + sz }, { px1 + 1, R.cz + sz }, R.y + 0.125 } end
+    note_solid(R, px0, pz0, px1, pz1, R.y - depth, R.y)
     grid_spots(R, R.y, R.x0 + 2.5, R.z0 + 2.5, R.x1 - 2.5, R.z0 + 3.5)
     grid_spots(R, R.y, R.x0 + 2.5, R.z1 - 3.5, R.x1 - 2.5, R.z1 - 2.5)
     R.objective_spot = { R.x0 + 3, R.y, R.cz }
@@ -3494,6 +4129,7 @@ RECIPES.tunnel = {
   shell = function(R) basic_shell(R, "beamed", {}) end,
   inner = function(R) grid_spots(R, R.y, R.x0 + 2.5, R.z0 + 2.5, R.x1 - 2.5, R.z1 - 2.5) end,
   late = function(R)
+    if R.detail and R.detail.walls then return end -- (the room detail pass lines the walls instead)
     local long_x = R.w >= R.d
     local L = long_x and R.w or R.d
     local n = math.max(1, math.floor(L / 6))
@@ -3590,7 +4226,7 @@ RECIPES.mast = {
   inner = function(R)
     if clear(R, R.cx - 3, R.cz - 3, R.cx + 3, R.cz + 3, R.y, R.y + 25) then
       note_solid(R, R.cx - 2.5, R.cz - 2.5, R.cx + 2.5, R.cz + 2.5, R.y, R.y + 25)
-      add_rec(R, kit.landmark{ name = R.name .. "_mast", pos = { R.cx, R.y, R.cz }, height = 25, base = 5, style = "pylon", group = false, texture = R.trim.texture })
+      add_rec(R, kit.landmark{ purpose = "quiet", name = R.name .. "_mast", pos = { R.cx, R.y, R.cz }, height = 25, base = 5, style = "pylon", group = false, texture = R.trim.texture })
     end
     local k = 0
     for _, s in ipairs({ { 5, 1.5 }, { -5, -1.5 }, { 1.5, -5 }, { -1.5, 5 } }) do
@@ -3709,7 +4345,7 @@ RECIPES.tower = {
     local x, z = nil, nil
     if up == "+x" then x, z = R.x1 - 4, R.z1 - 4 elseif up == "-x" then x, z = R.x0 + 4, R.z0 + 4
     elseif up == "+z" then x, z = R.x0 + 4, R.z1 - 4 else x, z = R.x1 - 4, R.z0 + 4 end
-    add_rec(R, kit.landmark{ name = R.name .. "_mast", pos = { x, R.y + R.step, z }, height = 26, base = 4, style = "pylon", group = false, texture = R.trim.texture })
+    add_rec(R, kit.landmark{ purpose = "quiet", name = R.name .. "_mast", pos = { x, R.y + R.step, z }, height = 26, base = 4, style = "pylon", group = false, texture = R.trim.texture })
     note_solid(R, x - 2.5, z - 2.5, x + 2.5, z + 2.5, R.y + R.step, R.y + R.step + 26)
   end,
   late = function(R)
@@ -3736,17 +4372,15 @@ RECIPES.tower = {
 
 RECIPES.ring = {
   shell = function(R)
-    local hole = math.min(R.w, R.d) * 0.36
-    local ix0, iz0, ix1, iz1 = R.cx - hole / 2, R.cz - hole / 2, R.cx + hole / 2, R.cz + hole / 2
+    -- One slab and one tapered underside over the whole plan, the square hole carved through both by an air box
+    -- (slab pieces meeting on the corner diagonals would put two brushes' faces on one oblique plane whenever the
+    -- ring is oblong or turned, which the compile cannot hold exactly)
+    local hole = g16(math.min(R.w, R.d) * 0.18) * 2
+    local ix0, iz0, ix1, iz1 = g16(R.cx - hole / 2), g16(R.cz - hole / 2), g16(R.cx + hole / 2), g16(R.cz + hole / 2)
     R.hole = { ix0, iz0, ix1, iz1 }
-    local pieces = {
-      { { R.x0, R.z0 }, { R.x1, R.z0 }, { ix1, iz0 }, { ix0, iz0 } },
-      { { R.x1, R.z0 }, { R.x1, R.z1 }, { ix1, iz1 }, { ix1, iz0 } },
-      { { R.x1, R.z1 }, { R.x0, R.z1 }, { ix0, iz1 }, { ix1, iz1 } },
-      { { R.x0, R.z1 }, { R.x0, R.z0 }, { ix0, iz0 }, { ix0, iz1 } },
-    }
-    for i, p in ipairs(pieces) do floating(R, "piece" .. i, p, R.y, 1.5, 6) end
     R.outline = rect_poly(R.x0, R.z0, R.x1, R.z1)
+    floating(R, "slab", R.outline, R.y, 1.5, 6)
+    box(R, "hole", ix0, R.y - 9, iz0, ix1, R.y + 1, iz1, { air = true })
   end,
   inner = function(R)
     local h = R.hole
@@ -3799,10 +4433,10 @@ RECIPES.terrace = {
     local foot = e0 - sign * (run - math.abs(e1 - e0)) -- the stair starts on the low deck so its top lands on the high one
     if along_x then
       stairs(R, "fly_stairs", foot, R.y, a, up, s, 3)
-      add_rec(R, kit.bridge{ name = R.name .. "_plank", from = { e0 - sign * 6, R.y + 0.125, b }, to = { e1 + sign * 1, R.y + s + 0.125, b }, width = 3, style = "plank", landmark = false, group = false, texture = R.trim.texture })
+      add_rec(R, kit.bridge{ purpose = "quiet", name = R.name .. "_plank", from = { e0 - sign * 6, R.y + 0.125, b }, to = { e1 + sign * 1, R.y + s + 0.125, b }, width = 3, style = "plank", landmark = false, group = false, texture = R.trim.texture })
     else
       stairs(R, "fly_stairs", a, R.y, foot, up, s, 3)
-      add_rec(R, kit.bridge{ name = R.name .. "_plank", from = { b, R.y + 0.125, e0 - sign * 6 }, to = { b, R.y + s + 0.125, e1 + sign * 1 }, width = 3, style = "plank", landmark = false, group = false, texture = R.trim.texture })
+      add_rec(R, kit.bridge{ purpose = "quiet", name = R.name .. "_plank", from = { b, R.y + 0.125, e0 - sign * 6 }, to = { b, R.y + s + 0.125, e1 + sign * 1 }, width = 3, style = "plank", landmark = false, group = false, texture = R.trim.texture })
     end
     grid_spots(R, R.y, lo[1] + 2.5, lo[2] + 2.5, lo[3] - 2.5, lo[4] - 2.5)
     grid_spots(R, R.y + s, hi[1] + 2.5, hi[2] + 2.5, hi[3] - 2.5, hi[4] - 2.5)
@@ -4063,6 +4697,149 @@ RECIPES.overlook = {
   light_h = function() return 6 end,
 }
 
+-- A traced space: the room (or yard) is its outline; a raised ceiling bay over the biggest convex piece indoors;
+-- low cover blocks on a lattice of its clear floor, kept 2 m in from the walls and off the port approaches and the
+-- cart lane; floor spots on a 4 m grid.
+RECIPES.poly = {
+  shell = function(R)
+    local foot = {}
+    for i, q in ipairs(R.poly) do foot[i] = { q[1], q[2] } end
+    local rec = shaped(R, { pos = { 0, R.y, 0 }, footprint = foot, height = R.h })
+    if R.z.sky then
+      I.sky_up(rec.brushes)
+      R.sky = true
+    elseif R.area >= 120 then
+      local biggest, best = nil, -1
+      for _, piece in ipairs(rec.pieces or {}) do local a = math.abs(area2(piece)) if a > best then biggest, best = piece, a end end
+      local raised = biggest and I.inset_convex(biggest, math.max(2.5, math.sqrt(best) * 0.22)) or nil
+      if raised and math.abs(area2(raised)) >= 30 then
+        local rise = math.max(2, q2(R.h * 0.4))
+        add_brush(R, I.prism("layout", R.name, "raised", SP.snap16(raised), R.y, R.y + R.h + rise, { air = true, textures = R.textures }))
+      end
+    end
+  end,
+  inner = function(R)
+    local p = R.poly
+    local function clear_floor(x, z, m) return inside(p, x, z) and edge_dist(p, x, z) >= m end
+    -- the plan's own frame: local x along its longest wall (the first of walls within 5 cm of it), so a traced zone
+    -- is dressed alike however its outline is turned
+    local q = ccw(p)
+    local n, longest = #q, 0
+    for i = 1, n do local a, b = q[i], q[i % n + 1] longest = math.max(longest, math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)) end
+    local ux, uz = 1, 0
+    for i = 1, n do
+      local a, b = q[i], q[i % n + 1]
+      local L = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+      if L >= longest - 0.05 then ux, uz = (b[1] - a[1]) / L, (b[2] - a[2]) / L break end
+    end
+    local function W(lx, lz) return lx * ux - lz * uz, lx * uz + lz * ux end
+    local x0, z0, x1, z1 = math.huge, math.huge, -math.huge, -math.huge
+    for _, v in ipairs(q) do
+      local lx, lz = v[1] * ux + v[2] * uz, -v[1] * uz + v[2] * ux
+      x0, z0, x1, z1 = math.min(x0, lx), math.min(z0, lz), math.max(x1, lx), math.max(z1, lz)
+    end
+    -- a rectangle of the frame (centre lx, lz, half sizes) as a world quad
+    local function quad(lx, lz, hw, hd)
+      local out = {}
+      for i, c in ipairs({ { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } }) do local x, z = W(lx + c[1] * hw, lz + c[2] * hd) out[i] = { x, z } end
+      return out
+    end
+    -- clear of every port approach (a quad's test of clear())
+    local function clear_quad(Q, y0, y1)
+      local bx0, bz0, bx1, bz1 = bbox(Q)
+      for _, port in ipairs(R.ports) do
+        if port.seg then
+          local py0 = port.drop_to or port.y0
+          if y0 < port.y1 and y1 > py0 - 0.3 and poly_dist(keepout_poly(port, DATA.keep_depth), Q) < 1e-6 then return false end
+        elseif not clear(R, bx0, bz0, bx1, bz1, y0, y1) then return false end
+      end
+      return lane_clear(R, bx0, bz0, bx1, bz1)
+    end
+    -- cover: blocks on a 7 m lattice (alternating along and across the frame), at most one per 60 m2
+    local pitch = 7
+    local nx, nz = math.max(0, math.floor((x1 - x0 - 4) / pitch)), math.max(0, math.floor((z1 - z0 - 4) / pitch))
+    local ox, oz = (x0 + x1) / 2 - nx * pitch / 2, (z0 + z1) / 2 - nz * pitch / 2
+    local cap, k = math.floor(R.area / 60), 0
+    for i = 0, nx do
+      for j = 0, nz do
+        local x, z = ox + i * pitch, oz + j * pitch
+        local along_x = ((i + j) % 2 == 0)
+        local hw, hd = along_x and 1.25 or 0.625, along_x and 0.625 or 1.25
+        local ok = k < cap
+        local block = quad(x, z, hw, hd)
+        for _, c in ipairs(block) do
+          if ok and not clear_floor(c[1], c[2], 2) then ok = false end
+        end
+        if ok and clear_quad(quad(x, z, hw + 1.2, hd + 1.2), R.y, R.y + 1.4) then
+          local bx0, bz0, bx1, bz1 = bbox(block)
+          if free_of_solids(R, bx0, bz0, bx1, bz1, R.y, R.y + 1.4, 1.5) then
+            k = k + 1
+            note_solid(R, bx0, bz0, bx1, bz1, R.y, R.y + 1.4)
+            add_brush(R, I.prism("layout", R.name, "cover" .. k, ccw(SP.snap16(block)), R.y, R.y + 1.4, { detail = true, textures = R.textures }))
+          end
+        end
+      end
+    end
+    -- spots on a 4 m grid of the frame inside the outline, 2 m from its walls
+    local gx = x0 + ((x1 - x0) % 4) / 2
+    while gx <= x1 + EPS do
+      local gz = z0 + ((z1 - z0) % 4) / 2
+      while gz <= z1 + EPS do
+        local wx, wz = W(gx, gz)
+        if clear_floor(wx, wz, 2) then R.spots[#R.spots + 1] = { wx, R.y, wz } end
+        gz = gz + 4
+      end
+      gx = gx + 4
+    end
+    -- the objective spot: the middle of the biggest convex piece
+    local biggest, best = nil, -1
+    for _, piece in ipairs((R.room and R.room.pieces) or {}) do local a = math.abs(area2(piece)) if a > best then biggest, best = piece, a end end
+    if biggest then
+      local cx, cz = 0, 0
+      for _, q in ipairs(biggest) do cx, cz = cx + q[1], cz + q[2] end
+      R.objective_spot = { cx / #biggest, R.y, cz / #biggest }
+      if #R.spots == 0 then R.spots[1] = { R.objective_spot[1], R.y, R.objective_spot[3] } end
+    end
+  end,
+  -- Wall articulation indoors: pilasters about every 4.5 m along the traced walls at least 9 m long, 1.5 m clear of
+  -- corners and 2 m clear of every port, each buried a quarter metre in its wall (no face on the wall's oblique plane).
+  late = function(R)
+    if R.sky or (R.detail and R.detail.walls) then return end -- (the room detail pass lines the walls instead)
+    local p = ccw(R.poly)
+    local n = #p
+    for i = 1, n do
+      local a, b = p[i], p[i % n + 1]
+      local ex, ez = b[1] - a[1], b[2] - a[2]
+      local L = math.sqrt(ex * ex + ez * ez)
+      if L >= 9 then
+        local tx, tz = ex / L, ez / L
+        local nx, nz = -tz, tx -- inward for a CCW plan
+        local count = math.max(1, math.floor((L - 3) / 4.5 + 0.5))
+        for k = 1, count do
+          local s = 1.5 + (L - 3) * (k - 0.5) / count
+          local cx, cz = a[1] + tx * s, a[2] + tz * s
+          local ok = true
+          for _, port in ipairs(R.ports) do
+            local q = port.world or (port.seg and { (port.seg[1][1] + port.seg[2][1]) / 2, (port.seg[1][2] + port.seg[2][2]) / 2 })
+            local half = port.seg and math.sqrt((port.seg[2][1] - port.seg[1][1]) ^ 2 + (port.seg[2][2] - port.seg[1][2]) ^ 2) / 2 or 2
+            if q and math.sqrt((q[1] - cx) ^ 2 + (q[2] - cz) ^ 2) < half + 2.4 then ok = false end
+          end
+          -- (no pilaster where the wall is open: a join to a neighbour)
+          if ok and R.in_other and R.in_other(cx - nx * 0.75, cz - nz * 0.75) then ok = false end
+          if ok then
+            local quad = {}
+            for j, uv in ipairs({ { -0.4, -0.25 }, { 0.4, -0.25 }, { 0.4, 0.4 }, { -0.4, 0.4 } }) do
+              quad[j] = { cx + tx * uv[1] + nx * uv[2], cz + tz * uv[1] + nz * uv[2] }
+            end
+            add_brush(R, I.prism("layout", R.name, "pilaster" .. i .. "_" .. k, ccw(quad), R.y, R.y + R.h, { detail = true, texture = R.trim.texture }))
+          end
+        end
+      end
+    end
+  end,
+  light_h = function(R) return R.h - 1 end,
+}
+
 -- Link builders -------------------------------------------------------------------------------
 
 local function link_textures(P)
@@ -4169,7 +4946,7 @@ local function build_link_solid(P, gname, open_air)
     if l.type == "bridge" or l.type == "corridor" or l.type == "doorway" or l.type == "ramp" then
       local from, to = at(wa - d * 1, ya + 0.125), at(wb + d * 1, yb + 0.125)
       local span = math.abs(wb - wa)
-      made[#made + 1] = kit.bridge{ name = name, from = from, to = to, width = W - 1, style = l.style or "truss", group = false,
+      made[#made + 1] = kit.bridge{ purpose = "quiet", name = name, from = from, to = to, width = W - 1, style = l.style or "truss", group = false,
         landmark = span >= 12 and math.abs(ya - yb) < 0.1, textures = tex, frame_texture = trim }
     elseif l.type == "stair" then
       local low_is_a = ya < yb
@@ -4181,7 +4958,7 @@ local function build_link_solid(P, gname, open_air)
       local G = math.abs(wh - wl)
       -- The flight starts on the low deck when the gap is shorter than the run; a landing slab spans the rest.
       local start = wl - dd * math.max(0, run - G + 1)
-      made[#made + 1] = kit.stairs{ name = name .. "_flight", pos = at(start, yl), dir = dname[f.axis][dd], rise = rise, width = W - 1, tread = DATA.tread, group = false, textures = tex }
+      made[#made + 1] = flight{ name = name .. "_flight", pos = at(start, yl), dir = dname[f.axis][dd], rise = rise, width = W - 1, tread = DATA.tread, group = false, textures = tex }
       local top = start + dd * run
       if math.abs(wh - top) > 0.1 and (wh - top) * dd > 0 then
         made[#made + 1] = { brush = link_solid(P, gname, "landing", top, wh + dd * 0.5, yh - 0.5, yh, (W - 1) / 2, tex) }
@@ -4202,22 +4979,25 @@ local function build_link_solid(P, gname, open_air)
     -- The deck across the chasm, 1 m into each zone (a cart bridge: give the link the road's width).
     local wa, wb = f.wa, f.wb
     local d = (wb > wa) and 1 or -1
-    made[#made + 1] = kit.bridge{ name = name, from = at(wa - d * 1, ya + 0.125), to = at(wb + d * 1, yb + 0.125), width = W - 1, style = l.style or "truss",
+    made[#made + 1] = kit.bridge{ purpose = "quiet", name = name, from = at(wa - d * 1, ya + 0.125), to = at(wb + d * 1, yb + 0.125), width = W - 1, style = l.style or "truss",
       group = false, landmark = false, textures = tex, frame_texture = trim }
     return made
   end
   -- Door jambs where a link meets a zone: a 3 m doorway into each room (exemplar doorways 2.5-3.7 m), so the
-  -- rooms read (and measure) as separate spaces joined by doors, not one floor.
+  -- rooms read (and measure) as separate spaces joined by doors, not one floor. Like every solid in a passage they
+  -- reach a quarter metre into its side walls (no face of theirs on the passage's own side planes, which a turned
+  -- frame cannot hold exactly).
   if (l.type == "corridor" or l.type == "stair" or l.type == "ramp" or l.type == "drop") and W >= DATA.door_width + 1 then
     local dw = DATA.door_width
     local y0, y1 = math.min(ya, yb), math.max(ya, yb) + link_height(l)
     if l.type == "drop" then y0, y1 = ya, ya + link_height(l) end
     local d = (f.wb > f.wa) and 1 or -1
     for i, e in ipairs({ { f.wa, d }, { f.wb, -d } }) do
-      local s0, s1 = e[1], e[1] + e[2] * 0.5
+      -- (set back 1/16 m from the wall: the jamb never lies on the wall plane, which a turned frame cannot hold exactly)
+      local s0, s1 = e[1] + e[2] / 16, e[1] + e[2] * 0.5
       for j, side in ipairs({ -1, 1 }) do
         local inner = side * dw / 2
-        local outer = side * W / 2
+        local outer = side * (W / 2 + BURY)
         local a0, a1 = math.min(inner, outer), math.max(inner, outer)
         local x0, z0, x1, z1
         if f.axis == "x" then x0, x1, z0, z1 = math.min(s0, s1), math.max(s0, s1), P.c + a0, P.c + a1
@@ -4230,13 +5010,15 @@ local function build_link_solid(P, gname, open_air)
     local S = P.stair
     local foot = S.wl + S.d * S.flat
     if l.type == "stair" then
-      made[#made + 1] = kit.stairs{ name = name .. "_stairs", pos = at(foot, S.yl), dir = dname[f.axis][S.d], rise = S.rise, width = W, tread = DATA.tread, group = false, textures = tex }
+      made[#made + 1] = flight{ name = name .. "_stairs", pos = at(foot, S.yl), dir = dname[f.axis][S.d], rise = S.rise, width = W + 2 * BURY, tread = DATA.tread, group = false, textures = tex }
     else
-      made[#made + 1] = kit.ramp{ name = name .. "_ramp", pos = at(foot, S.yl), dir = dname[f.axis][S.d], rise = S.rise, run = S.run, width = W, group = false, textures = tex }
+      made[#made + 1] = kit.ramp{ name = name .. "_ramp", pos = at(foot, S.yl), dir = dname[f.axis][S.d], rise = S.rise, run = S.run, width = W + 2 * BURY, group = false, textures = tex }
     end
+    -- the flight and its landing are as wide as the passage plus a quarter metre in each side wall; the landing
+    -- overlaps the flight's top and runs a quarter metre past the high zone's wall under its floor
     local top = foot + S.d * S.run
     if (S.wh - top) * S.d > 0.05 then
-      made[#made + 1] = { brush = link_solid(P, gname, "landing", top, S.wh, S.yl, S.yh, W / 2, tex) }
+      made[#made + 1] = { brush = link_solid(P, gname, "landing", top - S.d * 0.125, S.wh + S.d * BURY, S.yl, S.yh, W / 2 + BURY, tex) }
     end
   elseif l.type == "lift" and P.lift then
     local L = P.lift
@@ -4245,6 +5027,10 @@ local function build_link_solid(P, gname, open_air)
     local c = at(mid, L.yl)
     local plat = level.brush{ shape = "box", pos = { c[1], L.yl + 0.125, c[3] }, size = { 2 * half, 0.25, 2 * half }, textures = tex,
       tags = { kit = "layout", ["kit.name"] = name, ["kit.part"] = "lift" } }
+    -- the platform turns with the zones' frame before it becomes a mover; the triggers sit at turned points
+    local rot = zone_rot(P.za)
+    turn_list({ plat }, 0, rot)
+    c[1], c[3] = to_world(rot, c[1], c[3])
     local mover = level.create_mover{ name = name .. "_lift", brushes = { plat }, props = { movement_type = "Ping Pong Once" },
       tags = { kit = "layout", ["kit.name"] = name } }
     local travel = math.max(2, (L.yh - L.yl) / 2.5)
@@ -4254,9 +5040,10 @@ local function build_link_solid(P, gname, open_air)
     level.place{ kind = "trigger", name = name .. "_lift_call_bottom", pos = { c[1], L.yl + 1.2, c[3] },
       props = { shape = "Sphere", sphere_radius = half, resets_after = resets, activated_by = "Players" }, links = { mover }, tags = { kit = "layout", ["kit.name"] = name } }
     local top_at = at(L.s1 + L.d * 1.5, L.yh)
+    top_at[1], top_at[3] = to_world(rot, top_at[1], top_at[3])
     level.place{ kind = "trigger", name = name .. "_lift_call_top", pos = { top_at[1], L.yh + 1.2, top_at[3] },
       props = { shape = "Sphere", sphere_radius = 1.5, resets_after = resets, activated_by = "Players", use_key_required = true }, links = { mover }, tags = { kit = "layout", ["kit.name"] = name } }
-    made[#made + 1] = { brush = plat, mover = mover }
+    made[#made + 1] = { brush = plat, mover = mover, turned = true }
   end
   return made
 end
@@ -4285,10 +5072,303 @@ local function link_lights(P, gname, color)
     if l.type == "drop" then y = ya + H - 0.8 end
     if l.type == "road" then y = ya + (l.tunnel and 5.5 or 6) end
     local pos = f.axis == "x" and { s, y, P.c } or { P.c, y, s }
+    pos[1], pos[3] = to_world(zone_rot(P.za), pos[1], pos[3])
     lights[#lights + 1] = level.place{ kind = "light", name = gname .. "_" .. l.id .. "_light" .. i, pos = pos,
       props = { color = color or kit.defaults.light_color, size_range = 9 }, tags = { kit = "layout", ["kit.name"] = gname .. "_" .. l.id } }
   end
   return lights
+end
+
+-- Free links ------------------------------------------------------------------------------------
+
+-- A point on the line through A and B at s metres from A, measured along direction d (A and B on one side line).
+local function along_line(A, B, d, s)
+  local L = (B[1] - A[1]) * d[1] + (B[2] - A[2]) * d[2]
+  local f = s / L
+  return { A[1] + (B[1] - A[1]) * f, A[2] + (B[2] - A[2]) * f }
+end
+
+-- The floors of a free link's pieces: the climb (stair, ramp) on its longest straight segment, low floor before it
+-- and high floor after it; every other link at its lower floor (a step of up to 1 m at the higher zone's wall).
+local function free_layout(P, H)
+  if P.layout then return P.layout end
+  local l, M = P.link, P.M
+  local ya, yb = P.ya, P.yb
+  local yl, yh = math.min(ya, yb), math.max(ya, yb)
+  local Lo = { yl = yl, yh = yh, H = H, top = yh + H }
+  if (l.type == "stair" or l.type == "ramp") and yh - yl > 0.01 then
+    local rise = yh - yl
+    local run = (l.type == "stair") and stair_run(rise) or ramp_run(rise)
+    local k, best = 1, -1
+    for i, st in ipairs(M.straight) do if st[2] - st[1] > best + EPS then k, best = i, st[2] - st[1] end end
+    local st = M.straight[k]
+    local fwd = ya < yb -- climbing along the path's order (a -> b)
+    local foot, top
+    if fwd then foot = math.max(st[1], q4(st[1] + (st[2] - st[1] - run) / 2)) top = foot + run
+    else foot = math.min(st[2], q4(st[2] - (st[2] - st[1] - run) / 2)) top = foot - run end
+    Lo.k, Lo.fwd, Lo.foot, Lo.top_s, Lo.run, Lo.rise = k, fwd, foot, top, run, rise
+  end
+  P.layout = Lo
+  return Lo
+end
+
+-- The floor and ceiling of segment k of a free link at s metres from its start.
+local function free_span(P, Lo, k, s)
+  if not Lo.k then return Lo.yl, Lo.top end
+  local before = (k < Lo.k)
+  if k == Lo.k then
+    local low = Lo.fwd and (s < Lo.foot) or ((not Lo.fwd) and s > Lo.foot)
+    if low then return Lo.yl, Lo.yl + Lo.H end
+    return Lo.yl, Lo.yh + Lo.H
+  end
+  local low = (before and Lo.fwd) or ((not before) and not Lo.fwd)
+  if low then return Lo.yl, Lo.yl + Lo.H end
+  return Lo.yh, Lo.yh + Lo.H
+end
+
+-- Phase "link air" of a free link: one air prism per segment on the shared mitre points, a mouth half a metre into
+-- each zone at that zone's port floor; a chasm bridge's deep cut starts where its full width has left the wall.
+local function build_free_air(P, gname, open_air)
+  local l, M = P.link, P.M
+  local out = {}
+  if open_air then return out end
+  local tex = link_textures(P)
+  local name = gname .. "_" .. l.id
+  local H = link_height(l, { class = "standard" })
+  local function prism(part, poly, y0, y1)
+    out[#out + 1] = I.prism("layout", name, part, ccw(poly), g16(y0), g16(y1), { air = true, textures = tex })
+    return out[#out]
+  end
+  local n = #M.quads
+  local d1, dn = M.dirs[1], M.dirs[n]
+  if l.type == "bridge" then
+    local depth = l.depth or DATA.chasm_depth
+    local ya, yb = P.ya, P.yb
+    local top = math.max(ya, yb) + H
+    local len = M.lens[1]
+    local ta, tb = angle_of(P.pa.wnrm, d1), angle_of(P.pb.wnrm, { -d1[1], -d1[2] })
+    local ea, eb = 0.5 + P.hw * math.tan(math.rad(ta)), 0.5 + P.hw * math.tan(math.rad(tb))
+    local LA0, RA0 = M.L[1], M.R[1]
+    local LB0, RB0 = M.L[2], M.R[2]
+    local function at(s) return along_line(LA0, LB0, d1, s), along_line(RA0, RB0, d1, s) end
+    local la, ra = at(-0.5)
+    local lb, rb = at(ea)
+    local lc, rc = at(len - eb)
+    local ld, rd = at(len + 0.5)
+    prism("bank_a", { la, ra, rb, lb }, ya, top)
+    prism("chasm", { lb, rb, rc, lc }, math.min(ya, yb) - depth, top)
+    prism("bank_b", { lc, rc, rd, ld }, yb, top)
+    if not l.tunnel then I.sky_up(out) end
+    return out
+  end
+  local Lo = free_layout(P, H)
+  -- No air face may sit on a zone's wall line: the mouths reach from half a metre inside each zone to a quarter
+  -- metre outside it, and the passage starts and ends there.
+  local function ends_of(k)
+    local a0, a1, b0, b1
+    if k == 1 then a0, a1 = side_points(M, 1, 0.25) else a0, a1 = M.L[k], M.R[k] end
+    if k == n then b0, b1 = side_points(M, n, M.lens[n] - 0.25) else b0, b1 = M.L[k + 1], M.R[k + 1] end
+    return a0, a1, b0, b1
+  end
+  for k = 1, n do
+    local La, Ra, Lb, Rb = ends_of(k)
+    if Lo.k == k then
+      local Ls, Rs = side_points(M, k, Lo.foot)
+      local y0a, y1a = free_span(P, Lo, k, Lo.foot - (Lo.fwd and 0.1 or -0.1))
+      local y0b, y1b = free_span(P, Lo, k, Lo.foot + (Lo.fwd and 0.1 or -0.1))
+      prism("seg" .. k .. "a", { La, Ra, Rs, Ls }, Lo.fwd and y0a or y0b, Lo.fwd and y1a or y1b)
+      prism("seg" .. k .. "b", { Ls, Rs, Rb, Lb }, Lo.fwd and y0b or y0a, Lo.fwd and y1b or y1a)
+    else
+      local y0, y1 = free_span(P, Lo, k, 0)
+      prism("seg" .. k, { La, Ra, Rb, Lb }, y0, y1)
+    end
+  end
+  local _, yt0 = free_span(P, Lo, 1, 0)
+  local _, ytn = free_span(P, Lo, n, M.lens[n])
+  local ma_l, ma_r = side_points(M, 1, -0.5)
+  local mc_l, mc_r = side_points(M, 1, 0.25)
+  local mb_l, mb_r = side_points(M, n, M.lens[n] + 0.5)
+  local md_l, md_r = side_points(M, n, M.lens[n] - 0.25)
+  prism("mouth_a", { ma_l, ma_r, mc_r, mc_l }, P.ya, math.max(yt0, P.ya + H))
+  prism("mouth_b", { md_l, md_r, mb_r, mb_l }, P.yb, math.max(ytn, P.yb + H))
+  if l.type == "road" and not l.tunnel then I.sky_up(out) end
+  return out
+end
+
+-- Phase "link solids" of a free link: door jambs at both ends (in each zone's frame, just behind its wall), the
+-- stair or ramp on its flight segment and the landing behind it, or a bridge deck.
+local function build_free_solid(P, gname, open_air)
+  local l, M = P.link, P.M
+  local tex, trim = link_textures(P)
+  local name = gname .. "_" .. l.id
+  local W, hw = P.W, P.hw
+  local made = {}
+  local function add(rec) if rec then made[#made + 1] = rec end return rec end
+  local ya, yb = P.ya, P.yb
+  local yl, yh = math.min(ya, yb), math.max(ya, yb)
+  local d1 = M.dirs[1]
+  if l.type == "bridge" or (open_air and (l.type == "corridor" or l.type == "doorway" or l.type == "ramp")) then
+    local a, b = M.pts[1], M.pts[#M.pts]
+    add(kit.bridge{ name = name, from = { a[1] - d1[1], ya + 0.125, a[2] - d1[2] }, to = { b[1] + d1[1], yb + 0.125, b[2] + d1[2] }, width = W - 1,
+      style = l.style or "truss", group = false, landmark = open_air and M.lens[1] >= 12 and math.abs(ya - yb) < 0.1, textures = tex, frame_texture = trim })
+    return made
+  end
+  if open_air and l.type == "stair" then
+    -- a flying stair from just inside the low platform's edge (further onto it when the gap is shorter than the run), built
+    -- along +z at the low port and turned onto the link's heading
+    local fwd = ya < yb
+    local Pl = fwd and M.pts[1] or M.pts[#M.pts]
+    local dc = fwd and d1 or { -d1[1], -d1[2] }
+    local G = M.lens[1]
+    local rise = yh - yl
+    local run = stair_run(rise)
+    -- (always at least a quarter metre onto the low platform: a first step whose front stood on the platform's
+    -- turned edge would put its face on that edge's oblique plane)
+    local start = -math.max(BURY, run - G + 1)
+    local top = start + run
+    local list = {}
+    local st = flight{ name = name .. "_flight", pos = { Pl[1], yl, Pl[2] + start }, dir = "+z", rise = rise, width = W - 1, tread = DATA.tread, group = false, textures = tex }
+    for _, b in ipairs(rec_brushes({ st })) do list[#list + 1] = b end
+    if G - top > 0.1 then
+      -- (1/16 m wider each side than the flight: the landing overlaps the top step, and once turned two overlapping
+      -- side faces on one oblique plane would not coincide exactly)
+      local lw = (W - 1) / 2 + 1 / 16
+      list[#list + 1] = hull("layout", name, "landing", box_points(Pl[1] - lw, yh - 0.5, Pl[2] + top, Pl[1] + lw, yh, Pl[2] + G + 0.5), { textures = tex })
+    end
+    for _, side in ipairs({ -1, 1 }) do
+      local o = side * ((W - 1) / 2 + 0.05)
+      list[#list + 1] = member("layout", name, "rail" .. side, { Pl[1] + o, yl + 1.05, Pl[2] + start }, { Pl[1] + o, yh + 1.05, Pl[2] + top }, 0.1, 0.1, { texture = trim })
+    end
+    turn_list(list, 0, yaw_of(dc[1], dc[2]), Pl[1], yl, Pl[2])
+    add({ brushes = list })
+    return made
+  end
+  -- Door jambs: a 3 m doorway into each zone (as classic corridors have), just behind the zone's wall.
+  if (l.type == "corridor" or l.type == "stair" or l.type == "ramp") and W >= DATA.door_width + 1 then
+    local dw = DATA.door_width
+    local y0, y1 = yl, yh + link_height(l)
+    for i, e in ipairs({ { P.za, P.pa }, { P.zb, P.pb } }) do
+      local z, p = e[1], e[2]
+      local list = {}
+      local c = (p.lo + p.hi) / 2
+      for j, side in ipairs({ -1, 1 }) do
+        local inner, outer = side * dw / 2, side * (W / 2 + 0.25)
+        local a0, a1 = math.min(inner, outer), math.max(inner, outer)
+        if z.archetype == "poly" then
+          local _, _, t, _, nn = poly_edge(poly_of(z), p.side)
+          local q = {}
+          -- set back a quarter metre from the traced wall (an oblique wall is never exactly on the jamb's plane)
+          for k, v in ipairs({ { a0, 0.25 }, { a1, 0.25 }, { a1, 0.75 }, { a0, 0.75 } }) do
+            q[k] = { p.pt[1] + t[1] * v[1] + nn[1] * v[2], p.pt[2] + t[2] * v[1] + nn[2] * v[2] }
+          end
+          list[#list + 1] = I.prism("layout", name, "jamb" .. i .. j, ccw(q), g16(y0), g16(y1), { textures = tex })
+        else
+          local w = p.wall
+          local out_s = (p.side == "+x" or p.side == "+z") and 1 or -1
+          -- (set back 1/16 m from the wall plane, which a turned frame cannot hold exactly)
+          local s0, s1 = math.min(w + out_s / 16, w + out_s * 0.5), math.max(w + out_s / 16, w + out_s * 0.5)
+          local x0, z0, x1, z1
+          if p.side == "+x" or p.side == "-x" then x0, x1, z0, z1 = s0, s1, c + a0, c + a1 else x0, x1, z0, z1 = c + a0, c + a1, s0, s1 end
+          list[#list + 1] = hull("layout", name, "jamb" .. i .. j, box_points(g16(x0), g16(y0), g16(z0), g16(x1), g16(y1), g16(z1)), { textures = tex })
+        end
+      end
+      if z.archetype ~= "poly" then turn_list(list, 0, zone_rot(z)) end
+      add({ brushes = list })
+    end
+  end
+  if (l.type == "stair" or l.type == "ramp") and yh - yl > 0.01 then
+    local Lo = free_layout(P, link_height(l))
+    local k = Lo.k
+    local d = M.dirs[k]
+    local dc = Lo.fwd and d or { -d[1], -d[2] }
+    local Q = M.pts[k]
+    local fx, fz = Q[1] + d[1] * Lo.foot, Q[2] + d[2] * Lo.foot
+    -- built along +z at the foot, 0.25 m wider each side than the passage (buried in its walls), then turned
+    local rec
+    if l.type == "stair" then
+      rec = flight{ name = name .. "_stairs", pos = { fx, yl, fz }, dir = "+z", rise = Lo.rise, width = W + 0.5, tread = DATA.tread, group = false, textures = tex }
+    else
+      rec = kit.ramp{ name = name .. "_ramp", pos = { fx, yl, fz }, dir = "+z", rise = Lo.rise, run = Lo.run, width = W + 0.5, group = false, textures = tex }
+    end
+    local list = rec_brushes({ rec })
+    turn_list(list, 0, yaw_of(dc[1], dc[2]), fx, yl, fz)
+    add({ brushes = list })
+    -- The landing: the rest of the flight segment at the high floor (overlapping the top tread). No face of it may
+    -- lie on an oblique plane of the passage air (planes of two brushes through different points never coincide
+    -- exactly): it is a quarter metre wider each side than the passage, like the flight, and its far end reaches
+    -- half a metre past the mitre under the next segment's floor (solid there), or a quarter metre past the zone's
+    -- wall under the zone's floor at the passage's end.
+    local len = M.lens[k]
+    local n = #M.quads
+    local s0, s1
+    if Lo.fwd then s0, s1 = Lo.top_s - 0.125, len else s0, s1 = 0, Lo.top_s + 0.125 end
+    if s1 - s0 > 0.05 then
+      local e = 0.125 / hw
+      -- a pair of side points pushed out along their own line to the buried width, then moved by m along the segment
+      local function out(Lq, Rq, m)
+        m = m or 0
+        local dx, dz = Lq[1] - Rq[1], Lq[2] - Rq[2]
+        return { Lq[1] + dx * e + d[1] * m, Lq[2] + dz * e + d[2] * m }, { Rq[1] - dx * e + d[1] * m, Rq[2] - dz * e + d[2] * m }
+      end
+      local poly
+      if Lo.fwd then
+        local Ls, Rs = out(side_points(M, k, s0))
+        local Le, Re
+        if k == n then Le, Re = out(side_points(M, k, len + 0.25)) else Le, Re = out(M.L[k + 1], M.R[k + 1], 0.5) end
+        poly = { Ls, Rs, Re, Le }
+      else
+        local Ls, Rs = out(side_points(M, k, s1))
+        local Lb, Rb
+        if k == 1 then Lb, Rb = out(side_points(M, k, -0.25)) else Lb, Rb = out(M.L[k], M.R[k], -0.5) end
+        poly = { Lb, Rb, Rs, Ls }
+      end
+      add({ brush = I.prism("layout", name, "landing", ccw(poly), g16(yl), g16(yh), { textures = tex }) })
+    end
+  end
+  return made
+end
+
+-- Lights along a free link every ~5 m of its path (corridors, stairs, ramps, roads; not bridges).
+local function free_lights(P, gname, color)
+  local l, M = P.link, P.M
+  if l.type == "bridge" then return {} end
+  local lights = {}
+  local H = link_height(l)
+  local Lo = free_layout(P, H)
+  local n = math.max(1, math.floor(M.length / 5 + 0.5))
+  for i = 1, n do
+    local s = M.length * (i - 0.5) / n
+    local k = 1
+    while k < #M.lens and s > M.lens[k] do s = s - M.lens[k] k = k + 1 end
+    local _, top = free_span(P, Lo, k, s)
+    local y = top - 0.8
+    if l.type == "road" then y = Lo.yl + (l.tunnel and 5.5 or 6) end
+    local q, d = M.pts[k], M.dirs[k]
+    lights[#lights + 1] = level.place{ kind = "light", name = gname .. "_" .. l.id .. "_light" .. i, pos = { q[1] + d[1] * s, y, q[2] + d[2] * s },
+      props = { color = color or kit.defaults.light_color, size_range = 9 }, tags = { kit = "layout", ["kit.name"] = gname .. "_" .. l.id } }
+  end
+  return lights
+end
+
+-- A join's opening: an air box across the shared wall in the rectangle zone's frame, or air strips across the
+-- shared line of two traced zones (half a metre into each), from the higher floor to the lower ceiling.
+local function build_join(P, gname)
+  local name = gname .. "_" .. P.link.id
+  local tex = link_textures(P)
+  local out = {}
+  local sky = (P.za.sky or LA[P.za.archetype].sky) and (P.zb.sky or LA[P.zb.archetype].sky)
+  if P.ext then
+    local e = P.ext
+    local x0, z0, x1, z1
+    if e.axis == "x" then x0, x1, z0, z1 = e.w0, e.w1, e.lo, e.hi else x0, x1, z0, z1 = e.lo, e.hi, e.w0, e.w1 end
+    out[#out + 1] = hull("layout", name, "join", box_points(g16(x0), g16(P.y0), g16(z0), g16(x1), g16(P.y1), g16(z1)), { air = true, textures = tex })
+    turn_list(out, 0, zone_rot(e.zone))
+  end
+  for i, q in ipairs(P.ext_quads or {}) do
+    out[#out + 1] = I.prism("layout", name, "join" .. i, q, g16(P.y0), g16(P.y1), { air = true, textures = tex })
+  end
+  if sky then I.sky_up(out) end
+  return out
 end
 
 -- Spots: farthest-point picks from a zone's candidates, clear of solids.
@@ -4296,10 +5376,11 @@ local function pick_spots(R, count, y_pref)
   local cand = {}
   -- only spots well inside the zone's plan (chamfered corners cut the grid's outer points)
   local plan = (R.room and R.room.outline) or R.outline
-  local inner = plan and (I.inset_convex(plan, 1.2) or plan) or nil
+  local inner = (not R.poly) and plan and (I.inset_convex(plan, 1.2) or plan) or nil
   for _, s in ipairs(R.spots) do
     local ok = clear(R, s[1] - 1.2, s[3] - 1.2, s[1] + 1.2, s[3] + 1.2, s[2], s[2] + 2)
     if ok and inner and not I.inside(inner, s[1], s[3]) then ok = false end
+    if ok and R.poly and not (inside(R.poly, s[1], s[3]) and edge_dist(R.poly, s[1], s[3]) >= 1.2) then ok = false end
     if ok then
       for _, so in ipairs(R.solids) do
         if s[1] > so[1] - 1.3 and s[1] < so[3] + 1.3 and s[3] > so[2] - 1.3 and s[3] < so[4] + 1.3 and s[2] < so[6] - 0.1 and s[2] + 2 > so[5] then ok = false end
@@ -4332,16 +5413,527 @@ local function pick_spots(R, count, y_pref)
   return picked
 end
 
----@kit kit.build_layout{graph, name?, lights?, strict?, force?, populate?} → layout_report — Builds a layout graph: kit.check_layout first (errors refuse; design-rule violations warn, or refuse with strict = true), then in CSG time order the zone shells (and the open-air void), every link's air, the zones' interiors (stairs, galleries, courts, cover, ...), the links' steps, ramps, landings, lifts and bridges (outside open-air layouts a bridge's deck spans a chasm cut to the sky, link.depth metres deep, default 8), details, lights, and the objectives: spawn groups, CTF flags, the KOTH hill (a Capture_Point_Handler with its trigger) and the payload cart (One Way mover on the track on any heading, Payload_Handler, checkpoints on its keyframes, each linking the attacker and defender spawns that are live while it is the target). Every brush of a zone is tagged kit.zone = the zone's name (<name>_<zone id>), and that name works as a room name in kit.dress, kit.items and kit.spawn_points. Returns {name, zones[] (id, archetype, name, min, max, floor_y, spots, brushes, room), links[], spawns, objectives, warnings[], violations[], area}.
+-- ---------------------------------------------------------------------------------------------
+-- The room detail pass (kit.build_layout detail = ...): what a mapper adds once a zone's shell stands. Every part
+-- comes from kit_modules (library modules, else its hand-authored stand-ins), run in the zone's own frame (each wall in
+-- a frame along it), so turned and traced zones are detailed like square ones.
+-- ---------------------------------------------------------------------------------------------
+
+-- The detail style of a zone's palette theme (kit_modules' style families): timber mine supports in rock palettes.
+local DETAIL_STYLE = { industrial = "industrial", bunker = "bunker", admin = "admin", cave = "mine", marsbase = "mars_base" }
+-- Archetypes whose roof takes beams or trusses: plain or stepped ceilings. Beamed and coffered shells (gallery,
+-- tunnel, colonnade), the storage bay's own beams, small rooms, yards and open-air decks are left as they are.
+local DETAIL_CEILING = { hall = true, pit = true, arena = true, split = true, atrium = true, sunken = true, mound = true, start = true, poly = true }
+local DETAIL_PARTS = { "walls", "frames", "ceilings", "railings", "stairs", "rocks" }
+
+-- The detail option of kit.build_layout: nil (off) or {walls, frames, ceilings, railings, stairs, rocks, style?, seed}.
+local function detail_options(api, v, G)
+  if v == false then return nil end
+  local D = { walls = true, frames = true, ceilings = true, railings = true, stairs = true, rocks = true,
+    seed = (type(G.seed) == "number" and G.seed == math.floor(G.seed)) and G.seed or 1 }
+  if v == nil or v == true then return D end
+  if type(v) ~= "table" then
+    fail(api, "'detail' must be true, false or a table {walls, frames, ceilings, railings, stairs, rocks, style, seed}.", "detail = false skips the room detail pass; detail = {ceilings = false} keeps the rest.")
+  end
+  check_keys(api .. " detail", v, { "walls", "frames", "ceilings", "railings", "stairs", "rocks", "style", "seed" })
+  for _, k in ipairs(DETAIL_PARTS) do if v[k] ~= nil then D[k] = boolean(api, "detail." .. k, v[k], true) end end
+  if v.style ~= nil then
+    -- (the style is read the way every detail function reads it: an unknown one fails with the list)
+    I.detail_kit.new_ctx(api, "detail", { style = v.style }, "detail")
+    D.style = v.style
+  end
+  if v.seed ~= nil then
+    local s = number(api, "detail.seed", v.seed)
+    if s ~= math.floor(s) then fail(api, "'detail.seed' must be an integer (got " .. fmt(s) .. ").") end
+    D.seed = s
+  end
+  return D
+end
+
+-- The zone's plan in its own frame, counter-clockwise (traced zones are built in the world frame).
+local function zone_plan(R)
+  if R.poly then return ccw(R.poly) end
+  if R.room and type(R.room.outline) == "table" and #R.room.outline >= 3 then return ccw(R.room.outline) end
+  return ccw(chamfered(R.x0, R.z0, R.x1, R.z1, R.c))
+end
+
+-- True when the zone (or any of its air) is open to the sky.
+local function zone_sky(R)
+  if R.sky or R.A.sky or R.A.open_air then return true end
+  for _, b in ipairs(R.brushes) do
+    if b.air then
+      for _, f in ipairs(b:faces_facing("up")) do if f.show_sky then return true end end
+    end
+  end
+  return false
+end
+
+-- The open-air intervals {bottom, top} of the world column (x, z) between ylo and yhi (bounds to 1/64 m), at least
+-- `tall` metres high.
+local function column_air(pr, x, z, ylo, yhi, tall)
+  local out = {}
+  local step = 0.5
+  local function refine(a, b, want_air) -- a: not want_air, b: want_air
+    for _ = 1, 6 do
+      local m = (a + b) / 2
+      if pr:air_exact(x, m, z) == want_air then b = m else a = m end
+    end
+    return b
+  end
+  local prev = pr:air_exact(x, ylo, z)
+  local start = prev and ylo or nil
+  local y = ylo + step
+  while y <= yhi + 1e-9 do
+    local a = pr:air_exact(x, y, z)
+    if a and not prev then start = refine(y - step, y, true) end
+    if not a and prev then
+      local top = refine(y, y - step, true)
+      if top - start >= tall then out[#out + 1] = { g16(start), g16(top) } end
+      start = nil
+    end
+    prev = a
+    y = y + step
+  end
+  return out
+end
+
+-- The runs of a wall edge (the current frame: the edge along +x from 0 to L, the room on +z) with one floor and one
+-- ceiling: {t0, t1, floor, top}, sampled about every 1.5 m 0.35 m in front of the wall, run ends bisected to ~5 cm.
+local function wall_runs(DK, pr, L, ylo, yhi)
+  local function at(t)
+    local wx, wz = DK.xf_w(t, 0.35)
+    return column_air(pr, wx, wz, ylo, yhi, 2.6)
+  end
+  local function goes_on(t, run)
+    -- the run's floor and ceiling go on at t (four point tests instead of a whole column)
+    local wx, wz = DK.xf_w(t, 0.35)
+    return pr:air_exact(wx, run.floor + 0.05, wz) and not pr:air_exact(wx, run.floor - 0.06, wz)
+      and pr:air_exact(wx, run.top - 0.05, wz) and not pr:air_exact(wx, run.top + 0.06, wz)
+  end
+  local function edge(lo, hi, run, present_at_hi)
+    -- the t between lo and hi where run appears (present_at_hi) or ends
+    for _ = 1, 5 do
+      local m = (lo + hi) / 2
+      local p = goes_on(m, run)
+      if p == present_at_hi then hi = m else lo = m end
+    end
+    return present_at_hi and hi or lo
+  end
+  local ts = {}
+  local n = math.max(1, math.floor((L - 0.8) / 1.5 + 0.5))
+  for k = 0, n do ts[#ts + 1] = 0.4 + (L - 0.8) * (n > 0 and k / n or 0.5) end
+  local open, done, prev_t = {}, {}, nil
+  for _, t in ipairs(ts) do
+    local ivs = at(t)
+    local still = {}
+    local used = {}
+    for _, run in ipairs(open) do
+      local hit = false
+      for j, iv in ipairs(ivs) do
+        if not used[j] and math.abs(iv[1] - run.floor) < 0.06 and math.abs(iv[2] - run.top) < 0.3 then used[j], hit = true, true break end
+      end
+      if hit then run.last = t still[#still + 1] = run
+      else run.t1 = edge(run.last, t, run, false) done[#done + 1] = run end
+    end
+    for j, iv in ipairs(ivs) do
+      if not used[j] then
+        local run = { floor = iv[1], top = iv[2], last = t }
+        run.t0 = prev_t and edge(prev_t, t, run, true) or 0
+        still[#still + 1] = run
+      end
+    end
+    open, prev_t = still, t
+  end
+  for _, run in ipairs(open) do run.t1 = L done[#done + 1] = run end
+  return done
+end
+
+-- The world opening key kit.frame_opening tags a frame with (one frame per opening, from whichever side comes first).
+local function opening_key_world(DK, o)
+  local T = o.thickness or 1
+  local wx, wz = DK.xf_w(o.pos[1] + o.nx * T / 2, o.pos[3] + o.nz * T / 2)
+  local function q(v) return math.floor(v * 4 + 0.5) / 4 end
+  return string.format("%g,%g,%g", q(wx), q(o.pos[2]), q(wz))
+end
+
+-- Drop-away runs along a world leg a -> b at floor height y: where one side holds floor at y and the other falls
+-- away (no floor within 1.5 m below), as {s0, s1, side (+1: the walkable side is to the left of a -> b)}.
+local function drop_runs(pr, a, b, y)
+  local dx, dz = b[1] - a[1], b[2] - a[2]
+  local L = math.sqrt(dx * dx + dz * dz)
+  if L < 1 then return {} end
+  local ux, uz = dx / L, dz / L
+  local nx, nz = -uz, ux
+  local function floor_at(x, z) return pr:air_exact(x, y + 0.5, z) and not pr:air_exact(x, y - 0.15, z) end
+  local function drop_at(x, z) return pr:air_exact(x, y + 0.05, z) and pr:air_exact(x, y - 0.5, z) and pr:air_exact(x, y - 1.5, z) end
+  local runs, cur = {}, nil
+  local step = 0.25
+  local k, nk = 0, math.floor(L / step)
+  while k <= nk do
+    local s = math.min(L, k * step)
+    local px, pz = a[1] + ux * s, a[2] + uz * s
+    local side = 0
+    if floor_at(px + nx * 0.45, pz + nz * 0.45) and drop_at(px - nx * 0.45, pz - nz * 0.45) then side = 1
+    elseif floor_at(px - nx * 0.45, pz - nz * 0.45) and drop_at(px + nx * 0.45, pz + nz * 0.45) then side = -1 end
+    if cur and cur.side == side and side ~= 0 then cur.s1 = s
+    else
+      if cur and cur.side ~= 0 then runs[#runs + 1] = cur end
+      cur = { s0 = s, s1 = s, side = side }
+    end
+    k = k + 1
+  end
+  if cur and cur.side ~= 0 then runs[#runs + 1] = cur end
+  local out = {}
+  for _, r in ipairs(runs) do
+    if r.s1 - r.s0 >= 1.0 then out[#out + 1] = { r.s0 + 0.1, r.s1 - 0.1, r.side, ux = ux, uz = uz, L = L } end
+  end
+  return out
+end
+
+-- One zone's detail. Returns {parts, by_part, roles, skipped, fallback, notes, brushes, style}.
+local function detail_zone(api, R, D, DK, framed)
+  local PB = ged.import("kit_probe")
+  local out = { parts = 0, by_part = {}, roles = {}, skipped = 0, fallback = false, notes = {}, brushes = {} }
+  local style = D.style or DETAIL_STYLE[R.pal.theme] or "industrial"
+  out.style = style
+  local wall_tex = R.textures and R.textures.wall or nil
+  local function new(fn, part)
+    local ctx = DK.new_ctx(api, fn, { style = style, seed = D.seed }, R.name .. "_" .. part)
+    ctx.quiet = true -- (a stand-in part is reported in report.detail.notes, not logged as a warning)
+    if wall_tex then
+      ctx.wall_texture = wall_tex
+      ctx.material = wall_tex:lower():match("^(%a+_)")
+      ctx.wall_family = DK.family(wall_tex)
+      ctx.wall_brightness = modules.available and modules.texture_brightness(wall_tex) or nil
+    end
+    return ctx
+  end
+  local function merge(key, ctx)
+    local r = DK.finish(ctx)
+    for _, e in ipairs(r.placed) do
+      out.parts = out.parts + 1
+      out.by_part[key] = (out.by_part[key] or 0) + 1
+      out.roles[e.role] = (out.roles[e.role] or 0) + 1
+    end
+    for _, b in ipairs(r.brushes) do out.brushes[#out.brushes + 1] = b end
+    out.skipped = out.skipped + #r.skipped
+    if r.fallback then out.fallback = true end
+    if r.note and r.note ~= "library modules" then out.notes[#out.notes + 1] = key .. ": " .. r.note end
+  end
+  local open_air = R.A.open_air
+  local rocky = (R.pal.theme == "cave")
+  local sky = zone_sky(R)
+  local pr = PB.shared()
+
+  -- 1. Walls and their openings: each wall of the plan in a frame along it, split into runs of one floor and ceiling
+  -- (a gallery wall is two storeys, a raised half's wall starts a level up). Frames first, so pilasters keep off them.
+  local pilaster_pts = {}
+  if not open_air and (D.walls or D.frames) then
+    local plan = zone_plan(R)
+    local n = #plan
+    local ylo, yhi = R.y - 0.3, R.y + R.h + (R.F and R.F.rise or 0) + 1
+    local depth = R.poly and math.max(3, math.sqrt(R.area or 100) / 2) or math.max(3, math.min(R.w, R.d) / 2)
+    -- a corner under 120 degrees takes one pilaster: the wall after it starts half a bay in
+    local far_start = {}
+    for i = 1, n do
+      local p0, p1, p2 = plan[(i - 2) % n + 1], plan[i], plan[i % n + 1]
+      local ax, az, bx, bz = p1[1] - p0[1], p1[2] - p0[2], p2[1] - p1[1], p2[2] - p1[2]
+      local la, lb = math.sqrt(ax * ax + az * az), math.sqrt(bx * bx + bz * bz)
+      if la > 1e-6 and lb > 1e-6 then
+        local turn = math.deg(math.acos(clamp((ax * bx + az * bz) / (la * lb), -1, 1)))
+        far_start[i] = (180 - turn) < 120
+      end
+    end
+    local walls = {}
+    local fctx = new("frame_opening", "frames")
+    local door_top = nil
+    for i = 1, n do
+      local a, b = plan[i], plan[i % n + 1]
+      local ex, ez = b[1] - a[1], b[2] - a[2]
+      local L = math.sqrt(ex * ex + ez * ez)
+      if L >= 1.5 then
+        local ux, uz = ex / L, ez / L
+        local ax, az = to_world(R.rot, a[1], a[2])
+        local xf = { rot = (R.rot + math.deg(math.atan2(-uz, ux))) % 360, px = ax, pz = az }
+        DK.set_frame(xf.rot, xf.px, xf.pz)
+        local runs = wall_runs(DK, pr, L, ylo, yhi)
+        table.sort(runs, function(p, q) if p.floor ~= q.floor then return p.floor < q.floor end return p.t0 < q.t0 end)
+        local read = {}
+        for _, run in ipairs(runs) do
+          if run.t1 - run.t0 >= 1.5 then
+            local s = { name = R.name, kind = "room", x0 = run.t0, x1 = run.t1, z0 = 0, z1 = depth, y0 = run.floor, floor_y = run.floor, y1 = run.top }
+            local storey = string.format("%g/%g", run.floor, run.top)
+            -- (a wall is read along its whole length at each storey's heights, once: a doorway where the floor in
+            -- front of it changes, a step at the door, ends a run, and a run alone sees only part of it)
+            local whole = { name = R.name, kind = "room", x0 = 0, x1 = L, z0 = 0, z1 = depth, y0 = run.floor, floor_y = run.floor, y1 = run.top }
+            if D.frames and not read[storey] then
+              read[storey] = true
+              for _, o in ipairs(DK.openings_of(whole, { "-z" })) do
+                -- one frame per opening, from whichever zone reaches it first (the two sides of a stepped doorway
+                -- read different sills: matched by plan position and a storey's height)
+                local T = o.thickness or 1
+                local mx, mz = DK.xf_w(o.pos[1] + o.nx * T / 2, o.pos[3] + o.nz * T / 2)
+                local seen = false
+                for _, f in ipairs(framed) do
+                  if math.abs(f[1] - mx) < 1.0 and math.abs(f[3] - mz) < 1.0 and math.abs(f[2] - o.pos[2]) < 1.6 then seen = true break end
+                end
+                -- (the top of a lower storey's tall doorway, seen from a gallery above it, is no opening of this storey)
+                if not seen and (o.height < 1.5 or (o.sill or 0) < 0.05 and pr:air_exact(mx, o.pos[2] - 0.3, mz)) then seen = true end
+                local key = opening_key_world(DK, o)
+                if not seen and not DK.framed_already(key) then
+                  framed[#framed + 1] = { mx, o.pos[2], mz }
+                  -- a door, or a window; an opening high in this wall with floor beyond it at its sill is a way through
+                  -- (a drop from the far side): framed as a door, never with a window's sill across it
+                  o.kind = "door"
+                  if (o.sill or 0) > 0.6 then
+                    local fx, fz = DK.xf_w(o.pos[1] + o.nx * (T + 0.5), o.pos[3] + o.nz * (T + 0.5))
+                    local y = o.pos[2]
+                    if not (pr:air_exact(fx, y + 0.5, fz) and not pr:air_exact(fx, y - 0.15, fz)) then o.kind = "window" end
+                  end
+                  DK.frame_one(fctx, o, key)
+                end
+                local top = o.pos[2] + o.height
+                if not door_top or top > door_top then door_top = top end
+              end
+            end
+            -- pilasters on the long walls of a storey that reaches the roof; a storey under a gallery takes its trims only
+            walls[#walls + 1] = { xf = xf, s = s, far = { a = (run.t0 < 0.3) and far_start[i] or false, b = false },
+              pilasters = L >= 4 and run.top >= R.y + R.h - 0.6, whole = whole, profile_key = i .. "/" .. storey }
+          end
+        end
+      end
+    end
+    DK.set_frame(nil)
+    merge("frames", fctx)
+    -- (rock walls keep their own face: no pilasters or trims on a cave's rock)
+    if D.walls and not rocky and #walls > 0 then
+      local wctx = new("wall_detail", "walls")
+      local hs = {}
+      for _, w in ipairs(walls) do
+        local k = math.floor((w.s.y1 - w.s.floor_y) * 2 + 0.5) / 2
+        hs[k] = (hs[k] or 0) + (w.s.x1 - w.s.x0)
+      end
+      local main_h, best = nil, -1
+      for k, len in pairs(hs) do if len > best + 1e-9 or (math.abs(len - best) <= 1e-9 and k < main_h) then main_h, best = k, len end end
+      -- (pilasters at least 5 m apart; no mid-height band: a ledge halfway up every wall is standing room on its top,
+      -- which the walk measure reads as floor)
+      local res = DK.walls_impl(wctx, walls, { pilasters = true, base = true, top = true, band = false, panels = true, min_pitch = 5 }, main_h, door_top)
+      pilaster_pts = res.pilasters
+      merge("walls", wctx)
+    end
+  end
+
+  -- 2. Ceiling structure: beams (trusses in tall wide rooms) across the short way, on the pilasters where they stand,
+  -- wall to wall under a roof — never where the zone is open to the sky, never where a chord ends in an open side.
+  if D.ceilings and not open_air and not sky and DETAIL_CEILING[R.z.archetype] and R.h >= 4.4 then
+    local plan = zone_plan(R)
+    -- the beam frame: the zone's frame (a traced zone's: along its longest wall), turned so beams run along its x
+    local rot0 = R.rot
+    if R.poly then
+      local longest, lu, lz_ = -1, 1, 0
+      for i = 1, #plan do
+        local a, b = plan[i], plan[i % #plan + 1]
+        local L = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+        if L > longest + 1e-6 then longest, lu, lz_ = L, (b[1] - a[1]) / L, (b[2] - a[2]) / L end
+      end
+      rot0 = math.deg(math.atan2(-lz_, lu)) % 360
+    end
+    local function in_frame(rot)
+      DK.set_frame(rot, 0, 0)
+      local poly, x0, z0, x1, z1 = {}, math.huge, math.huge, -math.huge, -math.huge
+      for i, q in ipairs(plan) do
+        local wx, wz = to_world(R.rot, q[1], q[2])
+        local lx, lz = DK.xf_l(wx, wz)
+        poly[i] = { lx, lz }
+        x0, z0, x1, z1 = math.min(x0, lx), math.min(z0, lz), math.max(x1, lx), math.max(z1, lz)
+      end
+      return poly, x0, z0, x1, z1
+    end
+    local poly, x0, z0, x1, z1 = in_frame(rot0)
+    if (x1 - x0) > (z1 - z0) + 1e-6 then poly, x0, z0, x1, z1 = in_frame((rot0 + 90) % 360) end
+    local y1 = R.y + R.h
+    local floor_hi = R.y
+    for _, lv in ipairs(R.z.levels or {}) do if type(lv) == "number" then floor_hi = math.max(floor_hi, R.y + lv) end end
+    local cctx = new("ceiling_detail", "ceiling")
+    -- beam lines: the pilasters' positions along the long axis, else a regular pitch
+    local zs = {}
+    for _, p in ipairs(pilaster_pts) do
+      local _, lz = DK.xf_l(p[1], p[2])
+      if lz > z0 + 0.8 and lz < z1 - 0.8 then zs[#zs + 1] = lz end
+    end
+    table.sort(zs)
+    local lines_z = {}
+    for _, v in ipairs(zs) do if #lines_z == 0 or v - lines_z[#lines_z] >= 2.5 then lines_z[#lines_z + 1] = v end end
+    if #lines_z == 0 then
+      local Lz = z1 - z0
+      local pitch = clamp(math.max(4, R.h * 0.5), 3, 8)
+      local nb = math.max(1, math.floor(Lz / pitch + 0.5))
+      for k = 1, nb - 1 do lines_z[#lines_z + 1] = z0 + Lz * k / nb end
+      if nb == 1 then lines_z[1] = (z0 + z1) / 2 end
+    end
+    local lines = {}
+    local maxspan = 0
+    for _, zc in ipairs(lines_z) do
+      -- the chord of the plan along x at zc
+      local xs = {}
+      for i = 1, #poly do
+        local a, b = poly[i], poly[i % #poly + 1]
+        if (a[2] - zc) * (b[2] - zc) < 0 then xs[#xs + 1] = a[1] + (b[1] - a[1]) * (zc - a[2]) / (b[2] - a[2]) end
+      end
+      table.sort(xs)
+      local pr2 = PB.shared()
+      -- the ceiling over a point of the chord (where solid starts above the base ceiling's underside), nil when open
+      local function ceil_at(x)
+        local wx, wz = DK.xf_w(x, zc)
+        local y = y1 - 0.4
+        if not pr2:air_exact(wx, y, wz) then return nil end
+        while y < y1 + 8 do
+          local yn = y + 0.25
+          if not pr2:air_exact(wx, yn, wz) then
+            local lo, hi = y, yn
+            for _ = 1, 5 do local m = (lo + hi) / 2 if pr2:air_exact(wx, m, wz) then lo = m else hi = m end end
+            return g16(hi)
+          end
+          y = yn
+        end
+        return nil
+      end
+      for k = 1, #xs - 1, 2 do
+        local xa, xb = xs[k] + 0.02, xs[k + 1] - 0.02
+        if xb - xa >= 3 then
+          -- A beam sits flush under the ceiling it hangs from (nothing to stand on above it): along the chord, the
+          -- longest stretch of one ceiling height — the raised bay of a stepped roof, else the whole chord — wall to
+          -- wall or bay wall to bay wall.
+          local samples = {}
+          local nsm = math.max(2, math.floor((xb - xa - 0.5) / 0.75) + 1)
+          for q = 0, nsm - 1 do
+            local x = xa + 0.25 + (xb - xa - 0.5) * q / (nsm - 1)
+            samples[#samples + 1] = { x, ceil_at(x) }
+          end
+          local best, cur = nil, nil
+          for _, smp in ipairs(samples) do
+            if smp[2] and cur and math.abs(smp[2] - cur.c) <= 0.05 then cur.x1, cur.n = smp[1], cur.n + 1
+            else
+              if cur and (not best or cur.x1 - cur.x0 > best.x1 - best.x0) then best = cur end
+              cur = smp[2] and { x0 = smp[1], x1 = smp[1], c = smp[2], n = 1 } or nil
+            end
+          end
+          if cur and (not best or cur.x1 - cur.x0 > best.x1 - best.x0) then best = cur end
+          if best then
+            -- its ends: the chord's end, else the step in the ceiling (bisected)
+            local function step_at(inside, outside)
+              for _ = 1, 5 do
+                local m = (inside + outside) / 2
+                local c = ceil_at(m)
+                if c and math.abs(c - best.c) <= 0.05 then inside = m else outside = m end
+              end
+              return inside
+            end
+            local s0 = (best.x0 <= xa + 0.26) and xa or step_at(best.x0, best.x0 - 0.75)
+            local s1 = (best.x1 >= xb - 0.26) and xb or step_at(best.x1, best.x1 + 0.75)
+            if s1 - s0 >= 3 then
+              -- both ends on a wall (solid just past each end under the ceiling), never on an open side
+              local wa1, wa2 = DK.xf_w(s0 - 0.25, zc)
+              local wb1, wb2 = DK.xf_w(s1 + 0.25, zc)
+              if not pr2:air_exact(wa1, best.c - 0.3, wa2) and not pr2:air_exact(wb1, best.c - 0.3, wb2) then
+                lines[#lines + 1] = { s0, s1, zc, best.c }
+                maxspan = math.max(maxspan, s1 - s0)
+              end
+            end
+          end
+        end
+      end
+    end
+    if #lines > 0 then
+      local top = y1
+      for _, ln in ipairs(lines) do top = math.max(top, ln[4]) end
+      local kind = (top - R.y >= 8 and maxspan >= 10) and "trusses" or "beams"
+      DK.beams_impl(cctx, lines, y1, floor_hi, kind, top - R.y)
+    end
+    DK.set_frame(nil)
+    merge("ceiling", cctx)
+  end
+
+  -- 3. Railings on the edges the zone declared that drop away (gallery bands, a raised half, a chasm's rim and the
+  -- deck across it), open where a stair, ramp or deck lands.
+  if D.railings and #R.rails > 0 then
+    local rctx = new("railing", "railings")
+    for _, e in ipairs(R.rails) do
+      local ax, az = to_world(R.rot, e[1][1], e[1][2])
+      local bx, bz = to_world(R.rot, e[2][1], e[2][2])
+      for _, run in ipairs(drop_runs(pr, { ax, az }, { bx, bz }, e[3])) do
+        -- a frame along the run: +x along a -> b, the walkable side on +z (left) or -z
+        local sx, sz = ax + run.ux * run[1], az + run.uz * run[1]
+        DK.set_frame(math.deg(math.atan2(-run.uz, run.ux)) % 360, sx, sz)
+        DK.railing_impl(api, rctx, { { 0, e[3], 0 }, { run[2] - run[1], e[3], 0 } }, run[3] > 0 and "+z" or "-z", nil)
+      end
+    end
+    DK.set_frame(nil)
+    merge("railings", rctx)
+  end
+
+  -- 4. Stringers and handrails on the zone's own flights (in the zone's frame, where each runs along an axis).
+  if D.stairs and #R.flights > 0 then
+    local sctx = new("stair_detail", "stairs")
+    DK.set_frame(R.rot, 0, 0)
+    for _, rec in ipairs(R.flights) do DK.stair_impl(api, { stairs = rec }, sctx) end
+    DK.set_frame(nil)
+    merge("stairs", sctx)
+  end
+
+  -- 5. Rock formations at the walls of rock spaces (the generative fill's engine space keeps doorways, routes and
+  -- the cart lane clear and holds the walk budget).
+  if D.rocks and rocky and not open_air then
+    local keep = {}
+    for _, seg in ipairs(R.lane or {}) do
+      local len = math.sqrt((seg[3] - seg[1]) ^ 2 + (seg[4] - seg[2]) ^ 2)
+      local nk = math.max(1, math.ceil(len / 2))
+      for k = 0, nk do
+        local x, z = R.W(seg[1] + (seg[3] - seg[1]) * k / nk, seg[2] + (seg[4] - seg[2]) * k / nk)
+        keep[#keep + 1] = { x, R.y, z, r = seg[5] + 1 }
+      end
+    end
+    local area = R.area or (R.w * R.d)
+    local rd = DK.quietly(kit.rock_detail, { space = R.name, style = "cave", seed = D.seed, count = clamp(math.floor(area / 150 + 0.5), 2, 6),
+      keep = (#keep > 0) and keep or nil, name = R.name .. "_rocks" })
+    if rd.fallback and rd.note then out.notes[#out.notes + 1] = "rocks: " .. rd.note end
+    for _, e in ipairs(rd.placed) do
+      out.parts = out.parts + 1
+      out.by_part.rocks = (out.by_part.rocks or 0) + 1
+      out.roles[e.role] = (out.roles[e.role] or 0) + 1
+    end
+    for _, b in ipairs(rd.brushes) do out.brushes[#out.brushes + 1] = b end
+    if rd.fallback then out.fallback = true end
+  end
+
+  -- What stands out on the floor (rock formations) is kept clear by the spawns picked after it (the zone's frame).
+  -- Wall parts, frames, railings and stair finishes hug walls and edges the spawn spots already keep off; their boxes,
+  -- on a turned or traced wall, would cover the room's middle.
+  for _, b in ipairs(out.brushes) do
+    local bb = b.bounds
+    if bb.min.y < R.y + 2.2 and b:tags().kit == "rock_detail" then
+      local lx0, lz0, lx1, lz1 = math.huge, math.huge, -math.huge, -math.huge
+      for _, c in ipairs({ { bb.min.x, bb.min.z }, { bb.max.x, bb.min.z }, { bb.min.x, bb.max.z }, { bb.max.x, bb.max.z } }) do
+        local lx, lz = to_local(R.rot, c[1], c[2])
+        lx0, lz0, lx1, lz1 = math.min(lx0, lx), math.min(lz0, lz), math.max(lx1, lx), math.max(lz1, lz)
+      end
+      note_solid(R, lx0, lz0, lx1, lz1, bb.min.y, bb.max.y)
+    end
+  end
+  return out
+end
+
+---@kit kit.build_layout{graph, name?, lights?, strict?, force?, populate?, detail?} → layout_report — Builds a layout graph: kit.check_layout first (errors refuse; design-rule violations warn, or refuse with strict = true), then in CSG time order the zone shells (and the open-air void), every link's air, the zones' interiors (stairs, galleries, courts, cover, ...), the links' steps, ramps, landings, lifts and bridges (outside open-air layouts a bridge's deck spans a chasm cut to the sky, link.depth metres deep, default 8), details, the room detail pass (detail: wall trims and pilasters, door frames, ceiling beams, railings, stair finishes, rock formations), lights, and the objectives: spawn groups, CTF flags, the KOTH hill (a Capture_Point_Handler with its trigger) and the payload cart (One Way mover on the track on any heading, Payload_Handler, checkpoints on its keyframes, each linking the attacker and defender spawns that are live while it is the target). A turned zone (rot) is built in its own frame and turned into place about the world origin; free links are built along their routes (one air prism per segment on shared mitre points, half a metre into each zone, the stair or ramp on the longest straight, door jambs set 1/16 m behind the wall planes); joins open the shared boundary. Every brush of a zone is tagged kit.zone = the zone's name (<name>_<zone id>), and that name works as a room name in kit.dress, kit.items and kit.spawn_points. Returns {name, zones[] (id, archetype, name, min, max (world bounds), outline (world plan), rot, floor_y, spots (world), brushes, room, detail), links[] (id, type, a, b, mode (classic, free or join), width, offset, a_side, b_side, path (a free link's route in world metres), length), spawns, objectives, warnings[], violations[], area, detail ({zones, parts, by_part, roles, fallback, notes}: what the detail pass placed)}.
 ---@opt graph: table — Required: a kit.layout graph (possibly edited).
 ---@opt name: string = "L" — Prefix of every part's name (and its kit.name tags).
 ---@opt lights: boolean = true — Place lights in every zone and link.
 ---@opt strict: boolean = false — Refuse to build when any design rule is violated (errors always refuse).
 ---@opt force: boolean = false — Build even with check errors that do not stop the geometry (use with care).
 ---@opt populate: function = none — Called as populate(zone_report, zone, graph) after each zone is built: the hook for a population pass (dressing, items, spawns) per zone (theme and density in zone.dress).
+---@opt detail: boolean|table = true — The room detail pass, run on every zone once the geometry stands (before lights, spawns and populate): pilasters, base and top trims on the long walls, frames on the doorways and windows, beams or trusses under roofed ceilings (never under open sky), railings on gallery, raised-floor, pit and bridge edges that drop away, stringers and handrails on the zones' stairs, rock formations in rock spaces — chosen by the zone's archetype and palette theme (industrial, bunker, admin, mine timber in cave palettes, mars base), from the module library when it is present (one donor set per level and style) else hand-authored parts, kept off doorways, routes, stairs, spawn spots, the cart lane and bridge decks and inside the walk budget. false skips it; a table turns parts off or on: {walls, frames, ceilings, railings, stairs, rocks} (booleans, default true), style (one detail style for every zone) and seed (default the graph's seed). The report's detail field counts what was placed.
 function kit.build_layout(t)
   local api = "kit.build_layout"
-  check_keys(api, t, { "graph", "name", "lights", "strict", "force", "populate" })
+  check_keys(api, t, { "graph", "name", "lights", "strict", "force", "populate", "detail" })
   local G = t.graph
   if type(G) ~= "table" then fail(api, "'graph' is required (a kit.layout result).") end
   local gname = t.name or "L"
@@ -4359,18 +5951,41 @@ function kit.build_layout(t)
   for _, m in ipairs(rules) do log.warn(api .. ": " .. m) end
   local open_air = G.class == "open_air"
   local want_lights = boolean(api, "lights", t.lights, true)
+  local D = detail_options(api, t.detail, G)
   local report = { kind = "layout_report", name = gname, zones = {}, links = {}, objectives = {}, warnings = {}, violations = V, spawns = 0 }
   for _, m in ipairs(rules) do report.warnings[#report.warnings + 1] = m end
 
   level.props:set("multiplayer", true)
   local Rs = {}
-  for _, z in ipairs(G.zones) do Rs[#Rs + 1] = zone_ctx(gname, z, plan) end
+  for _, z in ipairs(G.zones) do
+    local R = zone_ctx(gname, z, plan)
+    R.detail = D
+    Rs[#Rs + 1] = R
+  end
+  -- Every brush of a zone answers to the zone's name (kit.zone), except a chasm's air, which is no floor of it.
+  local function tag_zone(R)
+    for _, b in ipairs(R.brushes) do
+      if not (R.untagged and R.untagged[b.uid]) then b:tag("kit.zone", R.name) end
+    end
+  end
+  -- Where a zone's wall is open (a join): a point just outside it lies in another zone's world plan.
+  local wplans = {}
+  for _, R in ipairs(Rs) do wplans[#wplans + 1] = { R.id, zone_poly(R.z) } end
+  for _, R in ipairs(Rs) do
+    local id = R.id
+    R.in_other = function(x, z)
+      for _, e in ipairs(wplans) do if e[1] ~= id and e[2] and inside(e[2], x, z) then return true end end
+      return false
+    end
+  end
   -- The cart lane through payload yards and roads (cover keeps clear of it).
   local cart = nil
   for _, o in ipairs(G.objectives or {}) do if o.kind == "cart" then cart = o end end
   local byid = {}
   for _, R in ipairs(Rs) do byid[R.id] = R end
   local cart_pts = nil
+  local plan_of_link = {}
+  for _, P in ipairs(plan.links) do plan_of_link[P.link] = P end
   if cart then
     cart_pts = {}
     local spine = cart.zones or {}
@@ -4389,18 +6004,33 @@ function kit.build_layout(t)
       elseif side == "+z" then return m, R.z1 - depth end
       return m, R.z0 + depth
     end
-    local function mid(p) return (p.lo + p.hi) / 2 end
+    -- A point depth metres inside the zone from a port's opening (the port's own point and outward normal).
+    local function port_pt(p, depth) return p.pt[1] - p.nrm[1] * depth, p.pt[2] - p.nrm[2] * depth end
+    -- Cart points are worked out in the zone's frame and kept in world coordinates.
+    local function push(R, x, y, z)
+      local wx, wz = R.W(x, z)
+      cart_pts[#cart_pts + 1] = { wx, y, wz }
+    end
     for i, id in ipairs(spine) do
       local R = byid[id]
       if R then
         local entry, exit = cart_port(R, spine[i - 1]), cart_port(R, spine[i + 1])
+        -- along a free link from the previous spine zone: its bends, in the order the cart meets them
+        local FP = entry and plan_of_link[entry.link]
+        if FP and FP.mode == "free" and FP.pts then
+          local y = math.min(FP.ya, FP.yb)
+          local list = {}
+          for k = 2, #FP.pts - 1 do list[#list + 1] = FP.pts[k] end
+          if FP.link.a == R.id then local r = {} for k = #list, 1, -1 do r[#r + 1] = list[k] end list = r end
+          for _, q in ipairs(list) do cart_pts[#cart_pts + 1] = { q[1], y, q[2] } end
+        end
         R.lane = {}
         if R.z.archetype == "road" then
           local F = road_frame(R.z)
           local ys, yn = R.y, R.y + F.rise
           for _, e in ipairs({ { 1, ys }, { F.ls, ys }, { F.len - F.ln, yn }, { F.len - 1, yn } }) do
             local x, z = F.xz(e[1], F.centre)
-            cart_pts[#cart_pts + 1] = { x, e[2], z }
+            push(R, x, e[2], z)
           end
           local ax, az = F.xz(0, F.centre)
           local bx, bz = F.xz(F.len, F.centre)
@@ -4409,8 +6039,8 @@ function kit.build_layout(t)
           local F = zone_frame(R, heading_of(R.z))
           local ex, ez, wx, wz
           if entry then
-            ex, ez = wall_pt(R, entry.side, mid(entry), 2)
-            wx, wz = wall_pt(R, entry.side, mid(entry), 0)
+            ex, ez = port_pt(entry, 2)
+            wx, wz = port_pt(entry, 0)
           else
             ex, ez = F.w(0, -F.hd + 2)
             wx, wz = F.w(0, -F.hd)
@@ -4420,43 +6050,49 @@ function kit.build_layout(t)
           local ey = R.y
           local cxp = clamp(lx, -7 + 4.5, 7 - 4.5)
           local pz0 = -7 + 2
-          cart_pts[#cart_pts + 1] = { ex, ey, ez }
+          push(R, ex, ey, ez)
           local x, z = F.w(cxp, pz0)
-          cart_pts[#cart_pts + 1] = { x, ey, z }
+          push(R, x, ey, z)
           R.lane[1] = { wx, wz, x, z, 5 }
           x, z = F.w(cxp, pz0 + 8)
-          cart_pts[#cart_pts + 1] = { x, ey - 2.5, z }
+          push(R, x, ey - 2.5, z)
           x, z = F.w(0, 2)
-          cart_pts[#cart_pts + 1] = { x, ey - 2.5, z }
+          push(R, x, ey - 2.5, z)
           R.checkpoint_at = #cart_pts
         else
           -- Through the zone's centre: in at the entry port, out at the exit port (a turn when they are not opposite).
           local ey = R.y
           local ex, ez, ewx, ewz, xx, xz, xwx, xwz
           if entry then
-            ex, ez = wall_pt(R, entry.side, mid(entry), 2)
-            ewx, ewz = wall_pt(R, entry.side, mid(entry), 0)
-          elseif exit then
+            ex, ez = port_pt(entry, 2)
+            ewx, ewz = port_pt(entry, 0)
+          elseif exit and not R.poly then
             local m = (exit.side == "+x" or exit.side == "-x") and R.cz or R.cx
             ex, ez = wall_pt(R, OPP[exit.side], m, 2)
             ewx, ewz = wall_pt(R, OPP[exit.side], m, 0)
+          elseif R.poly then
+            ex, ez = R.cx, R.cz
+            ewx, ewz = R.cx, R.cz
           else
             ex, ez = wall_pt(R, "-z", R.cx, 2)
             ewx, ewz = wall_pt(R, "-z", R.cx, 0)
           end
           if exit then
-            xx, xz = wall_pt(R, exit.side, mid(exit), 2)
-            xwx, xwz = wall_pt(R, exit.side, mid(exit), 0)
+            xx, xz = port_pt(exit, 2)
+            xwx, xwz = port_pt(exit, 0)
+          elseif R.poly or (entry and type(entry.side) ~= "string") then
+            xx, xz = R.cx, R.cz
+            xwx, xwz = R.cx, R.cz
           else
             local side = entry and OPP[entry.side] or "+z"
-            local m = entry and mid(entry) or R.cx
+            local m = entry and (entry.lo + entry.hi) / 2 or R.cx
             xx, xz = wall_pt(R, side, m, 2)
             xwx, xwz = wall_pt(R, side, m, 0)
           end
-          cart_pts[#cart_pts + 1] = { ex, ey, ez }
-          cart_pts[#cart_pts + 1] = { R.cx, ey, R.cz }
+          push(R, ex, ey, ez)
+          push(R, R.cx, ey, R.cz)
           R.checkpoint_at = #cart_pts
-          cart_pts[#cart_pts + 1] = { xx, ey, xz }
+          push(R, xx, ey, xz)
           R.lane[1] = { ewx, ewz, R.cx, R.cz, 5 }
           R.lane[2] = { R.cx, R.cz, xwx, xwz, 5 }
         end
@@ -4470,7 +6106,7 @@ function kit.build_layout(t)
     local x0, z0, x1, z1 = math.huge, math.huge, -math.huge, -math.huge
     local y0, y1 = math.huge, -math.huge
     for _, z in ipairs(G.zones) do
-      local a, b, c, d = rect_of(z)
+      local a, b, c, d = bbox(zone_poly(z))
       x0, z0, x1, z1 = math.min(x0, a), math.min(z0, b), math.max(x1, c), math.max(z1, d)
       y0, y1 = math.min(y0, z.pos[2]), math.max(y1, z.pos[2] + (z.levels[#z.levels] or 0))
     end
@@ -4479,36 +6115,76 @@ function kit.build_layout(t)
     void:box_map{ tile = 64 }
     for _, f in ipairs(void.faces) do f:set_flag("show_sky", true) end
   end
-  -- 2. Zone shells.
-  for _, R in ipairs(Rs) do
-    local rec = RECIPES[R.z.archetype]
-    rec.shell(R)
+  -- Each zone step builds in the zone's own frame, then turns what it built by the zone's rot about the world
+  -- origin (one pivot for every frame, so walls that meet in a frame still meet after the turn).
+  local function zone_step(R, fn)
+    if not fn then return end
+    local n0 = #R.brushes
+    fn(R)
+    bury_walls(R, n0)
+    turn_list(R.brushes, n0, R.rot)
   end
-  -- 3. Link air.
+  -- 2. Zone shells.
+  for _, R in ipairs(Rs) do zone_step(R, RECIPES[R.z.archetype].shell) end
+  -- 3. Link air (classic links in their zones' frame, free links and joins where they are).
   local airs = {}
-  for _, P in ipairs(plan.links) do if P.c then build_link_air(P, gname, airs, open_air) end end
+  for _, P in ipairs(plan.links) do
+    if P.ok and P.mode == "classic" then turn_list(build_link_air(P, gname, airs, open_air), 0, zone_rot(P.za))
+    elseif P.ok and P.mode == "free" then build_free_air(P, gname, open_air)
+    elseif P.ok and P.mode == "join" then build_join(P, gname) end
+  end
   -- The sky box (after the shells and links, so it lands beyond them).
   local needs_sky = open_air
   for _, R in ipairs(Rs) do if R.sky then needs_sky = true end end
   for _, P in ipairs(plan.links) do if (P.link.type == "road" or P.link.type == "bridge") and not P.link.tunnel then needs_sky = true end end
   if needs_sky then I.ensure_sky(gname) end
   -- 4. Zone interiors.
-  for _, R in ipairs(Rs) do
-    local rec = RECIPES[R.z.archetype]
-    if rec.inner then rec.inner(R) end
-  end
+  for _, R in ipairs(Rs) do zone_step(R, RECIPES[R.z.archetype].inner) end
   -- 5. Link solids.
   for _, P in ipairs(plan.links) do
-    if P.c then
+    if P.ok and P.mode == "classic" then
+      local rot = zone_rot(P.za)
       for _, m in ipairs(build_link_solid(P, gname, open_air)) do
-        local _ = m
+        if not (type(m) == "table" and m.turned) then turn_list(rec_brushes({ m }), 0, rot) end
       end
+    elseif P.ok and P.mode == "free" then
+      build_free_solid(P, gname, open_air)
     end
   end
   -- 6. Details.
-  for _, R in ipairs(Rs) do
-    local rec = RECIPES[R.z.archetype]
-    if rec.late then rec.late(R) end
+  for _, R in ipairs(Rs) do zone_step(R, RECIPES[R.z.archetype].late) end
+  -- 6b. The room detail pass, once every zone and link stands (so it sees each doorway and neighbour as built) and
+  -- before the lights, spawns and population that plan around it.
+  if D and I.detail_kit then
+    local sum = { zones = 0, parts = 0, by_part = {}, roles = {}, fallback = false, notes = {} }
+    for _, R in ipairs(Rs) do tag_zone(R) end
+    local framed = {}
+    -- (zones in an order that depends on the zones alone, lowest floor and largest plan first: a doorway two zones
+    -- share is framed from the same side wherever the layout repeats itself, a mirrored CTF half included)
+    local order = {}
+    for i, R in ipairs(Rs) do order[i] = { R = R, i = i, a = R.area or (R.w * R.d) } end
+    table.sort(order, function(p, q)
+      if math.abs(p.R.y - q.R.y) > 1e-6 then return p.R.y < q.R.y end
+      if math.abs(p.a - q.a) > 1e-6 then return p.a > q.a end
+      return p.i < q.i
+    end)
+    for _, e in ipairs(order) do
+      local R = e.R
+      local zd = detail_zone(api, R, D, I.detail_kit, framed)
+      for _, b in ipairs(zd.brushes) do b:tag("kit.zone", R.name) end
+      R.detail_report = { parts = zd.parts, by_part = zd.by_part, roles = zd.roles, skipped = zd.skipped, fallback = zd.fallback, style = zd.style }
+      if zd.parts > 0 then sum.zones = sum.zones + 1 end
+      sum.parts = sum.parts + zd.parts
+      for k, v in pairs(zd.by_part) do sum.by_part[k] = (sum.by_part[k] or 0) + v end
+      for k, v in pairs(zd.roles) do sum.roles[k] = (sum.roles[k] or 0) + v end
+      if zd.fallback then sum.fallback = true end
+      for _, m in ipairs(zd.notes) do
+        local seen = false
+        for _, e in ipairs(sum.notes) do if e == m then seen = true break end end
+        if not seen and #sum.notes < 12 then sum.notes[#sum.notes + 1] = m end
+      end
+    end
+    report.detail = sum
   end
   -- 7. Lights.
   local nlights = 0
@@ -4516,14 +6192,38 @@ function kit.build_layout(t)
     for _, R in ipairs(Rs) do
       local rec = RECIPES[R.z.archetype]
       local h = rec.light_h and rec.light_h(R) or (R.h - 1)
-      local poly = (R.room and R.room.outline) or R.outline or rect_poly(R.x0, R.z0, R.x1, R.z1)
-      local inset = I.inset_convex(poly, 1.5) or poly
       local spacing = (R.A.open_air and 7) or ((R.w * R.d > 500) and 8 or 6.5)
       local floor_y = R.y
-      local lights = SP.plan_lights(R.name, inset, floor_y, h, spacing, nil)
-      nlights = nlights + #lights
+      if R.poly then
+        -- a traced zone: a grid per convex piece of its plan, about every 6 m, each light reaching the floor halfway
+        -- to its neighbours (a tall traced room is lit to its floor, not only under its lights)
+        local sp = R.A.open_air and spacing or 6
+        local reach = 1.3 * math.sqrt(h * h + sp * sp / 2)
+        for k, piece in ipairs((R.room and R.room.pieces) or { ccw(R.poly) }) do
+          local inset = I.inset_convex(piece, 1.5)
+          if inset then
+            local ls = SP.plan_lights(k == 1 and R.name or (R.name .. "_" .. k), inset, floor_y, h, sp, nil)
+            for _, l in ipairs(ls) do if (l:get("size_range") or 0) < reach then l:set("size_range", q2(reach)) end end
+            nlights = nlights + #ls
+          end
+        end
+      else
+        local poly = (R.room and R.room.outline) or R.outline or rect_poly(R.x0, R.z0, R.x1, R.z1)
+        local inset = I.inset_convex(poly, 1.5) or poly
+        -- the lights go in after the turn, on the zone's world plan
+        if R.rot ~= 0 then
+          local w = {}
+          for i, q in ipairs(inset) do local x, zz = R.W(q[1], q[2]) w[i] = { x, zz } end
+          inset = w
+        end
+        local lights = SP.plan_lights(R.name, inset, floor_y, h, spacing, nil)
+        nlights = nlights + #lights
+      end
     end
-    for _, P in ipairs(plan.links) do if P.c and not open_air then nlights = nlights + #link_lights(P, gname, nil) end end
+    for _, P in ipairs(plan.links) do
+      if P.ok and P.mode == "classic" and not open_air then nlights = nlights + #link_lights(P, gname, nil)
+      elseif P.ok and P.mode == "free" and not open_air then nlights = nlights + #free_lights(P, gname, nil) end
+    end
   end
 
   -- 8. Objectives: spawns, flags, hill, payload.
@@ -4539,23 +6239,24 @@ function kit.build_layout(t)
         if #spots < (o.count or 1) then report.warnings[#report.warnings + 1] = R.name .. ": room for " .. #spots .. " of " .. (o.count or 1) .. " spawns." end
         local list = {}
         for i, s in ipairs(spots) do
-          local sp = level.place{ kind = "respawn", name = gname .. "_" .. (o.id or "s") .. "_" .. i, pos = { s[1], s[2] + kit.defaults.spawn_height, s[3] }, props = props,
+          local sx, sz = R.W(s[1], s[3])
+          local sp = level.place{ kind = "respawn", name = gname .. "_" .. (o.id or "s") .. "_" .. i, pos = { sx, s[2] + kit.defaults.spawn_height, sz }, props = props,
             tags = { kit = "layout", ["kit.name"] = R.name } }
           -- face along a route out: toward the nearest port at the spawn's level, else the zone centre
           local tx, tz = R.cx, R.cz
           local bd = math.huge
           for _, p in ipairs(R.ports) do
             if math.abs(p.floor - s[2]) < 1 then
-              local px, pz = nil, nil
-              local m = (p.lo + p.hi) / 2
-              if p.side == "+x" or p.side == "-x" then px, pz = p.wall, m else px, pz = m, p.wall end
+              local px, pz = p.pt[1], p.pt[2]
               local d = (px - s[1]) ^ 2 + (pz - s[3]) ^ 2
               if d < bd and d > 9 then bd, tx, tz = d, px, pz end
             end
           end
-          if math.abs(tx - s[1]) + math.abs(tz - s[3]) > 0.1 then sp:look_at(tx, s[2] + kit.defaults.spawn_height, tz) end
+          local turn_to = math.abs(tx - s[1]) + math.abs(tz - s[3]) > 0.1
+          tx, tz = R.W(tx, tz)
+          if turn_to then sp:look_at(tx, s[2] + kit.defaults.spawn_height, tz) end
           list[#list + 1] = sp
-          first_spawn = first_spawn or { s[1], s[2], s[3], tx, tz }
+          first_spawn = first_spawn or { sx, s[2], sz, tx, tz, turn_to }
         end
         spawn_objs[o.id or ("s" .. #spawn_objs)] = list
         report.spawns = report.spawns + #list
@@ -4565,19 +6266,22 @@ function kit.build_layout(t)
   end
   if first_spawn then
     local ps = level.player_start{ pos = { first_spawn[1], first_spawn[2] + kit.defaults.spawn_height, first_spawn[3] }, yaw = 0 }
-    if math.abs(first_spawn[4] - first_spawn[1]) + math.abs(first_spawn[5] - first_spawn[3]) > 0.1 then
+    if first_spawn[6] then
       ps:look_at(first_spawn[4], first_spawn[2] + kit.defaults.spawn_height, first_spawn[5])
     end
   end
   for _, o in ipairs(G.objectives or {}) do
     local R = byid[o.zone or ""]
+    local s = R and (R.objective_spot or { R.cx, R.y, R.cz })
+    if s then
+      local x, z = R.W(s[1], s[3])
+      s = { x, s[2], z }
+    end
     if o.kind == "flag" and R then
-      local s = R.objective_spot or { R.cx, R.y, R.cz }
       local it = level.place{ kind = "item", class = o.team == "red" and "flag_red" or "flag_blue", name = gname .. "_flag_" .. o.team,
         pos = { s[1], s[2] + kit.defaults.item_height, s[3] }, tags = { kit = "layout", ["kit.name"] = R.name } }
       report.objectives[#report.objectives + 1] = { kind = "flag", team = o.team, zone = o.zone, uid = it.uid, pos = it.pos }
     elseif o.kind == "hill" and R then
-      local s = R.objective_spot or { R.cx, R.y, R.cz }
       local radius = o.radius or 8
       local trig = level.place{ kind = "trigger", name = gname .. "_hill_zone", pos = { s[1], s[2] + 2, s[3] },
         props = { shape = "Sphere", sphere_radius = radius, activated_by = "Players" }, tags = { kit = "layout", ["kit.name"] = R.name } }
@@ -4627,21 +6331,90 @@ function kit.build_layout(t)
   -- 9. Reports and the population hook. Every brush of a zone carries kit.zone = the zone's name, so kit.dress,
   -- kit.items and kit.spawn_points take that name (report.zones[i].name) like any kit room's.
   for _, R in ipairs(Rs) do
-    for _, b in ipairs(R.brushes) do b:tag("kit.zone", R.name) end
-    local zr = { id = R.id, archetype = R.z.archetype, role = R.z.role, name = R.name, min = vec(R.x0, R.y, R.z0), max = vec(R.x1, R.y + R.h, R.z1),
-      floor_y = R.y, levels = copy_list(R.z.levels), brushes = #R.brushes, spots = R.spots, dress = R.z.dress, sky = R.sky or false,
-      ports = #R.ports, warnings = R.warnings, room = R.room }
+    tag_zone(R)
+    -- the zone's world plan (chamfers included) and bounds; spots and the room record in world coordinates
+    local outline = nil
+    if R.poly then outline = ccw(R.poly)
+    else
+      outline = {}
+      for i, q in ipairs(chamfered(R.x0, R.z0, R.x1, R.z1, R.c)) do local x, zz = R.W(q[1], q[2]) outline[i] = { x, zz } end
+    end
+    local bx0, bz0, bx1, bz1 = bbox(outline)
+    if R.rot == 0 and not R.poly then bx0, bz0, bx1, bz1 = R.x0, R.z0, R.x1, R.z1 end
+    local spots, room = R.spots, R.room
+    if R.rot ~= 0 then
+      spots = {}
+      for i, s in ipairs(R.spots) do local x, zz = R.W(s[1], s[3]) spots[i] = { x, s[2], zz } end
+      if type(R.room) == "table" then
+        room = {}
+        for k, v in pairs(R.room) do room[k] = v end
+        local function wpoly_(p)
+          if type(p) ~= "table" then return p end
+          local o = {}
+          for i, q in ipairs(p) do local x, zz = R.W(q[1], q[2]) o[i] = { x, zz } end
+          return o
+        end
+        room.outline = wpoly_(R.room.outline)
+        if type(R.room.pieces) == "table" then room.pieces = {} for i, pc in ipairs(R.room.pieces) do room.pieces[i] = wpoly_(pc) end end
+        room.raised = wpoly_(R.room.raised)
+        room.min, room.max = vec(bx0, R.room.min and R.room.min.y or R.y, bz0), vec(bx1, R.room.max and R.room.max.y or (R.y + R.h), bz1)
+        local cx, cz = R.W(R.cx, R.cz)
+        room.pos = vec(cx, R.y, cz)
+        room.center = vec((bx0 + bx1) / 2, R.y + R.h / 2, (bz0 + bz1) / 2)
+        room.size = vec(bx1 - bx0, R.h, bz1 - bz0)
+        room.rot = R.rot
+      end
+    end
+    local zr = { id = R.id, archetype = R.z.archetype, role = R.z.role, name = R.name, min = vec(bx0, R.y, bz0), max = vec(bx1, R.y + R.h, bz1),
+      floor_y = R.y, levels = copy_list(R.z.levels), brushes = #R.brushes, spots = spots, dress = R.z.dress, sky = R.sky or false,
+      ports = #R.ports, warnings = R.warnings, room = room, outline = outline, rot = R.rot, detail = R.detail_report }
     for _, w in ipairs(R.warnings) do report.warnings[#report.warnings + 1] = w end
     report.zones[#report.zones + 1] = zr
     if t.populate then t.populate(zr, R.z, G) end
   end
   for _, P in ipairs(plan.links) do
-    report.links[#report.links + 1] = { id = P.link.id, type = P.link.type, a = P.link.a, b = P.link.b, width = P.W, offset = P.c }
+    local lr = { id = P.link.id, type = P.link.type, a = P.link.a, b = P.link.b, width = P.W, offset = P.c, mode = P.mode,
+      a_side = P.side_a, b_side = P.side_b }
+    if P.mode == "free" and P.pts then
+      lr.path = {}
+      for i, q in ipairs(P.pts) do lr.path[i] = { q[1], q[2] } end
+      lr.length = P.length
+    elseif P.mode == "join" then
+      lr.width = P.span
+    end
+    report.links[#report.links + 1] = lr
   end
   report.lights = nlights
   report.area = layout_area(G, plan)
   return report
 end
+
+-- The internals the layout generators (kit_compose.lua, kit_compose_open.lua, kit_compose_payload.lua) compose with:
+-- data tables, the archetype library, link geometry, the resolver, the checker and the zone helpers.
+-- LAYOUT.generators[gametype] = function(G, rng, t) -> true once it has composed G (kit.layout requires one per gametype).
+for k, v in pairs({
+  DATA = DATA, BUDGET = BUDGET, THEMES = THEMES, POOL = POOL, LA = LA, LORDER = LORDER, SIDES = SIDES, OPP = OPP, DIRV = DIRV,
+  new_rng = new_rng, clamp = clamp, q2 = q2, q4 = q4, even = even, copy_list = copy_list,
+  rect_of = rect_of, zone_area = zone_area, has_level = has_level, intersect = intersect, subtract = subtract,
+  wall_span = wall_span, wall_coord = wall_coord, ranges_of = ranges_of, widest = widest, std_height = std_height,
+  heading_of = heading_of, road_frame = road_frame, stair_run = stair_run, ramp_run = ramp_run,
+  link_height = link_height, link_frame = link_frame, link_ys = link_ys, gap_need = gap_need, port_width = port_width,
+  resolve = resolve, check = check, layout_area = layout_area, floor_levels = floor_levels,
+  route_ctx = route_ctx, route_link = route_link, route_drop = route_drop,
+  size_class = size_class, levels_for = levels_for, finish_zone = finish_zone, spread_spawns = spread_spawns,
+  -- zone frames, traced zones and plan geometry (world = R(rot) . local; poly outlines in world metres)
+  FREE_TYPES = FREE_TYPES, norm_rot = norm_rot, zone_rot = zone_rot, same_rot = same_rot, to_world = to_world, to_local = to_local,
+  yaw_of = yaw_of, ang_diff = ang_diff, angle_of = angle_of, local_centre = local_centre, centre_of = centre_of, facing_side = facing_side,
+  zone_poly = zone_poly, poly_of = poly_of, poly_edge = poly_edge, poly_dist = poly_dist, poly_near = poly_near, box_gap = box_gap,
+  bbox_box = bbox_box, seg_inside = seg_inside, edge_dist = edge_dist,
+  inside = inside, area2 = area2, bbox = bbox, ccw = ccw, simple = simple, wall_point = wall_point, zone_band = zone_band,
+  mitre = mitre, wants_free = wants_free,
+  -- port geometry and the walk-graph analysis the checker uses
+  WALK = WALK, CART_LINK = CART_LINK, port_bands = port_bands, port_offsets = port_offsets,
+  index_zones = index_zones, adjacency = adjacency, components = components, disjoint_routes = disjoint_routes,
+  articulation = articulation, walk_dist = walk_dist,
+}) do LAYOUT[k] = v end
+I.layout = LAYOUT
 
 end
 

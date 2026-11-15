@@ -18,6 +18,12 @@ public sealed class ToolRequestOptions
     /// <summary>Supplies the script name of a <c>run_lua</c> call that names none (e.g. "mcp-3.lua").</summary>
     public Func<string>? DefaultScriptName { get; init; }
 
+    /// <summary>
+    /// Reads the script file of a <c>run_lua</c> call's <c>file</c> argument (the server's path rules apply): its source,
+    /// its file name, and the modules it imports from its own folder. Null = the file argument is refused.
+    /// </summary>
+    public Func<string, (string Source, string Name, IReadOnlyDictionary<string, string> Modules)>? ReadScriptFile { get; init; }
+
     /// <summary>Supplies the PNG path a render writes (inside the session's scratch folder).</summary>
     public Func<string>? RenderOutPath { get; init; }
 }
@@ -73,6 +79,37 @@ public static class ToolRequests
         switch (spec.Name)
         {
             case "run_lua":
+                if ((Str(given, "file") is null) == (given["code"] is null))
+                {
+                    throw Usage("run_lua needs one of 'code' (the Lua source) or 'file' (a Lua script file).");
+                }
+
+                if (Str(given, "file") is { } file)
+                {
+                    if (options.ReadScriptFile is not { } read)
+                    {
+                        throw Usage("run_lua: this server does not read script files; send the source as 'code'.");
+                    }
+
+                    (string source, string fileName, IReadOnlyDictionary<string, string> modules) = read(file);
+                    args["script"] = source;
+                    if (!args.ContainsKey("name"))
+                    {
+                        args["name"] = fileName;
+                    }
+
+                    if (modules.Count > 0)
+                    {
+                        var m = new JsonObject();
+                        foreach (KeyValuePair<string, string> kv in modules.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                        {
+                            m[kv.Key] = kv.Value;
+                        }
+
+                        args["modules"] = m;
+                    }
+                }
+
                 if (!args.ContainsKey("name") && options.DefaultScriptName is { } next)
                 {
                     args["name"] = next();
@@ -95,6 +132,34 @@ public static class ToolRequests
                 }
 
                 break;
+
+            case "align_textures":
+            {
+                var lua = new System.Text.StringBuilder("local q = level.all_brushes()\n");
+                if (Str(given, "tag") is { } tag)
+                {
+                    int eq = tag.IndexOf('=', StringComparison.Ordinal);
+                    lua.Append(eq < 0
+                        ? $"q = level.brushes_tagged({Lua(tag)})\n"
+                        : $"q = level.brushes_tagged({Lua(tag[..eq])}, {Lua(tag[(eq + 1)..])})\n");
+                }
+
+                bool report = given["report"] is JsonValue rv && rv.TryGetValue(out bool r) && r;
+                lua.Append(ResultAsJson);
+                lua.Append(report ? "return json(level.uv_report{brushes = q})\n" : "return json(level.uv_align{brushes = q})\n");
+                if (report)
+                {
+                    args["dryRun"] = true;
+                }
+
+                args["script"] = lua.ToString();
+                if (options.DefaultScriptName is { } nextName)
+                {
+                    args["name"] = nextName();
+                }
+
+                break;
+            }
 
             case "build":
                 if (!args.ContainsKey("sealed"))
@@ -257,4 +322,40 @@ public static class ToolRequests
         o[name] is JsonValue v && v.TryGetValue(out string? s) ? s : null;
 
     private static AutomationException Usage(string message) => new(AutomationErrorCodes.Usage, message);
+
+    /// <summary>A Lua function <c>json(value)</c> that renders a result table as JSON text (the run's return value).</summary>
+    private const string ResultAsJson =
+        "local function json(v)\n" +
+        "  local t = type(v)\n" +
+        "  if t == 'table' then\n" +
+        "    local o = {}\n" +
+        "    if #v > 0 or next(v) == nil then for i, x in ipairs(v) do o[i] = json(x) end return '[' .. table.concat(o, ',') .. ']' end\n" +
+        "    local keys = {} for k in pairs(v) do keys[#keys + 1] = tostring(k) end table.sort(keys)\n" +
+        "    for _, k in ipairs(keys) do o[#o + 1] = string.format('%q', k) .. ':' .. json(v[k]) end\n" +
+        "    return '{' .. table.concat(o, ',') .. '}'\n" +
+        "  elseif t == 'number' then return string.format('%.4g', v)\n" +
+        "  elseif t == 'string' then return string.format('%q', v)\n" +
+        "  elseif t == 'boolean' then return tostring(v)\n" +
+        "  elseif t == 'userdata' then return string.format('%q', tostring(v))\n" +
+        "  end\n" +
+        "  return 'null'\n" +
+        "end\n";
+
+    /// <summary>A Lua string literal of <paramref name="s"/> (quotes, backslashes and control characters escaped).</summary>
+    private static string Lua(string s)
+    {
+        var b = new System.Text.StringBuilder("\"");
+        foreach (char c in s)
+        {
+            b.Append(c switch
+            {
+                '\\' => "\\\\",
+                '"' => "\\\"",
+                _ when char.IsControl(c) => "\\" + ((int)c).ToString("000", CultureInfo.InvariantCulture),
+                _ => c.ToString(),
+            });
+        }
+
+        return b.Append('"').ToString();
+    }
 }

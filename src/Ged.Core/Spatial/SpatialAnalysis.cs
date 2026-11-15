@@ -219,7 +219,7 @@ public sealed partial class SpatialAnalysis
     /// <summary>
     /// The whole measurement, in the exemplar study's shape (<c>walk</c>, <c>storeys</c>, <c>loops</c>, <c>cell8</c>,
     /// <c>spaces</c>, <c>cover</c>, <c>routes</c>, <c>sight</c>, <c>shape</c>, <c>bridges</c> (the study's proxy),
-    /// <c>setpieces</c> (E9), <c>population</c>,
+    /// <c>setpieces</c> (E9), <c>purpose</c> (the function checks), <c>population</c>,
     /// <c>spawns</c>, <c>items</c>, <c>texturing</c>) plus <c>links</c>, <c>class_features</c> and <c>fingerprint</c> (the
     /// corridor, opening and vertical-layer numbers as <c>analyze</c> measures them). Computes every section.
     /// </summary>
@@ -254,6 +254,7 @@ public sealed partial class SpatialAnalysis
             ["class_features"] = ClassFeatures().DeepClone(),
             ["fingerprint"] = FingerprintScale().DeepClone(),
             ["payload"] = PayloadReport()?.DeepClone(),
+            ["purpose"] = PurposeReport().DeepClone(),
         };
         _report = root;
         return root;

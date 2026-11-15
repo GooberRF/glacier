@@ -50,6 +50,21 @@ public sealed record ScriptServices
     public string? ModuleDirectory { get; init; }
 
     /// <summary>
+    /// The modules a run carries from its script's own folder, by name (collected before the run by
+    /// <see cref="ScriptModuleResolver.CollectLocal"/>, e.g. by <c>glacier-cli run &lt;file&gt;</c> and the MCP
+    /// <c>run_lua</c> file argument). <c>ged.import(name)</c> resolves them after the shipped modules and before
+    /// <see cref="ModuleDirectory"/>. Null (the editor's own runs) = none.
+    /// </summary>
+    public System.Collections.Generic.IReadOnlyDictionary<string, string>? LocalModules { get; init; }
+
+    /// <summary>
+    /// The detail module library folder (<c>library/modules</c>) the <c>modules</c> global reads. Null ⇒
+    /// <see cref="Ged.Core.Modules.ModuleLibraryLocator"/>'s search (<c>GED_MODULE_LIBRARY</c>, then the folder beside
+    /// Glacier or in the source checkout).
+    /// </summary>
+    public string? ModuleLibraryDirectory { get; init; }
+
+    /// <summary>
     /// Provenance auto-tagging: when non-empty, a successful non-dry run tags every UID it
     /// created (and that still exists) with these key/value pairs, merged UNDER the run's own tags
     /// (a tag the script set wins on a key collision), in the run's single undo step. Null/empty ⇒

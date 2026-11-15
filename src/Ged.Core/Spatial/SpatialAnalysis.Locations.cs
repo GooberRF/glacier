@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Nodes;
+using Ged.Core.Analysis;
 using Ged.Core.Editing.Organic;
 
 namespace Ged.Core.Spatial;
@@ -14,7 +15,8 @@ public sealed partial class SpatialAnalysis
     public static IReadOnlyList<string> LocationKinds { get; } = new[]
     {
         "spaces", "sightlines", "chokepoints", "pockets", "dead_ends", "items", "spawns_far_from_items", "undressed_cells",
-        "bare_cells", "exposed_spawns", "exposed_spots", "far_from_cover", "flags", "hills", "segments", "segment_pockets", "boundaries", "links",
+        "bare_cells", "exposed_spawns", "exposed_spots", "far_from_cover", "flags", "hills", "segments", "segment_pockets", "boundaries", "links", "uv",
+        "purposeless_bridges", "mismatched_props", "orphan_cover", "hidden_landmarks", "purposeless_flights", "route_ledges", "poorly_connected",
     };
 
     /// <summary>Up to <paramref name="max"/> locations of one kind, worst first; every entry has <c>kind</c> and <c>pos</c> ([x, y, z] metres).</summary>
@@ -40,7 +42,7 @@ public sealed partial class SpatialAnalysis
                     yield return new JsonObject
                     {
                         ["pos"] = P3(Spaces.Cent[sh.Node]), ["area"] = R(sh.Area), ["length"] = R(sh.Length), ["width"] = R(sh.Width),
-                        ["headroom_p50"] = double.IsNaN(sh.HeadroomP50) ? null : R(sh.HeadroomP50), ["sky"] = R(sh.Sky), ["archetype"] = sh.Archetype,
+                        ["headroom_p50"] = double.IsNaN(sh.HeadroomP50) ? null : R(sh.HeadroomP50), ["sky"] = R(SkyShare(Spaces.Members[sh.Node])), ["archetype"] = sh.Archetype,
                         ["neighbours"] = Spaces.Graph.Adj[sh.Node].Count,
                     };
                 }
@@ -200,6 +202,91 @@ public sealed partial class SpatialAnalysis
                 foreach ((MovementLink link, int from, int to) in _w.Links)
                 {
                     yield return new JsonObject { ["pos"] = P3(_s[from].P), ["to"] = P3(_s[to].P), ["link"] = link.Kind, ["uid"] = link.Uid, ["one_way"] = link.OneWay };
+                }
+
+                break;
+            case "uv":
+                TexturingReport();
+                foreach (UvQualityIssue issue in UvIssues)
+                {
+                    JsonObject o = issue.ToJson();
+                    o["problem"] = issue.Kind;
+                    o.Remove("kind");
+                    o.Remove("source");
+                    yield return o;
+                }
+
+                break;
+            case "purposeless_bridges":
+                PurposeReport();
+                foreach (BridgeRoute r in BridgeRoutes.Where(r => r.Fault is not null).OrderBy(r => Math.Min(r.CatchA, r.CatchB)))
+                {
+                    yield return new JsonObject
+                    {
+                        ["pos"] = P3(r.Bridge.Centre), ["from"] = P3(r.Bridge.From), ["to"] = P3(r.Bridge.To), ["span"] = R(r.Bridge.Span),
+                        ["catchment_a"] = R(r.CatchA), ["catchment_b"] = R(r.CatchB), ["detour"] = double.IsFinite(r.Detour) ? R(r.Detour) : null, ["why"] = r.Fault,
+                    };
+                }
+
+                break;
+            case "mismatched_props":
+            case "orphan_cover":
+                PurposeReport();
+                string fault = kind == "mismatched_props" ? "theme" : "orphan_cover";
+                foreach (PropRead p in Props.Where(p => p.Fault == fault || (fault == "theme" && p.Fault == "scattered")).OrderBy(p => fault == "theme" ? -p.Clearance : p.Lane))
+                {
+                    yield return new JsonObject
+                    {
+                        ["pos"] = P3(new Vec3d(p.Centre.X, p.FloorY, p.Centre.Z)), ["height"] = R(p.Height), ["context"] = p.Context,
+                        ["rock_share"] = R(p.RockShare), ["clearance"] = R(p.Clearance), ["lane"] = R(p.Lane),
+                        ["uids"] = new JsonArray(p.Uids.Take(8).Select(u => (JsonNode)u).ToArray()),
+                        ["why"] = p.Fault == "theme"
+                            ? "rock prop standing free in a built space (built walls, under a ceiling or a walled yard): move it against a wall or edge, or swap it for the zone's own props"
+                            : p.Fault == "scattered"
+                            ? "rock rubble standing free on open floor (not cover, away from walls and edges): move it to a wall foot or edge, or make it cover on a lane"
+                            : "free-standing cover with no open line of 14 m or more through it: move it into a lane it breaks, or against a wall as dressing",
+                    };
+                }
+
+                break;
+            case "purposeless_flights":
+                PurposeReport();
+                foreach (FlightRead fr in FlightReads.Where(x => x.Kind is { } k && CountedFlightFaults.Contains(k)))
+                {
+                    yield return new JsonObject
+                    {
+                        ["pos"] = P3(fr.Centre), ["foot"] = P3(fr.Foot), ["top"] = P3(fr.Top), ["rise"] = R(fr.Rise), ["kind"] = fr.Kind, ["why"] = fr.Fault,
+                    };
+                }
+
+                break;
+            case "route_ledges":
+                PurposeReport();
+                foreach (LedgeRead l in LedgeReads.OrderByDescending(l => l.Step))
+                {
+                    JsonObject o = LedgeJson(l);
+                    o["why"] = o["fault"]!.DeepClone();
+                    o.Remove("fault");
+                    yield return o;
+                }
+
+                break;
+            case "poorly_connected":
+                PurposeReport();
+                foreach ((int node, int exits, int linked) in AreaConnections.Where(c => c.Exits <= ConnectionFew).OrderByDescending(c => Spaces.Area[c.Node]))
+                {
+                    yield return new JsonObject
+                    {
+                        ["pos"] = P3(Spaces.Cent[node]), ["area"] = R(Spaces.Area[node]), ["ways_out"] = exits, ["areas_reached"] = linked,
+                        ["why"] = "an area with at most two ways out: open more doorways, windows or drops to the areas around it, or join it to a loop",
+                    };
+                }
+
+                break;
+            case "hidden_landmarks":
+                foreach (JsonNode? l in PurposeReport()["landmarks"]!.AsArray().Where(l => l!["hidden"]!.GetValue<bool>()))
+                {
+                    yield return (JsonObject)l!.DeepClone();
                 }
 
                 break;

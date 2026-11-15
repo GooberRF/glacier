@@ -90,7 +90,8 @@ and the full log. Use `--json` whenever you need numbers, positions or UIDs.
 `summary <rfl> [--detail brief|normal|full]`, `save <rfl> [--out <rfl>]`,
 `render <rfl> --out <png> [view options]`, `open <rfl> --attach`, `undo --attach [--steps <n>]`,
 `redo --attach [--steps <n>]`, `inspect <uid> <rfl>`, `query <rfl> [--kind|--class|--name|--tag|--region]`,
-`catalog kinds|classes|describe|textures`, `checkpoint <name> --attach`, `diff --since <name> --attach`,
+`catalog kinds|classes|describe|textures`, `ref add|view|list|camera|compare|scale` (match the level to
+reference screenshots, section 6), `checkpoint <name> --attach`, `diff --since <name> --attach`,
 `hello --attach`, `api [--markdown|--lua] [--member <name>]`, `help [command]`. Useful `run` flags:
 `--build` / `--light` (compile, or compile and bake, after the run and before saving), `--dry-run`
 (run, report, roll back), `--timeout <s>` (script time limit, default 30), `--label <text>` (appended
@@ -187,16 +188,22 @@ Each tool matches a `glacier-cli` verb:
 | `query` | `query` | no | Find objects or brushes by kind, class, name, tag or region. |
 | `render_plan` | `render` | no | Top-down floor plan of one storey (image + pixel-to-world mapping). |
 | `render_view` | `render` | no | Orthographic, isometric or free-camera view (image + mapping). |
+| `reference_view` | `ref` | no | Reference pictures: a concept image or a stored reference with a grid, or the list of references. |
+| `reference_edit` | `ref` | yes | Register a reference crop (add) or set its matched camera and marks (camera). |
+| `reference_compare` | `ref` | no | Render the level from a reference's camera beside the reference: one comparison sheet plus cues. |
 | `build` | `build` | yes | Compile the level's geometry (sealed by default), optionally bake lighting. |
 | `check_holes` | `holes` | no | Leak check on a sealed build (positions of open edges). |
 | `lint` | `lint` | no | Level linter: links, spawns, budgets, leaks, missing assets. |
 | `norms` | `norms` | no | Corpus norms: typical level proportions (doorways, corridors, headroom, light density). |
 | `compare_to_norms` | `norms` | no | Compare the open level with the corpus norms (below / within / above). |
 | `spatial_query` | `spatial` | no | Spatial queries and design measurements. |
+| `align_textures` | `run` | yes | Line textures up like a mapper (level.uv_align), or report UV problems. |
 | `grade_level` | `grade` | no | Design grader: verdict, fixes and locations. |
 | `list_classes` | `catalog` | no | Class names of a placeable kind (items, entities, clutter, events). |
 | `describe_class` | `catalog` | no | Fields, links and description of a kind or class. |
 | `list_textures` | `catalog` | no | Texture names in the mounted RF install, with provenance. |
+| `module_library` | `modules` | no | Detail/architecture module library: stats, best matches, or one module. |
+| `harvest_modules` | `modules` | yes | Harvest modules from levels (read-only) into a library folder. |
 | `api_reference` | `api` | no | The Lua scripting reference: one global, type or member, or the index. |
 <!-- tools:end -->
 
@@ -217,6 +224,7 @@ sections themselves, `glacier://guide/<section>` (at least 1-3 and 9 before your
 | `glacier://api/stub` | The scripting API as an annotated Lua stub (signatures and types of every global and member). |
 | `glacier://kit` | Every design-kit function (local kit = ged.import("kit")) with its option keys, types, defaults and meaning. |
 | `glacier://kit/source` | The design kit's Lua source as shipped with this build (scripts/lib/kit.lua, then each kit_* module it installs functions from): read it to see exactly what a kit function builds. |
+| `glacier://reference/scale` | Red Faction dimensions measured on the stock levels (door panel, doorway, corridor, room height, stair step) plus player, eye and jump heights, with ranges and sources: count them in a reference screenshot to read its scale. |
 | `glacier://norms` | The corpus norms built into Glacier: every level metric (doorway and corridor sizes, headroom, light density, texture tiling, ...) with unit, reliability, use and published buckets. Read one metric with glacier://norms/<metric> (e.g. opening.width). |
 | `glacier://level/current/summary` | A brief structured summary of the level open in this session (the level_summary tool with detail brief). Read it again after a change; it is not pushed. |
 | `glacier://guide/{section}` | One section of the agent guide by number (glacier://guide/3 is the core loop, 9 the checklist); a long section is split into lettered parts (6a, 6b). glacier://guide/index lists them all. |
@@ -336,7 +344,8 @@ top-left corner), `pixelAxes` and a `mapping` sentence. For a plan:
 `x = origin[0] + (px + 0.5) * worldPerPixel` and `z = origin[2] - (py + 0.5) * worldPerPixel`.
 `result.objects` lists every glyph's `uid`, `kind`, `pixel` and world `pos`, so you never need to
 guess which glyph is which. Other views: `--view top|bottom|front|back|left|right|iso`,
-`--camera x,y,z --look x,y,z`;
+`--camera x,y,z --look x,y,z` (with `--hfov 90` for a horizontal field of view and `--eye-height eye` to stand
+1.7 m above the floor under the camera);
 framing with `--region`, `--room <index>` or `--uid <uid>`; `--overlays …,holes` marks leaks.
 
 **Clean views for review.** Iso and camera views are clean by default: no editor icons for lights,
@@ -410,13 +419,15 @@ return "first room: holes = " .. ops.holes().count
 
 `local kit = ged.import("kit")` gives level-building functions that already follow every rule above:
 floor-anchored, rooms that meet openings exactly (watertight, grid-clean), brushes tagged `kit`,
-`kit.name` and `kit.part`, named objects, grouped multi-brush parts, textures box-mapped at the
-editor's default scale (one tile per 4 m, `kit.defaults.tile_metres`, so kit brushes match
-hand-drawn ones). Each function takes one table and rejects unknown keys with the nearest valid name.
-**Always pass a unique `name`**: it names the tags, groups and objects the designer will see.
+`kit.name` and `kit.part`, named objects, grouped multi-brush parts, textures mapped at the
+texel density of RED's own levels (`kit.defaults.ppm = 64`) and lined up like a mapper's
+(`kit.defaults.uv_align`; "Texturing" below). Each function takes one table and rejects unknown keys with the nearest valid name.
+**Always pass a unique `name`**: it names the tags, groups and objects the designer will see. A brush
+you make yourself takes one too: `level.brush{name = "plinth", ...}` writes the same `kit.name` tag, so
+`kit.dress`, `kit.items` and `kit.spawn_points` accept that name as a room.
 `kit.help()` (or `ged.describe("kit").text`, or `glacier-cli api --member kit.room`) lists every
 function with its options, types and defaults. **For a whole level, start with a layout graph**
-(`kit.layout`, "Layout first" at the end of this section) and build rooms by hand only for the parts
+(`kit.layout`, "Layout first" and "Layout graphs" at the end of this section) and build rooms by hand only for the parts
 you add to it.
 
 | Function | Makes |
@@ -424,14 +435,14 @@ you add to it.
 | `kit.room{name, pos, size}` | one air box; returns `{brush, min, max, center, floor_y}` |
 | `kit.corridor{name, a, b, width?, height?, offset?}` or `{name, path = {p1, p2, …}}` | air joining two records across their gap, or along an axis-aligned floor path with bends |
 | `kit.doorway{name, a, b, width?, height?, portal?}` | a door-sized opening through the wall between two rooms (default 3 m wide, 4 m high) |
-| `kit.stairs{name, pos, dir, rise, width?, riser?, tread?, carve?}` | solid steps from floor point `pos` climbing toward `dir` (`"+x"`, `"-x"`, `"+z"`, `"-z"`), with an invisible collision ramp over them so players walk up smoothly |
+| `kit.stairs{name, pos, dir, rise, width?, riser?, tread?, carve?, purpose?}` | solid steps from floor point `pos` climbing toward `dir` (`"+x"`, `"-x"`, `"+z"`, `"-z"`), with an invisible collision ramp over them so players walk up smoothly; refused when the flight serves no route (see "Placing with purpose") |
 | `kit.ramp{name, pos, dir, rise, run?, width?, carve?}` | one solid wedge (default slope 1:2, max 45 degrees) |
 | `kit.platform{name, pos, size = {w, d}, height, thickness?, supports?}` | a raised walkable block, or a slab (with legs) |
 | `kit.pillar_row{name, from, to?, count, height, size?, shape?}` | evenly spaced box or cylinder pillars |
 | `kit.door{name, opening, slide?, buttons? or trigger?, button_class?}` | a sliding mover door in a doorway; Use-key buttons (with a visible clutter panel at each when you give `button_class`) or an automatic trigger |
 | `kit.light_room{room, spacing?, color?, range?, height?, fixture?, theme?}` | a grid of named lights over a room (a row every 4 m along a corridor), each hanging just under a visible fixture (a stock light clutter when the game tables are loaded, else a small full-bright lamp) attached to the ceiling over it; a room open to the sky instead gets fewer, stronger lights on its edges like the stock outdoor maps (about 0.5 per 100 m²: lamps on the walls, a lamp post beside each doorway, posts inside only where floor would be over 18 m from every light and never on the way between two doorways, a short glow light at each lamp); decks, landings and lowered ceilings move every fixture with them, and a light never lands inside a solid |
 | `kit.spawn_points{room? or rooms?, count, team?, margin?, checkpoint?}` | multiplayer spawns 1 m above the floor, spread over the rooms at least 8 m apart (8-15 m where they fit), beside cover or in alcoves, clear of doorways, facing the way out, chosen for low exposure and few spawns in sight within 30 m, measured exactly as the grader's G19 measures them (`report.measure` says on what); `checkpoint` makes a payload group that advances with the cart; returns the spawns as a list (with `report` beside them) that `object:link_many` and `level.create_group` take as it is |
-| `kit.dress{room? or rooms?, theme?, density?, seed?}` | generative fill: detail props, cover, beams, wall pipes, stock clutter and decals by 8 m cells for a theme (`industrial`, `construction`, `storage`, `control`, `mine`, `canyon`), keeping doorways, stairs, spawns and items clear and the walkable floor within 2 %; props come in groups (a crate stack with barrels or clutter beside it), gather in corners and along walls and flank each doorway; a decal never touches a compiled face with more than 19 vertices (that crashes the game: `by_kind.decals_unsafe` counts the spots left out); returns `count` (elements placed), `by_kind` (props, cover, breakers, overhead, clutter, decals, brushes), density and the walk change |
+| `kit.dress{room? or rooms?, theme?, density?, seed?}` | generative fill: detail props, cover, beams, wall pipes, stock clutter and decals by 8 m cells for a theme (`industrial`, `construction`, `storage`, `control`, `mine`, `canyon`), keeping doorways, stairs, spawns and items clear and the walkable floor within 2 %; props come in groups (a crate stack with barrels or clutter beside it), gather in corners and along walls and flank each doorway; a decal never touches a compiled face with more than 19 vertices (that crashes the game: `by_kind.decals_unsafe` counts the spots left out); cover goes only on measured lanes and spawn approaches, rocks only into organic spaces and against walls (see "Placing with purpose"); returns `count` (elements placed), `by_kind` (props, cover, breakers, lanes, overhead, clutter, decals, brushes), density and the walk change |
 | `kit.items{gametype?, rooms?, density?, seed?, path?, hill?}` | the item economy, level-aware: about 1.6 items per 100 m² of the whole level's playable floor up to 4,500 m², fewer per area on bigger levels (1.2 at 10,000 m², 1.0 from about 17,000 m², as well-regarded big levels have), less the items already there, never 6 or more within 10 m of one another (`local_max` reports the worst), so calling it per zone adds up to one economy (`count` is the number placed, `by_category` the split, `level_per100` the level's density); weapons 7-10 m apart over the zones, ammo, health and armour on the flanks, powerups in contested spaces, an item near every spawn; CTF halves mirrored, payload supplies on the cart route's flanks |
 | `kit.sky_room{name?, open = {rooms}}` | an outdoor sky: a sealed sky box away from the level plus `show_sky` on the open rooms' ceilings |
 
@@ -620,8 +631,8 @@ width}`. `kit.rock_wall` / `kit.boulders` return `{brushes, group, count, min, m
 returns `{brushes, group, floor_y, center, radius, depth, min, max, seed}`. Every brush carries `kit`,
 `kit.name` and `kit.part` (`seg001`…, `rock001`…, `ring1`…; passage prisms `seg1`…) plus `geo.seed`, and
 each call's brushes are grouped under its name (a canyon's sky room is not in the group). Textures
-default to `kit.defaults.rock_texture` / `rock_textures` (else the kit's defaults), box-mapped at the
-kit's texel density like every other surface (`kit.defaults.ppm = 64`: a 256 px rock texture repeats every
+default to `kit.defaults.rock_texture` / `rock_textures` (else the kit's defaults), mapped at the
+kit's texel density like every other surface and folded across every facet at true length (`kit.defaults.ppm = 64`: a 256 px rock texture repeats every
 4 m; don't enlarge rock tiles — 8 m tiles read blurred); look up stock rock textures with
 `catalog.textures{filter = "rck_", stock = true}`.
 
@@ -695,6 +706,34 @@ script: pass `ged.try` a function that builds the space and calls `ged.fail` whe
 examples ship in `scripts/examples`: `kit-canyon.lua` (a 240 m canyon centred on the origin) and
 `kit-cave.lua` (a cave network with a climb, a passage, a pit and a loop).
 
+### Texturing: palettes, alignment and the texture checks
+
+Pick textures by zone with `kit.palette{theme, variant}` (floor and wall lists never share a texture) and give
+rooms their wall kit with `kit.trim`. The kit maps every texture at `kit.defaults.ppm = 64` pixels per metre of its
+real size, then **lines it up like a mapper** (`kit.defaults.uv_align = true`): each part as it is built, and the
+whole layout again at the end of `kit.build_layout`. Wall textures stand on the floor line, wrap around corners,
+and fit their height to whole repeats; ramps, stairs and rock map at true length with the texture folded across
+every edge; nothing reads mirrored. Trims keep their fitted strips and stair treads start at the nosing. Beams,
+posts, pilasters, rails and truss members in a girder or trim texture get it laid along their length with at most
+one repeat across, as stock levels do; library modules already mapped that way keep their source mapping, so a final
+`level.uv_align{}` no longer turns pilasters into zebra stripes.
+
+Anything you build outside the kit (hand-placed `level.brush` set pieces, `level.brush_from_points` rock, edits
+to an existing level) keeps whatever mapping it was given. **Run `level.uv_align{}` once after building and before
+lighting** — for the whole level, or `level.uv_align{brushes = level.brushes_tagged("area", "rock_yard")}` for a
+part (`selection = true` takes the designer's selection). It is one undo step and never runs on its own, so a
+level you were asked to edit keeps its authored UVs unless you call it. Faces already fitted to whole tiles
+(`brush:fit_faces`, crate sides) are kept.
+
+Check with `level.uv_report{}` (MCP: `align_textures` with `report = true`): `walls.handedness_major` (exemplars 0.60-1.00, p50 0.98;
+a plain box map gives 0.50), `seams.wall_corner.aligned` / `.continuous`, `seams.fold.*` (rock and lips),
+`slope_stretched`, `walls.floor_line.tile` / `ceiling_line.tile`, and `issues` — the worst places with `pos`
+(`mirrored`, `seam_*`, `stretched*`, `density`, `member_grain`, `member_repeats`), and `members` — on beams and posts
+in a grained texture, `grain_along` (stock p50 0.98), `vertical_grain_along` (posts, pilasters, columns) and
+`no_repeats_across` (reported, not gated: some stock columns stack a trim on purpose). The grader's G21 fails a level
+whose walls read mirrored on about half their area and lists the same places, girder textures stacked across posts
+among them; the fix is `level.uv_align{}`, a rebuild and a regrade.
+
 ### Proportions, spaces and set pieces
 
 Good layouts are not uniform boxes. The kit carries the exemplar study's proportions
@@ -733,6 +772,113 @@ local floor = kit.ground_at{ x = 0, z = -26 }                                   
 return string.format("spaces: floor %.1f, holes = %d", floor.y, ops.holes().count)
 ```
 
+### Placing with purpose (roles)
+
+Players notice when something stands there for no reason: a bridge over a gap that two staircases already
+join, a lone rock in the middle of a concrete room. **Place nothing without a role.** The kit tags everything it
+places with `kit.role` and `kit.purpose` (saved with the level; `kit.roles{}` lists them; MCP `query --tag
+kit.role=cover` finds them):
+
+| Role | What it serves | Rule the kit applies |
+|---|---|---|
+| `cover` | the lane or approach it breaks | `kit.dress` measures the space's open lines (14 m or more) and the long lines into each spawn, flag and hill, and puts one cluster ON each unbroken lane, long side across it; lanes of 24 m or more get a tall sightline breaker. A space with no such lane (a small room) gets low cover against the wall beside its doorway-to-doorway route instead. `kit.pillar_row` is cover too |
+| `route` | the walkable places it joins | `kit.bridge` measures, before building, the floor on each side that reaches the far end sooner across it (at least 150 m² each), and refuses a bridge whose ends the floor below, stairs or another crossing already join (a walk under 1.6x its span), whose end lands on no floor, or whose span sits over stairs; `kit.stairs` and `kit.ramp` refuse a flight that climbs into a wall or solid, has a wall or prop within 1 m of its foot or top, joins floors already joined on foot nearby (another way up within 1.5x its length + 4 m: no twin stairs side by side), or whose top or foot leads on to under 16 m² (a solid's top, a hole); an end whose floor is not built yet is only noted (build landings first, and check `spatial.purpose{}` once built); `kit.platform` decks are routes |
+| `landmark` | what sees it | `kit.landmark` refuses a landmark seen from fewer than 2 spaces and under 200 m² of floor within 80 m: stand it where long sightlines meet |
+| `theme_detail` | its theme and space | props, clutter, decals, overhead runs, rock walls and boulders. Rocks only where rock belongs — caves, canyons, rock-walled spaces, open ground — and against walls and edges (a built room or a yard walled all round, dressed `mine` or `canyon`, gets the theme's built props; `kit.boulders` refuses built spaces and keeps rubble at the wall foot) |
+| `fixture` | what it lights | `kit.light_room` / `kit.light_path` lamps and their lights |
+
+A refused element names the reason (`kit.bridge: X serves no route: redundant: ...`). Fix the placement — join two
+places that are otherwise far apart across a real drop, stand the landmark where it is seen, move rocks to a canyon
+or a wall foot — rather than forcing it; `purpose = "report"` builds anyway with a warning, `purpose = "off"` skips
+the check (only for pieces whose approaches you build later; check them with `spatial.purpose{}` once built).
+
+**Check purpose on the built level** with `spatial.purpose{}` (CLI `spatial purpose`, MCP `spatial_query` op
+`purpose`): every bridge with `catchment_a` / `catchment_b` (floor on each side that gains by crossing), `detour` (the
+walk round without it) and `fault`; rock props that do not fit (`mismatched`: in built interiors or walled yards, or rubble
+scattered on open floor); `orphans` (free-standing cover with no open line of 14 m through it); landmarks with
+`seen_from_area` and `seen_from_spaces`; every flight of stairs or ramp (`flights`: `foot`, `top`, `rise`, `detour`
+(another way up without it), `foot_clear` / `top_clear` (room to step on and off), `top_exit`, `pocket` (a dead-end pit
+or perch it leads into), `bridge_gap`, `kind`, `counted` and `fault`); `ledges` (abrupt 0.3-1.5 m steps in a doorway or
+corridor between two big floors with no way round on foot: the route makes players hop); and `connections` (each area's
+ways out to other areas). The grader turns these into G27 (bridges that serve no route; at most one, as in the
+exemplars), G28 (misplaced rocks; none), G29 (orphan cover; at most a quarter), G30 (flights into a wall or onto a
+solid, blocked at an end, onto nothing, or down into a dead-end pit in a bridge's gap; at most one) and G31 (route
+ledges; at most one), with locations (`locations` kinds `purposeless_bridges`, `mismatched_props`, `orphan_cover`,
+`hidden_landmarks`, `purposeless_flights`, `route_ledges`, `poorly_connected`). Flights it notes but does not count
+(`counted = false`: a twin flight beside another way up, a dead-end perch with nothing on it) are still worth fixing:
+the well-regarded levels have a few, a generated level should have none. Join floors that should meet with a level
+doorway, a ramp or stairs, never a bare step; give a pit or perch a reason (an item, a second way out) or leave it out;
+and never put stairs down into the gap a bridge already crosses.
+
+### Detailing: make a room read built
+
+A kit room is a shell. What makes a Red Faction level read hand-built is the layer on top of the shell:
+pilasters at a regular pitch, a base trim and a top trim running between them, framed doors, real structure
+under the ceiling, railings on every edge you can fall from, pipes that go somewhere, machinery standing
+against a wall. The kit builds that layer from the **module library** — assemblies collected from existing
+levels (`glacier-cli modules harvest`), each stored with how it attaches, how it stretches or repeats, its
+style and its role. **Detail every space after its shell, openings and stairs exist and before lighting and
+population** (`kit.light_room`, `kit.dress`, `kit.spawn_points`, `kit.items`), so lights and items are planned
+around what is there. A level built with `kit.build_layout` is already detailed (its `detail` option, on by
+default); call these functions yourself for rooms you build by hand, or to add a set piece to a layout zone.
+
+| Function | Use it for | Roles it records |
+|---|---|---|
+| `kit.detail{room, style, seed?, level?, doorways?, stairs?, edges?}` | the whole pass on one room: frames, machinery, walls, ceiling, stairs, edges, from one matching set | all below |
+| `kit.wall_detail{room, style, seed?, walls?, pitch?, parts?}` | layered walls: pilasters each side of doorways and at a pitch, base / top trims, a band on tall walls, panels in wide bays | theme_detail |
+| `kit.frame_opening{doorway, style}` | a frame stretched to a door or window opening (never narrows it) | theme_detail |
+| `kit.ceiling_detail{room, style, kind?, pitch?, axis?, pipes?}` | beams, trusses or coffers wall to wall, aligned to the pilasters, 2.2 m or more above the floor | theme_detail |
+| `kit.machinery{room, style, count?, kinds?, role?}` | machinery, consoles and crate stacks against walls, off doorways and routes, inside the walk budget | cover, landmark, fixture |
+| `kit.railing{from, to}` / `kit.railing{path}` | a railing along a floor edge | route |
+| `kit.catwalk{from, to, width?, rails?, supports?}` | a raised walkway with railings and supports | route |
+| `kit.pipe_run{from, to, along}` / `{points}` | pipes along a wall, ceiling or floor with flanges and brackets | theme_detail |
+| `kit.stair_detail{stairs, style}` | stringers and handrails on a `kit.stairs` flight | route |
+| `kit.rock_detail{space or path, style}` | rock formations at cliff feet and as cover in canyons and caves | cover, landmark, theme_detail |
+
+Rules that keep it purposeful:
+
+- **One style per space, one seed per level.** `style` is `industrial`, `bunker`, `admin`, `mine`, `cave`,
+  `canyon`, `mars_base`, `lab`, `tech` or `generic` (a `kit.dress` theme name also works). The parts of one
+  call come from one donor set, so a wall's pilasters and trims belong together; pass the same `style` and
+  `seed` to neighbouring rooms so a level keeps one hand. A different seed picks a different matching set.
+- **Every part has a role.** Each brush is tagged `kit.role` (`cover`, `route`, `landmark`, `theme_detail`,
+  `fixture`) and `kit.module` (the library id, or `primitive.<what>`); the record's `roles` counts them and
+  `placed` lists each part. Place for the role you need: `kit.machinery{role = "cover"}` where a wide room has
+  no cover, one `landmark` piece where players orient, `theme_detail` everywhere else. Do not add parts that
+  have no reason to be there.
+- **Clearances are kept for you** — doorways, the way between them, spawns, items and earlier dressing stay
+  clear and floor-standing parts stay inside the walk budget — but read `skipped` (each entry says what was
+  left out and why) and the `note`.
+- **The library is curated by the mapper, not by you.** `library/modules/curation.json` holds the mapper's
+  keep / reject / relabel decisions (made on the `glacier-cli modules sheet` contact sheet); it is applied on
+  load — rejected modules are left out of `modules.list`, `fit`, `place` and the kit, kept ones rank first.
+  Never write or edit `curation.json` yourself; if a module looks wrong, say which id and why in your hand-back.
+- **No library, simpler parts.** `modules.available` is false when no library is found; every function then
+  builds plain parts of its own and returns `fallback = true`. Say so in your hand-back, and tell the user
+  that `glacier-cli modules harvest` builds a library.
+- **Look before you keep it.** Render a camera view at eye height (`render --camera … --look …`) of each
+  detailed space. Parts should sit on their wall, match the room's material and leave the room readable; if a
+  set looks wrong for the room, change `seed` or `style`, or turn parts off (`parts = {panels = false}`).
+
+For single placements, `modules.list{category, attach, style, max_size, limit}` finds modules and
+`modules.place{id, pos, yaw, length?, height?, depth?}` places one (a wall module's origin is on the wall at
+floor level, facing into the room); `modules.fit{id, length}` says what a stretch would give.
+
+```lua
+-- sample: detailed-room
+local kit = ged.import("kit")
+local hall = kit.room{ name = "hall", pos = {0, 0, 0}, size = {16, 6, 20} }
+local store = kit.room{ name = "store", pos = {0, 0, 17}, size = {8, 4, 8} }
+local door = kit.doorway{ name = "hall_store", a = hall, b = store }
+local d = kit.detail{ room = hall, style = "industrial", seed = 2, level = "full", doorways = { door } }
+kit.detail{ room = store, style = "industrial", seed = 2, level = "light" }
+kit.light_room{ room = hall }
+kit.light_room{ room = store }
+kit.spawn_points{ room = hall, count = 2 }
+return string.format("detail: %d parts (theme_detail %d), fallback = %s, holes = %d",
+  #d.placed, d.roles.theme_detail or 0, tostring(d.fallback), ops.holes().count)
+```
+
 ### Layout first: brief → graph → check → build → grade
 
 Do not start a whole level with rooms. Start with a **layout graph**: what the spaces are, how they
@@ -744,24 +890,59 @@ any Lua table, check it, look at it, and only then build it.
    class = "standard"|"open_air", brief = "…", seed = 1 }`. The graph is a plain table:
    - `g.zones`: each with `id`, `archetype` (`kit.layout_archetypes{}` lists them: hall, storage,
      colonnade, split, gallery, atrium, arena, sunken, mound, courtyard, pit, tunnel, nook; open-air
-     isle, deck, tower, ring, terrace, hangar, gantry, outpost, summit, garden; payload road, yard,
-     finale, start, overlook), `role` (hub, room, base, spawn, flank, hill, span, checkpoint, high,
-     nook), `pos` (the floor point at the plan's centre), `size = {w, d}`, `height`, `levels` (port
-     floors above `pos.y`, e.g. `{0, 5}` for a zone with a gallery a storey up), `palette`
-     (`kit.palette` theme, variant, team), `ground` (`"brush"` today; `"terrain"` later) for outdoor
-     zones, and `dress` (theme and density for the population pass).
-   - `g.links`: `type` (corridor, doorway, stair, ramp, drop, bridge, window, lift, road), `a`, `b`,
-     `a_y`, `b_y` (port floors; left out, each end meets its zone's floor, or a graded road's top
-     floor at its exit end), `width`, `offset` (where along the shared wall; `nil` = centred).
+     isle, deck, tower, ring, terrace, hangar, summit, gantry, outpost, plaza, mast, garden; payload
+     road, yard, finale, start, overlook; traced `poly`), `role` (hub, room, base, spawn, flank, hill,
+     span, checkpoint, high, nook), `pos` (the floor point at the plan's centre, world), `size = {w, d}`,
+     `rot` (yaw in degrees, default 0: the zone's plan turned about `pos`; 0 faces +z, 90 turns +z
+     toward +x; `"+x"`… sides, `params.heading` and `params.split` always mean the zone's own walls),
+     `height`, `levels` (port floors above `pos.y`, e.g. `{0, 5}` for a zone with a gallery a storey
+     up), `palette` (`kit.palette` theme, variant, team), `ground` (`"brush"` today; `"terrain"`
+     later) for outdoor zones, and `dress` (theme and density for the population pass). A `poly`
+     zone has `outline = {{x, z}, …}` (3-64 world points, either winding) instead of `size`; its
+     `pos` needs only the floor (`{nil, y, nil}`), `sky = true` opens it to the sky.
+   - `g.links`: `type` (corridor, doorway, stair, ramp, drop, bridge, window, lift, road, join), `a`,
+     `b`, `a_y`, `b_y` (port floors; left out, each end meets its zone's floor, or a graded road's
+     top floor at its exit end), `width`, `offset` (where along the shared wall; `nil` = centred).
+     A link between facing walls of two rectangle zones of one `rot` is straight (classic); any
+     other corridor, doorway, road, bridge, stair or ramp is a free link: `path = {{x, z}, …}`
+     (waypoints in world metres; left out, it is routed for you and `kit.layout` writes the route
+     back), `a_side` / `b_side` (the wall it leaves by: `"+x"`…, or a poly zone's edge number, edge
+     i running from outline point i to i + 1) and `a_at` / `b_at` (a world point the port sits
+     near). `join` opens two touching or overlapping zones into one space (no wall between them).
    - `g.objectives`: spawn groups (`kind = "spawns"`, zone, team, count), CTF flags, the KOTH hill,
      and for payload the cart (its spine zones in order) and checkpoints (each lists the spawn groups
      that are live while it is the cart's next target).
    - `g.budget`: the size class's floor area, floor per spawn, zone and hub counts (spec §a.1).
 
    The same seed always gives the same graph; another seed gives another layout of the same brief.
+   Zones are placed freely (no grid), around the origin:
+   - **Indoor DM and KOTH**: rooms of very different sizes abut through shared 1 m walls with
+     doorways and wide openings; a hub (KOTH: the hill, a 40 x 40 m sunken court with the rooms grown
+     in a ring round it) with a two-storey hall beside it that carries the storeys; long galleries,
+     small rooms, annexes joined to rooms (L and T plans), apses and canted bays joined to halls; a
+     wing in a frame turned 15-60° (`rot`), tied on by a traced hinge room and closed into a loop by
+     a vestibule, a corner room or a bent corridor; traced corner rooms in the angles the mass
+     leaves, rooms re-outlined with canted corners and notches; a few corridors that bend round the
+     mass.
+   - **CTF**: the red half and the centre are composed and the red half is mirrored for blue across
+     x = 0. The lanes are built in: a mid-lane room between the base and the hub, a long high-lane
+     gallery, a low flank a climb below, and a turned loop wing off the base.
+   - **Payload**: the track is designed first, one 90° corner inside a yard and bends of 25-50°
+     through cart roads, and every segment (its road, its yard and the rooms beside them) is laid out
+     in its own heading: rooms abut the road pads and yards, low galleries run along the flank, terraces
+     stand on the high side after a bend, traced wedge rooms sit inside the bends, bays open off yards.
+   - **Open air** (DM, CTF, KOTH): a hub platform (KOTH: the floating hill) with spokes hung off it
+     at free angles and distances, rim platforms between the spokes and more outward, each platform
+     turned to meet its straight bridges, stairs and ramps; CTF mirrors the red half.
+
+   A generated graph therefore holds turned zones (`rot`), traced `poly` zones with their `outline`,
+   `join` links, and free links with the route the generator chose written into them (`a_side` /
+   `b_side`, `a_at` / `b_at`, and `path` where the link bends), so it builds the same way every time.
    Sizes follow the player class: 2-4 players an arena of 1,500-3,000 m², up to 8 a small level
    (3,300-4,900 m²), up to 16 a medium one (4,400-6,400 m²), more a large one with more and smaller
-   zones; CTF 5,000-8,200 m², KOTH 7,400-10,000 m², payload about 3-4 times a DM-M map.
+   zones; CTF 5,000-8,200 m², KOTH 7,400-10,000 m², payload about 3-4 times a DM-M map. Generation
+   takes a few seconds (the slowest seeds about 7 s on a busy machine), and generated plans stay
+   within about 200 m of the origin.
 2. **Check.** `kit.check_layout{ graph = g }` returns every violation as `{severity, rule, message,
    zone?, link?}`. `"error"` means it cannot be built (zones overlap, a link has no room on its walls,
    a gap too short for a stair, a drop into a room too low for it); `"rule"` means a design rule is
@@ -775,18 +956,32 @@ any Lua table, check it, look at it, and only then build it.
    across every checkpoint, a climb and a turn on the track, a fortified finale, partly outdoors;
    open air: platforms joined by bridges and stairs). Fix the graph, check again.
 3. **Look.** `kit.layout_preview{ graph = g }.text` draws the plan as text, north (+z) up, digits for
-   the storey, letters for the zones, one character per link type (`=` corridor, `s` stair, `r` ramp,
-   `v` drop, `b` bridge, `~` window, `l` lift, `#` cart road) and `R`/`B`/`H`/`C`/`S` for flags, hill,
+   the storey, letters for the zones (turned and traced zones drawn as their world outlines), one
+   character per link type along its route (`=` corridor or doorway, `s` stair, `r` ramp, `v` drop,
+   `b` bridge, `~` window, `l` lift, `#` cart road, `+` join) and `R`/`B`/`H`/`C`/`S` for flags, hill,
    checkpoints and spawns, then a legend line per zone and link. `.svg` is the same plan as an image.
 4. **Build.** `kit.build_layout{ graph = g, name = "dm" }` checks again (errors refuse; rule
    violations are logged and listed in the report, or refuse with `strict = true`), then builds in
    time order: every zone's shell, every link's air, the zones' interiors (galleries, courts, stairs,
-   cover), the links' steps, ramps, landings, door jambs, bridges and lifts, details, lights, then the
-   spawns, flags, hill (a Capture_Point_Handler with its zone trigger) and the payload cart, handler,
-   checkpoints and spawn hand-off. It returns `{zones, links, spawns, objectives, warnings, area}`;
-   each zone report has its `spots` (clear floor points), `dress` for the population pass, and its
+   cover), the links' steps, ramps, landings, door jambs, bridges and lifts, details, the **room
+   detail pass**, lights, then the spawns, flags, hill (a Capture_Point_Handler with its zone trigger)
+   and the payload cart, handler, checkpoints and spawn hand-off. The detail pass runs by default and
+   finishes every zone the way a mapper does, from its archetype and palette theme: pilasters and
+   base / top trims on the long walls (trims only under a gallery), frames on doorways and windows,
+   beams or trusses flush under roofed ceilings (never under open sky), railings on gallery, raised-half,
+   pit-rim and bridge edges that drop away, stringers and handrails on the zones' stairs, and rock
+   formations in cave-palette zones — library modules when the library is present, else hand-authored
+   parts, all kept off doorways, routes, stairs, spawn spots, the cart lane and bridge decks.
+   `detail = false` skips it; `detail = {ceilings = false, railings = false}` (parts `walls`,
+   `frames`, `ceilings`, `railings`, `stairs`, `rocks`; also `style`, `seed`) turns parts off.
+   `report.detail` and each `report.zones[i].detail` count what was placed. A pit zone is a 10 m
+   chasm crossed by its plank bridge: no stairs lead into it. A turned zone is built in its own frame and turned into place;
+   a free link is built along its route. It returns `{zones, links, spawns, objectives, warnings,
+   area}`; each zone report has its world `min` / `max`, `outline` (its world plan) and `rot`, its
+   `spots` (clear floor points), `dress` for the population pass, and its
    `name` (`<name>_<zone id>`), which `kit.dress`, `kit.items` and `kit.spawn_points` take as a room
-   name (see "Populating a built layout" below); or run the pass per zone with
+   name (see "Populating a built layout" below); each link report its `mode` (classic, free or join)
+   and a free link's `path` as built. Or run the population pass per zone with
    `populate = function(zone_report, zone, graph) … end`.
 5. **Grade.** `ops.build()` then `design.grade{ gametype = …, players = … }` (section 9). A layout
    straight from `kit.layout` passes the flow checks (no chokepoint cell, no big dead-end pockets,
@@ -815,33 +1010,144 @@ for _, f in ipairs(grade.failures) do if f.id == "G12" or f.id == "G13" or f.id 
 return string.format("%d zones, %d links, %d spawns; %s, %d flow failure(s)", #rep.zones, #rep.links, rep.spawns, grade.verdict, flow)
 ```
 
-**From a sketch or a concept image: trace it into the same graph, never into brushes.** Build the
-graph by hand (or take a `kit.layout` result and move its zones) and let `kit.check_layout` judge it:
+### Layout graphs: editing, tracing a sketch, populating
 
-- **Zones from regions.** Each distinct region of the sketch (a room, a yard, a hall, a platform) is a
-  zone; pick the archetype that matches its character, its role, its storey (`pos.y` on a 5 m grid, or
-  4.5 m for payload) and its palette. Keep zones apart by at least a wall (1 m; 2 m between platforms)
-  and line linked zones up on x or z so their walls face each other.
-- **Links from adjacency.** Every place the sketch connects two regions is a link; its type follows
-  the height difference: corridor or doorway on one storey (a step of up to 1 m at the door is
-  allowed), stair, ramp, drop or lift for one storey up or down, bridge between platforms, window for
-  a sight line only. Add the second routes the sketch leaves out until the checker is satisfied: a
-  sketch that is a tree builds a tree.
-- **Scale from the class budget, never from the image's pixels.** Read the proportions off the sketch
-  (which region is bigger, which is longer) and size the zones so the total lands in `g.budget.area`
-  for the player count. A picture scaled at its own pixel size gave 9-14 m-tall boxes and toy-sized set
-  pieces in an earlier attempt.
+**Editing a generated graph.** Change it like any table and run `kit.check_layout` after every edit.
+
+- **In place:** a zone's `palette`, `dress` or `height`; its archetype for another of the same class
+  whose `min` / `max` (from `kit.layout_archetypes{}`) take its `size`; the objectives (spawn counts,
+  which zone holds a spawn group); adding or removing links (the checker says when a rule breaks).
+- **Moving, resizing or turning a zone:** a generated plan is packed (rooms share walls, joined zones
+  touch), so a zone seldom moves alone: moved apart, its joins no longer touch; moved closer, it
+  overlaps its neighbours. Move a joined group together (a traced zone moves by its `outline` points;
+  its `pos` x and z follow from the outline). Then clear the route the generator wrote on every link
+  of the zones you moved (`l.path, l.a_at, l.b_at, l.offset = nil, nil, nil, nil`) so the link is
+  routed again, and clear `a_side` / `b_side` too where that wall no longer faces the other zone or
+  a traced outline's points changed (edge numbers follow the points). When an edit does not settle,
+  another seed is usually quicker than moving several zones.
+- **Pinning a route:** give a link `path`, `a_side` and `a_at` yourself, as in the tracing rules below.
+
+**From a sketch or a concept image: trace it into the same graph, never into brushes.** Trace the
+plan's regions as polygons in metres, join the ones that are one space, connect the rest with links
+that bend where the sketch's connectors bend, and use rectangle archetypes only where a set piece is
+wanted. Then the same loop: `kit.check_layout` → `kit.layout_preview` → `kit.build_layout` → populate
+→ grade.
+
+- **Scale from the class budget, never from the image's pixels.** Take `g.budget` from a `kit.layout`
+  call for the same gametype and player count (or the numbers in step 1), pick one metres-per-pixel
+  factor so the traced areas add up to that budget, and read every coordinate off the sketch with it.
+  A picture traced at its own pixel size gives 9-14 m-tall boxes and toy-sized set pieces.
+- **Regions → `poly` zones.** `{ id = "yard", archetype = "poly", pos = {nil, 0, nil}, outline =
+  {{x, z}, …}, sky = true }`: 3-64 world points in order around the region (either winding, no
+  crossing edges, points at least 0.25 m apart), the floor in `pos[2]` (storeys 5 m apart, 4.5 m for
+  payload). The zone is built from its outline: a room with a raised ceiling bay when it is big enough,
+  or a yard under the sky with `sky = true`; low cover on its clear floor; spawn spots inside the
+  outline. Leave `height` out to get the proportion rule's (by area; 10 m for a yard).
+- **One space from several regions → `join`.** `{ type = "join", a = "hall", b = "bay" }` opens two
+  zones that touch or overlap into one space: an L or U from two pieces, a bay or apse on a hall, two
+  traced regions of one room. Floors within 1 m, at least 3 m of shared boundary; on a rectangle zone
+  the shared boundary lies on one wall, clear of its corners (the checker says which stretch the wall
+  takes). Give two traced polygons the same points along the edge they share, or overlap them. Zones
+  that are not joined stand at least 1 m apart (2 m between open-air platforms).
+- **Set pieces → rectangle archetypes, turned with `rot`.** A finale, an atrium, a graded `road`, a
+  gallery hall: give it its world `pos` and the yaw that lines it up with the sketch (`rot = 35` turns
+  its +z wall 35° toward +x). Its `"+x"`… sides, `params.heading` and `params.split` stay its own.
+- **Connectors → links.** Every place the sketch connects two regions is a link; its type follows the
+  height difference (corridor, doorway or road on one storey with a step of up to 1 m; stair or ramp
+  for one storey; bridge over a chasm or between platforms). Between a poly zone and anything, or
+  between zones of different `rot`, it is a free link: give `path = {{x, z}, …}` for a connector that
+  bends (waypoints in world metres, at most a 90° turn per point, segments at least 1 m; a free link
+  always leaves a wall square on a stub as long as the passage is wide plus 1 m, so keep the first and
+  last waypoint a few metres out from the walls), or leave `path` out and the link is routed for you
+  (straight, one bend or a dog-leg) clear of the other zones and links. `a_side` / `b_side` pin the
+  wall (`"+x"`… or a poly edge number) and `a_at` / `b_at` the point a port sits near. A stair or ramp
+  needs one straight stretch as long as its run plus 1 m (a 5 m stair runs 7.5 m, a 5 m ramp 10 m);
+  a bridge runs straight, at most 45° off square to the walls it leaves. Drops, lifts and windows join
+  facing walls of rectangle zones of one rot only. Between two rectangle zones of one `rot` a link is
+  classic unless it gives a `path` or a side or point. Add the second routes the sketch leaves out until
+  the checker is satisfied: a sketch that is a tree builds a tree.
+- **Read the checker's answers.** A free link that cannot be built names itself and the reason ("its
+  path from yard to depot does not work: it enters zone canyon or passes within 1 m of it"); move the
+  waypoint or the zone and check again. `report.links[i].path` is the route that was built and
+  `report.zones[i].outline` each zone's world plan.
+- **Keep the plan central.** Put the trace's middle at the origin: turned zones, traced zones and
+  bent links build watertight within about 450 m of it, a stair or ramp that bends within about
+  250 m. Check for holes after the build as always.
 - **Payload tracks on any heading.** A `road` zone's `params.heading` (`"+x"`, `"-x"`, `"+z"`,
-  `"-z"`; default `"+z"`) is the way the cart travels along it: it is entered on the opposite end and
-  left on the heading end, `size` is `{width, length}` for `±z` and `{length, width}` for `±x`,
-  `params.south` / `params.north` are the level pads at the entry / exit ends and `params.rise` the
-  climb (the grade is the rise over the stretch between the pads, at most 15%). The cart turns inside
-  the zones between roads: a yard entered from the south and left to the east is a turn. A finale's
-  `params.heading` is the way the cart enters it (its cart ramp faces that way). List the cart's zones
-  in order in the `cart` objective; each consecutive pair needs a road, bridge, doorway or corridor
-  between them. A `bridge` link in a payload layout is a deck over a chasm cut to the sky (`depth`,
-  default 8 m) between two floors at one level: give a cart bridge the road's `width` (8) and the
-  `road` zone beyond it room for that width.
+  `"-z"`; default `"+z"`) is the way the cart travels along it (its own sides: turn the road with
+  `rot` for any other bearing): it is entered on the opposite end and left on the heading end, `size`
+  is `{width, length}` for `±z` and `{length, width}` for `±x`, `params.south` / `params.north` are
+  the level pads at the entry / exit ends and `params.rise` the climb (the grade is the rise over the
+  stretch between the pads, at most 15%). The cart turns inside the zones between roads (a yard
+  entered from the south and left to the east is a turn) and along a free road that bends 20° or
+  more; it follows a free link's path. A finale's `params.heading` is the way the cart enters it (its
+  cart ramp faces that way). List the cart's zones in order in the `cart` objective; each consecutive
+  pair needs a road, bridge, doorway, corridor or join between them. A `bridge` link in a payload
+  layout is a deck over a chasm cut to the sky (`depth`, default 8 m) between two floors at one level:
+  give a cart bridge the road's `width` (8) and the zone beyond it room for that width.
+
+```lua
+-- sample: layout-trace
+local kit = ged.import("kit")
+-- "Supply line", traced off a concept sketch at 1 m per sketch unit (its areas add up to the payload budget):
+-- a walled loading yard, a gate yard, a canyon the road bends through, a chasm bridge to an angled depot, a
+-- graded road up to the defenders' hold, and an overlook beside the road.
+local function traced(id, y, outline, extra)
+  local z = { id = id, archetype = "poly", pos = { nil, y, nil }, outline = outline, sky = true }
+  for k, v in pairs(extra) do z[k] = v end
+  return z
+end
+-- The depot, its road and the hold are set pieces in one frame turned 30 degrees: give each its spot in that
+-- frame, turned into world coordinates, and the same rot (classic links join them wall to wall).
+local function turned(id, arch, lx, lz, y, size, extra)
+  local r = math.rad(-30)
+  local z = { id = id, archetype = arch, pos = { lx * math.cos(r) + lz * math.sin(r), y, -lx * math.sin(r) + lz * math.cos(r) },
+    size = size, rot = -30 }
+  for k, v in pairs(extra) do z[k] = v end
+  return z
+end
+local g = { kind = "layout", gametype = "payload", class = "payload", step = 4.5, zones = {
+    traced("yard", 0, { { -26, -22 }, { 24, -22 }, { 30, 0 }, { 20, 20 }, { -26, 20 } }, { palette = { theme = "industrial", variant = 1 }, role = "spawn", segment = 1 }),
+    traced("gate", 0, { { -14, 30 }, { 18, 30 }, { 24, 45 }, { 18, 60 }, { -14, 60 } }, { palette = { theme = "industrial", variant = 2 }, role = "checkpoint", segment = 1 }),
+    traced("canyon", 0, { { 32, 34 }, { 66, 28 }, { 78, 62 }, { 56, 86 }, { 30, 72 } }, { palette = { theme = "cave", variant = 1 }, role = "span", segment = 2 }),
+    traced("overlook", 4.5, { { 16, 100 }, { 40, 98 }, { 43, 116 }, { 20, 120 } }, { palette = { theme = "bunker", variant = 1 }, role = "high", segment = 2 }),
+    turned("depot", "yard", 120, 37, 0, { 32, 32 }, { palette = { theme = "admin", variant = 1 }, role = "checkpoint", segment = 2 }),
+    turned("climb", "road", 120, 79, 0, { 10, 50 }, { palette = { theme = "marsbase", variant = 1 }, role = "span", segment = 3, params = { heading = "+z", rise = 4.5, south = 10, north = 10 } }),
+    turned("hold", "finale", 120, 127, 4.5, { 44, 44 }, { palette = { theme = "bunker", variant = 2 }, role = "checkpoint", segment = 3, params = { heading = "+z" } }),
+  }, links = {
+    { type = "road", a = "yard", b = "gate" },               -- free links: routed for you between traced zones
+    { type = "corridor", a = "yard", b = "canyon" },
+    { type = "road", a = "gate", b = "canyon" },
+    { type = "stair", a = "gate", b = "overlook" },
+    { type = "bridge", a = "canyon", b = "depot", width = 8 }, -- the cart's chasm bridge, straight across
+    { type = "road", a = "depot", b = "climb" },             -- classic: facing walls in one frame
+    { type = "ramp", a = "depot", b = "overlook" },
+    { type = "road", a = "climb", b = "hold" },
+    { type = "corridor", a = "overlook", b = "hold" },
+    { type = "stair", a = "overlook", b = "hold", b_y = 9 },  -- up to the hold's terrace
+  }, objectives = {
+    { kind = "cart", zones = { "yard", "gate", "canyon", "depot", "climb", "hold" }, attacking_team = "blue" },
+    { kind = "spawns", id = "a1", zone = "yard", team = "blue", role = "attack", count = 3 },
+    { kind = "spawns", id = "d1", zone = "depot", team = "red", role = "defend", count = 3 },
+    { kind = "spawns", id = "a2", zone = "gate", team = "blue", role = "attack", count = 3 },
+    { kind = "spawns", id = "d2", zone = "overlook", team = "red", role = "defend", count = 3 },
+    { kind = "checkpoint", index = 1, zone = "gate", spawns = { "a1", "d1" } },
+    { kind = "checkpoint", index = 2, zone = "depot", spawns = { "a2", "d2" } },
+    { kind = "checkpoint", index = 3, zone = "hold", spawns = { "a2", "d2" } },
+  } }
+-- Check, look, build. A free link that cannot be built names itself and why; move a waypoint or a zone.
+local issues = kit.check_layout{ graph = g }
+for _, v in ipairs(issues) do print(v.severity, v.rule, v.message) end
+print(kit.layout_preview{ graph = g }.text)
+local rep = kit.build_layout{ graph = g, name = "supply" }
+-- The routes as built (world metres) and the zones' world plans; then populate by zone name.
+local bends = 0
+for _, l in ipairs(rep.links) do if l.path then bends = bends + #l.path - 2 end end
+local names = {}
+for _, z in ipairs(rep.zones) do names[#names + 1] = z.name end
+local items = kit.items{ gametype = "payload", rooms = names, seed = 1 }
+return string.format("%d issues, %d zones, %d links (%d bends), %d spawns, %d items, %.0f m2", #issues, #rep.zones, #rep.links, bends, rep.spawns, items.count, rep.area)
+```
 
 **Populating a built layout.** Every zone `kit.build_layout` builds answers to its name,
 `report.zones[i].name` (`<name>_<zone id>`, e.g. `"arena_z3"` for zone `z3` of a layout built with
@@ -870,6 +1176,70 @@ return string.format("%d zones dressed by name (%d elements), %d items", #names,
 The graph and every function are Lua, so the MCP route is the same: send the script to `run_lua`
 (or `glacier-cli run layout.lua --out work/level.rfl`), print the preview and the violations, edit,
 and run again on a fresh level.
+
+### Match a reference screenshot
+
+When the brief comes with concept art (screenshots of areas, a top-down map), look at it **during** the
+build, not only at the start: for each area, render the level from the camera the screenshot was taken
+from and compare the two pictures. Concept screenshots are usually far richer than a first blockout;
+the comparison shows exactly where (height, openings, structure, detail, materials), so you fix the
+biggest difference instead of guessing. The reference set is sidecar data (a folder of PNGs plus
+`references.json`); the level is never changed by it.
+
+Per area (CLI shown; the MCP tools are `reference_view` (view and list), `reference_edit` (`op = "add"`
+and `op = "camera"`) and `reference_compare`, their reference set defaults to `references` in the
+server's scratch folder, and the scale table is the resource `glacier://reference/scale`):
+
+1. **Register the crop.** `glacier-cli ref view concept.jpg --out work/grid.png` draws the concept with a
+   grid in its pixels; read the screenshot's rectangle, check it zoomed with
+   `glacier-cli ref view concept.jpg --crop 10,126,208,112 --snap --out work/crop.png` (yellow: your
+   box, green: snapped onto the panel's frame), then
+   `glacier-cli ref add concept.jpg --refs work/refs --id yard --crop 10,126,208,112 --snap --area "The Yard" --notes "..."`.
+2. **Read its cues.** `glacier-cli ref view yard --refs work/refs --out work/yard.png` shows it with a
+   grid in fractions (0-1 from the top-left). Mark what you can see: the horizon (`--horizon 0.56`, where
+   level floor lines meet, or two points `x1,y1,x2,y2`), the vanishing point of the main lines running
+   away from the camera (`--vp 0.63,0.56`) and their world direction in your level (`--vp-dir 0,1` for
+   +Z), a thing of known height standing on the floor (`--object x,base,top,metres`: a door is 2.5 m),
+   spans to measure (`--measure x,base,top,...`), and what the level cannot show (`--ignore x,y,w,h`:
+   the first-person weapon, a caption).
+3. **Set the matched camera.** Stand where the screenshot's camera stood in your level (read the plan):
+   `glacier-cli ref camera yard --refs work/refs --camera=-136,1.7,-146 --eye-height eye --apply-estimate`
+   puts the estimated pitch and heading (and, with an object mark, the eye height) on it (write a value
+   that starts with a minus sign as `--camera=-136,...`, or it reads as an option). The field of
+   view defaults to 90° horizontal, about Red Faction's own; set `--hfov` when the shot is clearly wider
+   or narrower. `--eye-height` stands the eye that high above the floor under the camera.
+4. **Render and compare.**
+   `glacier-cli ref compare yard work/level.rfl --refs work/refs --out work/yard_cmp.png --rf-dir <RF>`
+   writes one sheet: reference | render on top, a 50/50 blend | an edge overlay below (orange =
+   reference, cyan = render, white = both; the thick lines are each picture's skyline), all on one
+   fraction grid with both horizons dashed. Look at it. `--json` adds the cues (detail density, plain
+   top, skyline, brightness, warmth, horizons, edge overlap) and hints.
+5. **Line the camera up before judging the level.** If the horizons or the main lines disagree, the
+   camera is wrong, not the level: nudge it (`--move forward,right,up` metres, `--turn heading,pitch`
+   degrees, in the camera's own frame; on `ref camera` they are saved, on `ref compare` they are
+   one-off) until the floor line, the horizon and the main walls sit where the reference has them.
+   If no spot in the level gives the reference's view, that is the first difference to write down.
+6. **Write the difference list**, worst first, one line per heading, each with what to change:
+   - *Massing*: which walls, roofs or volumes are missing, too low, too close or too far.
+   - *Height*: storeys, walkways, ceiling height (measure with `--measure` and `ref scale`).
+   - *Openings*: doors, arches, windows, gaps to the sky: where they are vs where they should be.
+   - *Structure*: pillars, beams, trusses, gantries, railings, pipes the reference shows.
+   - *Detail*: the density of panels, trim, props and clutter (the edge-density cue is the hint).
+   - *Materials and light*: palette, warmth, hazard trim, lamp positions and colour.
+7. **Fix the top items**, rebuild, and compare again from the same saved camera.
+
+**Scale from cues.** `glacier-cli ref scale` (or `glacier://reference/scale`) lists sizes measured on the stock
+levels: a door panel is 2.5 m tall (multiplayer doors 3 m) and 2 m wide, a doorway opening 2.25 m
+wide, a corridor 4.75 m wide and 4.5 m high, a typical room 5 m high, a stair step 0.25 m by 0.75 m;
+a player figure is about 1.8 m and the eye 1.7 m above the floor; a player jumps onto 1.33 m.
+"The wall is about three doors tall" is `glacier-cli ref scale 3 door_height` = 7.5 m. Cross-check
+with a second cue; with a matched camera, `--object` and `--measure` turn marks into metres directly.
+
+**When to stop.** Stop on an area when the camera lines up (horizons and main lines agree) and your
+difference list has no massing, height or opening items left, only style. Painted concept art never
+matches a game render pixel for pixel; the cues are hints, not a score, so do not tune the level to
+move a number. Re-compare every area after a change that touches it, and keep the sheets: they are
+the evidence for the designer.
 
 ## 7. Discover; never guess names
 
@@ -1129,6 +1499,32 @@ and so does a junction room at a corridor bend. G06 takes the median area of spa
 (connectors excluded). `glacier-cli spatial graph <rfl> --kind space` lists the spaces with their areas
 and archetypes, so you can see which rooms merged.
 
+**Moving the median (G06).** A median moves only when spaces cross it: it falls to the limit (260 m²)
+once the spaces of 30-260 m² outnumber the larger ones. Add side rooms, alcoves and galleries of
+30-260 m² set off by openings under 4 m wide, or split a large space so that **every** piece is under
+the limit (one such split into two counts as three added spaces). Splitting it into pieces that stay
+over the limit raises the median, and pieces under 30 m² do not count. A failing G06 carries a `detail`:
+every counted space with its area, location and floor box (largest first, `*` marks the ones nearest
+the median in text output) and `spaces_needed`, the number of 30 m² spaces that would bring the
+median to the limit.
+
+**Floor-height classes** (G08, G24 and the player-class advisory). Playable floor is binned by height in
+0.5 m steps on world multiples of 0.5 m (y 4.0 to 4.49 is one bin); a bin is a class when it holds at
+least 2% of the playable floor (about 125 m² on a 6,000 m² level). A small raised or sunken piece adds a
+class only if the floor in its own bin reaches that area (floor at the same height anywhere in the level
+adds up), and stairs and ramps spread over many bins without filling any. The advisory's `detail` lists
+the bins that count and the ones closest to counting with how many m² each is short.
+
+**Sky.** `spatial area_report`'s `outdoor_fraction` and each space's `sky` are the share of floor under
+open sky **or a sky face** (show_sky): a `kit.canyon`, `kit.road` or open yard reads as sky.
+`open_sky_fraction` is the share with no ceiling at all, which a sealed level almost never has; the space
+archetypes' `sky` height class reads that stricter share (the exemplar study's definition).
+
+**Payload spawn safety (G19).** On a payload map a respawn a checkpoint links is live only while that
+checkpoint is the cart's target (one no checkpoint links is always live), so G19's pair share counts only
+pairs live at the same time (`spawn_los30_live`; `spatial spawn_report` shows both shares). Other
+gametypes count every pair.
+
 ```lua
 -- sample: self-review-loop
 local kit = ged.import("kit")
@@ -1271,6 +1667,10 @@ return string.format("%d zones, %d holes, %d lint problems; %s (%d failing) -> %
 - **Determinism:** use `rng` (seed with `rng.set_seed(n)`) for variation, and never let the order of
   `pairs` decide layout. Same script + same level = same result.
 - **Sandbox:** no `io`, `os`, `require`, `pcall` or file access. Load the kit with `ged.import`.
+  Split a long build into files with `ged.import("graph")`: a script run from a file
+  (`glacier-cli run build.lua`, MCP `run_lua{file = ...}`) imports the `.lua` files beside it that it
+  names with a literal string (that folder only, no sub-folders or parents; `--attach` runs carry them
+  to the editor), after the modules shipped with Glacier and before the scripts folder's `lib/`.
   Fail on purpose with `ged.fail(message, hint)`; any error rolls the whole run back. To recover
   from an error instead, use `ged.try(fn, ...)` (section 6, "Retry a seed"): it undoes only what
   `fn` changed.
@@ -1283,7 +1683,8 @@ return string.format("%d zones, %d holes, %d lint problems; %s (%d failing) -> %
 - **Prefer bulk operations** (`brush_query:set_textures`, `object_query:set`, `level.brushes_in`) to
   per-item loops on big levels; each handle call crosses into the editor.
 - **Look textures up** with `catalog.textures(filter)` before using a name; an unknown texture
-  renders white.
+  renders white. `catalog.textures(filter)` returns names (strings); `catalog.textures{...}` and
+  `o:fields()` return records, which `table.concat` cannot join: use `ged.names(list)` for plain strings.
 - **Never move single vertices** to roughen a brush; it stops being convex and flat-faced. Use
   `geo.jitter` or build it with `level.brush_from_points`. For many rocks use `kit.boulders` /
   `kit.rock_wall` or one `level.brushes_from_points` call, not a loop of `level.brush` calls.

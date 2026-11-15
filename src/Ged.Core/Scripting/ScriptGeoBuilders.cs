@@ -195,6 +195,7 @@ public sealed partial class ScriptGeo
             SizeMax = sizeMax,
             Margin = args.Number(Api, "margin", hasAlong ? 0.25 : 0.5),
             Gap = args.Number(Api, "gap", 0.25),
+            Band = args.Has("band") ? args.Number(Api, "band", 0) : null,
             Roughness = args.Number(Api, "roughness", 0.2),
             Points = args.Int(Api, "points", 12),
             Seed = seed,

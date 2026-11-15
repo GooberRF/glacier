@@ -49,7 +49,7 @@ internal static class KitSpawnPlanner
         double spawnHeight = KitArgs.Num(a, "spawn_height", 1.0);
         KitProbe probe = core.Probe().Model;
 
-        var playable = new KitPlayable(probe, spaces, margin);
+        var playable = new KitPlayable(probe, spaces, margin, n => core.ZoneFilter(probe, n));
         double bx0 = spaces.Min(s => s.X0) - 40, bz0 = spaces.Min(s => s.Z0) - 40, bx1 = spaces.Max(s => s.X1) + 40, bz1 = spaces.Max(s => s.Z1) + 40;
         bool InBox(Vec3d p) => p.X >= bx0 && p.X <= bx1 && p.Z >= bz0 && p.Z <= bz1;
 

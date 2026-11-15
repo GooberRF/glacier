@@ -203,13 +203,18 @@
   {
     "name": "run_lua",
     "title": "Run lua",
-    "description": "The way to build and edit: runs Lua against the open level as ONE undo step labelled \"AI: <name>\" (any error rolls it all back). Prefer the design kit (local kit = ged.import(\"kit\")). Units: metres, degrees, seconds; colours 0-255; texture UVs in tile units (1 = one repeat). Axes: left-handed. +X right, +Y up, +Z forward. Globals: ged, level, selection, assets, ops, lint, log, rng, catalog, prefab, geo, spatial, design. Seconds; limit timeout_s. Use dry_run to preview. Returns changes, created UIDs, log, errors with line:column and a hint. Next: build (sealed), check_holes, render_plan.",
+    "description": "The way to build and edit: runs Lua against the open level as ONE undo step labelled \"AI: <name>\" (any error rolls it all back). Prefer the design kit (local kit = ged.import(\"kit\")). Units: metres, degrees, seconds; colours 0-255; texture UVs in tile units (1 = one repeat). Axes: left-handed. +X right, +Y up, +Z forward. Globals: ged, level, selection, assets, ops, lint, log, rng, catalog, prefab, modules, geo, spatial, design. Seconds; limit timeout_s. Use dry_run to preview. Returns changes, created UIDs, log, errors with line:column and a hint. Next: build (sealed), check_holes, render_plan.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "code": {
           "type": "string",
-          "description": "The Lua source."
+          "description": "The Lua source (give code or file)."
+        },
+        "file": {
+          "type": "string",
+          "description": "A Lua script file to run instead of code, inside the folders this server may write (session_info writeRoots); ged.import(\"name\") then also finds name.lua beside it (that folder only, literal names).",
+          "maxLength": 1024
         },
         "name": {
           "type": "string",
@@ -248,9 +253,6 @@
           "description": "Max Lua instructions (default 200000000; 0 = none)."
         }
       },
-      "required": [
-        "code"
-      ],
       "additionalProperties": false
     },
     "annotations": {
@@ -524,6 +526,18 @@
           "minimum": 10,
           "maximum": 120
         },
+        "hfov": {
+          "type": "number",
+          "description": "iso / camera: horizontal fov instead (RF: 90).",
+          "minimum": 10,
+          "maximum": 170
+        },
+        "eye_height": {
+          "type": "number",
+          "description": "camera: eye m above the floor below it.",
+          "minimum": 0.05,
+          "maximum": 200
+        },
         "region": {
           "type": "array",
           "description": "Frame (render) or filter (query) on a world box: minx, miny, minz, maxx, maxy, maxz in metres.",
@@ -583,6 +597,339 @@
     },
     "annotations": {
       "title": "Render view",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "reference_view",
+    "title": "Reference view",
+    "description": "Reference matching, step 1. image: the concept with a grid in its pixels (crop zooms on and outlines a rectangle; snap shows it snapped onto the panel frame): read a screenshot's crop for reference_edit add. id: the stored reference with a grid in fractions (0-1 from the top-left) and its marks: read the horizon, vanishing point and object positions for reference_edit camera. Neither: the list of references with their cameras and marks. Known sizes for reading scale: glacier://reference/scale. Instant.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "string",
+          "description": "A concept image (png, jpg)."
+        },
+        "id": {
+          "type": "string",
+          "description": "A stored reference.",
+          "maxLength": 64
+        },
+        "crop": {
+          "type": "array",
+          "description": "image: x, y, w, h pixels.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "snap": {
+          "type": "boolean",
+          "description": "image + crop: show the snapped crop."
+        },
+        "size": {
+          "type": "integer",
+          "description": "Longest side, px.",
+          "minimum": 200,
+          "maximum": 4096
+        },
+        "refs_dir": {
+          "type": "string",
+          "description": "Reference set folder (MCP default: scratch/references; the CLI needs --refs)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Reference view",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "reference_edit",
+    "title": "Reference edit",
+    "description": "add: store the image's crop (x, y, w, h px; snap moves it onto the panel frame) as reference id, with its area and notes. camera: set the camera reference_compare renders from: camera + look, or heading / pitch; move (forward, right, up m) and turn (heading, pitch deg) nudge it; hfov (default 90); eye_height (m above the floor under it). Marks in picture fractions give an estimate: horizon = pitch and roll, vp + vp_dir = heading, object (x, base, top, metres) = eye height, measure (x, base, top...) = heights in m; apply_estimate applies it; ignore (x, y, w, h) masks a weapon or caption. Writes only the reference set. Instant.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "description": "add or camera.",
+          "enum": [
+            "add",
+            "camera"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "description": "The reference id (letters, digits, - _).",
+          "maxLength": 64
+        },
+        "image": {
+          "type": "string",
+          "description": "add: the concept image."
+        },
+        "crop": {
+          "type": "array",
+          "description": "add: x, y, w, h pixels.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "snap": {
+          "type": "boolean",
+          "description": "add: snap the crop onto the frame."
+        },
+        "area": {
+          "type": "string",
+          "description": "add: the area it shows.",
+          "maxLength": 200
+        },
+        "notes": {
+          "type": "string",
+          "description": "add: what matters in it.",
+          "maxLength": 2000
+        },
+        "replace": {
+          "type": "boolean",
+          "description": "add: overwrite the id (keeps camera, marks)."
+        },
+        "camera": {
+          "type": "array",
+          "description": "Eye x, y, z.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "look": {
+          "type": "array",
+          "description": "Look-at x, y, z.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "heading": {
+          "type": "number",
+          "description": "Degrees, 0 = +Z, 90 = +X.",
+          "minimum": -360,
+          "maximum": 360
+        },
+        "pitch": {
+          "type": "number",
+          "description": "Degrees, up positive.",
+          "minimum": -89,
+          "maximum": 89
+        },
+        "move": {
+          "type": "array",
+          "description": "Nudge forward, right, up m.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "turn": {
+          "type": "array",
+          "description": "Nudge heading, pitch deg.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "hfov": {
+          "type": "number",
+          "description": "Horizontal fov deg (90).",
+          "minimum": 10,
+          "maximum": 170
+        },
+        "eye_height": {
+          "type": "number",
+          "description": "Eye m above floor; 0 clears.",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "horizon": {
+          "type": "array",
+          "description": "[y] or [x1, y1, x2, y2].",
+          "items": {
+            "type": "number"
+          }
+        },
+        "vp": {
+          "type": "array",
+          "description": "Vanishing point x, y.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "vp_dir": {
+          "type": "array",
+          "description": "World x, z of the vp lines.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "object": {
+          "type": "array",
+          "description": "x, base, top, metres.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "measure": {
+          "type": "array",
+          "description": "x, base, top triples.",
+          "items": {
+            "type": "number"
+          }
+        },
+        "ignore": {
+          "type": "array",
+          "description": "x, y, w, h rectangles.",
+          "items": {
+            "type": "number"
+          }
+        },
+        "clear_marks": {
+          "type": "boolean",
+          "description": "Drop stored marks first."
+        },
+        "apply_estimate": {
+          "type": "boolean",
+          "description": "Put the estimate on the camera."
+        },
+        "refs_dir": {
+          "type": "string",
+          "description": "Reference set folder (MCP default: scratch/references; the CLI needs --refs)."
+        }
+      },
+      "required": [
+        "op",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Reference edit",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "reference_compare",
+    "title": "Reference compare",
+    "description": "Reference matching, the loop: renders a private copy of the level from the reference's camera at its aspect and fov and returns one sheet: reference | render, blend | edge overlay (orange ref, cyan render, white both; skylines), one fraction grid, both horizons. Also cues (detail, plain top, skyline, brightness, warmth, horizons, edge overlap) and hints: hints, not a score. Align the camera first, then write a difference list (massing, height, openings, structure, detail, materials), fix, compare again. Camera arguments here are one-off. Seconds.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The reference.",
+          "maxLength": 64
+        },
+        "camera": {
+          "type": "array",
+          "description": "Eye x, y, z.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "look": {
+          "type": "array",
+          "description": "Look-at x, y, z.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "move": {
+          "type": "array",
+          "description": "Nudge forward, right, up m.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "turn": {
+          "type": "array",
+          "description": "Nudge heading, pitch deg.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "hfov": {
+          "type": "number",
+          "description": "Horizontal fov deg.",
+          "minimum": 10,
+          "maximum": 170
+        },
+        "eye_height": {
+          "type": "number",
+          "description": "Eye m above floor.",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "panel": {
+          "type": "integer",
+          "description": "Picture width px (640, fitted to the cap).",
+          "minimum": 160,
+          "maximum": 1536
+        },
+        "mode": {
+          "type": "string",
+          "description": "Shading: lit (lightmaps; falls back to textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough.",
+          "enum": [
+            "lit",
+            "textured",
+            "lightmaps",
+            "rooms",
+            "wireframe",
+            "seethrough"
+          ],
+          "default": "lit"
+        },
+        "refs_dir": {
+          "type": "string",
+          "description": "Reference set folder (MCP default: scratch/references; the CLI needs --refs)."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Reference compare",
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,
@@ -720,7 +1067,7 @@
   {
     "name": "spatial_query",
     "title": "Spatial query",
-    "description": "Instant: raycast(p, dir), los(p, q), point_info(p), clearance(p). Measured (seconds, cached): walk(p?), routes(p, q, k), graph(kind, scale), sightlines, cover, cells, area_report(region | p + radius), spawn_report, item_report, locations(kind), setpieces. Results carry geometry freshness.",
+    "description": "Instant: raycast(p, dir), los(p, q), point_info(p), clearance(p). Measured, cached: walk(p?), routes(p, q, k), graph(kind, scale), sightlines, cover, cells, area_report(region | p + radius), spawn_report, item_report, locations(kind), setpieces, purpose. Results carry geometry freshness.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -742,6 +1089,7 @@
             "spawn_report",
             "item_report",
             "setpieces",
+            "purpose",
             "locations"
           ]
         },
@@ -824,6 +1172,34 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true
+    }
+  },
+  {
+    "name": "align_textures",
+    "title": "Align textures",
+    "description": "One undo step: walls on the floor line, wrapped round corners, never mirrored; slopes and rock at true length; girder and trim textures run along beams, posts and pilasters; fitted faces kept. report = true only measures (level.uv_report). Then build; grade_level G21 checks it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "type": "string",
+          "description": "Only brushes with this tag (key or key=value).",
+          "maxLength": 128
+        },
+        "report": {
+          "type": "boolean",
+          "description": "Measure only; change nothing.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Align textures",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
     }
   },
   {
@@ -964,6 +1340,85 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true
+    }
+  },
+  {
+    "name": "module_library",
+    "title": "Module library",
+    "description": "Modules are recurring detail pieces harvested from released levels (pilaster, trims, frames, beam, railing, catwalk, stairs, pipe, machinery, rock...) with an anchor frame, stretch axes, repeating units, styles and a score. Without id: stats and the best matches. With id: the full entry. Needs no level; a missing library answers available=false.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "A module id: its full entry."
+        },
+        "category": {
+          "type": "string",
+          "description": "e.g. pilaster, railing, door_frame."
+        },
+        "attach": {
+          "type": "string",
+          "description": "wall, floor, ceiling, span, edge, opening, ..."
+        },
+        "style": {
+          "type": "string",
+          "description": "e.g. industrial, bunker, cave."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max listed (50).",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "include_rejected": {
+          "type": "boolean",
+          "description": "Also curation-rejected.",
+          "default": false
+        },
+        "library": {
+          "type": "string",
+          "description": "A library/modules folder."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Module library",
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "harvest_modules",
+    "title": "Harvest modules",
+    "description": "Reads library/sources.json's levels, or one level/packfile (source + group), read-only, and writes the library (index.json + one .rfg per module) to out, inside the allowed folders and outside every source folder. Deterministic. Seconds per level. Next: module_library.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "One .rfl or .vpp instead of the manifest."
+        },
+        "group": {
+          "type": "string",
+          "description": "Group name (single source) or group to harvest."
+        },
+        "out": {
+          "type": "string",
+          "description": "The library/modules folder to write."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Harvest modules",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
     }
   },
   {

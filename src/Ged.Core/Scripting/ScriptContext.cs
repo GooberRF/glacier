@@ -49,6 +49,7 @@ public sealed class ScriptContext
         Lint = new ScriptLint(this);
         Catalog = new ScriptCatalog(this);
         Prefab = new ScriptPrefabs(this);
+        Modules = new ScriptModules(this);
         Geo = new ScriptGeo(this);
         Spatial = new ScriptSpatial(this);
         KitCore = new ScriptKitCore(this);
@@ -76,6 +77,8 @@ public sealed class ScriptContext
     public ScriptCatalog Catalog { get; }
 
     public ScriptPrefabs Prefab { get; }
+
+    public ScriptModules Modules { get; }
 
     public ScriptGeo Geo { get; }
 
@@ -422,6 +425,20 @@ public sealed class ScriptContext
         return _textureSizes.GetOrDefault(name, (UvOps.DefaultTextureSize, UvOps.DefaultTextureSize));
     }
 
+    /// <summary>The grain of texture <paramref name="name"/> (<see cref="TextureGrains"/>), or none when it is unknown.</summary>
+    internal TextureGrain TextureGrainOf(string? name)
+    {
+        _textureSizes ??= new TextureSizeLookup(Assets);
+        return _textureSizes.GetGrain(name) ?? Editing.TextureGrain.None;
+    }
+
+    /// <summary>The pixel size of texture <paramref name="name"/>, or null when it is unknown (no VFS, unresolved or undecodable).</summary>
+    internal (int W, int H)? TextureSizeOrNull(string? name)
+    {
+        _textureSizes ??= new TextureSizeLookup(Assets);
+        return _textureSizes.Get(name);
+    }
+
     /// <summary>
     /// The globals the engine binds by name. The host maps each to a Lua global;
     /// the API-surface snapshot test asserts these against <see cref="ScriptApiV1.Globals"/>.
@@ -438,6 +455,7 @@ public sealed class ScriptContext
         ["rng"] = Rng,
         ["catalog"] = Catalog,
         ["prefab"] = Prefab,
+        ["modules"] = Modules,
         ["geo"] = Geo,
         ["spatial"] = Spatial,
         ["design"] = Design,

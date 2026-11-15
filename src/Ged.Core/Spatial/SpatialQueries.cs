@@ -48,10 +48,11 @@ public static class SpatialQueries
         ("sightlines", "Engagement distances, longest sightlines, exposure; args region (optional)."),
         ("cover", "Cover share and distance to cover; args region (optional)."),
         ("cells", "8 m cells with dressing and plane counts (undressed / bare); args region (optional)."),
-        ("area_report", "Floor, widths, headroom, ceiling variety, walls, spaces, dressing, textures, items, spawns vs targets; args region or around + radius."),
+        ("area_report", "Floor, widths, headroom, sky (outdoor_fraction: under open sky or a sky face), ceiling variety, walls, spaces, dressing, textures, items, spawns vs targets; args region or around + radius."),
         ("spawn_report", "Every spawn: nearest spawn, exposure, nearest item, spawns in sight."),
         ("item_report", "Every item: category, traffic percentile, pocket, weapon/powerup spacing."),
         ("setpieces", "Set pieces: bridges (span, width, gap width and depth, space below), landmarks (height), atria, largest spaces; args max."),
+        ("purpose", "Function checks: bridges and flights that serve no route, route ledges, area ways out, misplaced rocks, orphan cover, hidden landmarks; args max."),
         ("locations", "Actionable locations of one kind (chokepoints, pockets, bare_cells, exposed_spawns, …): args kind, max."),
     };
 
@@ -144,6 +145,7 @@ public static class SpatialQueries
             "spawn_report" => a.SpawnReportQuery((int)(Number(args, "max") ?? 100)),
             "item_report" => a.ItemReportQuery((int)(Number(args, "max") ?? 200)),
             "setpieces" => a.SetPieces((int)(Number(args, "max") ?? 10)),
+            "purpose" => a.Purpose((int)(Number(args, "max") ?? 20)),
             _ => LocationsResult(a, Str(args, "kind") ?? throw new SpatialException("usage", "locations needs a kind.", $"Kinds: {string.Join(", ", SpatialAnalysis.LocationKinds)}."), (int)(Number(args, "max") ?? 20)),
         };
     }
@@ -252,7 +254,8 @@ public static class SpatialQueries
     private static double? Num(JsonNode? n) => DesignMetrics.Number(n);
 
     /// <summary>The level of an editor document with its freshness, for the editing hosts (<paramref name="state"/>: built, preview, stale, none).</summary>
-    public static SpatialLevel DocumentLevel(EditorDocument doc, string state, Func<string, (int, int)?>? textureSize, Geometry? fresh = null, string? freshKind = null)
+    public static SpatialLevel DocumentLevel(EditorDocument doc, string state, Func<string, (int, int)?>? textureSize, Geometry? fresh = null, string? freshKind = null,
+        Func<string, Editing.TextureGrain>? textureGrain = null)
     {
         GeometryFreshness f = fresh is not null
             ? new GeometryFreshness(state, freshKind ?? "preview", $"Measured on a fresh {freshKind ?? "preview"} build made for this query (not applied to the level).")
@@ -263,6 +266,6 @@ public static class SpatialQueries
                 _ => null,
             });
         SpatialLevel level = SpatialLevel.FromDocument(doc, fresh, f);
-        return textureSize is null ? level : level.WithTextureSize(textureSize);
+        return textureSize is null ? level : level.WithTextureSize(textureSize, textureGrain);
     }
 }

@@ -415,16 +415,12 @@ public sealed class KitUvTests
             foreach (Face f in b.Geometry.Faces.Where(f => !f.IsPortalFace && f.Texture >= 0))
             {
                 (int w, int h) = sizes.Get(b.Geometry.Textures[f.Texture]) ?? throw new InvalidOperationException(b.Geometry.Textures[f.Texture]);
-                List<UvAlignOps.Vec3d> c = UvAlignOps.WorldCorners(b.Geometry, f, b.Rotation, b.Position);
-                UvAlignOps.Vec3d n = UvAlignOps.Normal(c);
-                (int uAxis, int vAxis) = GeometryUtil.DominantProjection(new Vec3((float)n.X, (float)n.Y, (float)n.Z));
-                for (int i = 0; i < c.Count; i++)
-                {
-                    // The world box map at 64 px/m of this texture's own size: U = metres x 64 / width, V = -metres x 64 / height.
-                    double[] p = { c[i].X, c[i].Y, c[i].Z };
-                    Assert.Equal(p[uAxis] * 64 / w, f.Vertices[i].TextureCoords.U, 2);
-                    Assert.Equal(-p[vAxis] * 64 / h, f.Vertices[i].TextureCoords.V, 2);
-                }
+                // 64 px of this texture's own size per metre along both axes (square texels); a wall group's height fit
+                // (kit.defaults.uv_align) may scale both by at most 15 %.
+                Assert.True(UvAlignOps.TryGetUvMap(b.Geometry, f, b.Rotation, b.Position, out UvAlignOps.UvAffine m));
+                double pu = m.Gu.Length * w, pv = m.Gv.Length * h;
+                Assert.Equal(pu, pv, 1);
+                Assert.InRange(pu, 64 / 1.15 - 0.01, 64 * 1.15 + 0.01);
 
                 faces++;
             }

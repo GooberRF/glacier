@@ -20,6 +20,7 @@ public sealed class ScriptOptionDocsTests
     {
         "ScriptObjectHandle.SetMany", "ScriptBrushHandle.SetMany", "ScriptMoverHandle.SetMany", "ScriptPropertyBag.SetMany",
         "ScriptObjectHandle.LinkMany", "ScriptObjectHandle.BackLink", "ScriptGroupHandle.Remove", "ScriptFaceHandle.SetUvs",
+        "ScriptGed.Names",
     };
 
     private static IEnumerable<MethodInfo> TableArgMethods() =>

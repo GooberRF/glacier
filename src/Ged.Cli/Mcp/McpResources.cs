@@ -42,6 +42,7 @@ internal static class McpResources
     public const string NormsUri = "glacier://norms";
     public const string NormsMetricPrefix = "glacier://norms/";
     public const string NormsMetricTemplate = "glacier://norms/{metric}";
+    public const string ReferenceScaleUri = "glacier://reference/scale";
 
     /// <summary>The manifest-resource name of the embedded agent guide.</summary>
     internal const string GuideResource = "Ged.Cli.Mcp.AGENT-GUIDE.md";
@@ -76,6 +77,10 @@ internal static class McpResources
                 "The design kit's Lua source as shipped with this build (scripts/lib/kit.lua, then each kit_* module it installs functions from): read it to see exactly what a kit function builds.",
                 "text/x-lua"),
         };
+        list.Add(new McpResourceInfo(ReferenceScaleUri, "reference-scale", "Known sizes for reading scale",
+            "Red Faction dimensions measured on the stock levels (door panel, doorway, corridor, room height, stair step) plus " +
+            "player, eye and jump heights, with ranges and sources: count them in a reference screenshot to read its scale.",
+            "application/json"));
         if (Ged.Core.Analysis.CorpusNorms.Available)
         {
             list.Add(new McpResourceInfo(NormsUri, "norms", "Corpus norms: metrics",
@@ -132,6 +137,10 @@ internal static class McpResources
             case KitSourceUri:
                 return new McpResourceText(uri, "text/x-lua", ScriptKitSource.Combined()
                     ?? throw new AutomationException(AutomationErrorCodes.Usage, "This build ships no design kit."));
+            case ReferenceScaleUri:
+                return new McpResourceText(uri, "application/json",
+                    Ged.Automation.Reference.ReferenceCommand.Execute(new System.Text.Json.Nodes.JsonObject { ["op"] = "scale" },
+                        new Ged.Automation.Reference.ReferenceIo { RequireWrite = p => p }).Result!.ToJsonString(AutomationJson.Options));
         }
 
         if (uri.StartsWith(GuideSectionPrefix, StringComparison.Ordinal) && uri.Length > GuideSectionPrefix.Length)

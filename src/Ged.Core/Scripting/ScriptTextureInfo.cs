@@ -9,7 +9,7 @@ public sealed class ScriptTextureInfo
 {
     private readonly AssetVfs? _vfs;
     private readonly string? _resolved;
-    private readonly Lazy<(int W, int H)> _size;
+    private readonly Lazy<(int W, int H, Editing.TextureGrain Grain)> _size;
 
     internal ScriptTextureInfo(string name, AssetVfs? vfs, TextureProvenance? p)
     {
@@ -21,7 +21,7 @@ public sealed class ScriptTextureInfo
         Origin = p is null ? null : StockContent.LuaName(p.Origin);
         Source = p?.Source;
         Overridden = p?.Overridden ?? false;
-        _size = new Lazy<(int, int)>(Decode);
+        _size = new Lazy<(int, int, Editing.TextureGrain)>(Decode);
     }
 
     [ScriptDoc("The texture name.", Since = 2)]
@@ -48,22 +48,27 @@ public sealed class ScriptTextureInfo
     [ScriptDoc("The height in pixels (0 when missing or not decodable).", Since = 2)]
     public int Height => _size.Value.H;
 
+    [ScriptDoc("Which image axis the texture's features run along: \"u\" (a girder lying down, a wide strip), \"v\" (a post standing up, a tall strip) or nil (a panel or plate). uv_align lays it along beams and posts.", Since = 2)]
+    public string? Grain => Editing.TextureGrains.LuaName(_size.Value.Grain);
+
     public override string ToString() => Exists ? $"texture_info({Name}, {Origin}{(Stock ? ", stock" : string.Empty)})" : $"texture_info({Name}, missing)";
 
-    private (int, int) Decode()
+    private (int, int, Editing.TextureGrain) Decode()
     {
         if (_vfs is null || _resolved is null)
         {
-            return (0, 0);
+            return (0, 0, Editing.TextureGrain.None);
         }
 
         try
         {
-            return _vfs.LoadTexture(_resolved) is { Width: > 0, Height: > 0 } d ? (d.Width, d.Height) : (0, 0);
+            return _vfs.LoadTexture(_resolved) is { Width: > 0, Height: > 0 } d
+                ? (d.Width, d.Height, Editing.TextureGrains.Of(d.Width, d.Height, Editing.TextureGrains.Measure(d.Primary)))
+                : (0, 0, Editing.TextureGrain.None);
         }
         catch (Exception)
         {
-            return (0, 0); // undecodable: reported as 0 × 0
+            return (0, 0, Editing.TextureGrain.None); // undecodable: reported as 0 × 0
         }
     }
 }

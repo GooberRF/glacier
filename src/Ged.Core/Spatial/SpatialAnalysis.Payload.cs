@@ -31,6 +31,82 @@ public sealed partial class SpatialAnalysis
     /// <summary>True when the level has a Payload_Handler event.</summary>
     internal bool HasPayloadHandler => _level.Objects.Any(o => o.Kind == LevelObjectKind.Event && o.ClassName == "Payload_Handler");
 
+    /// <summary>The cart track: the keyframes of the moving group one of whose keyframes (normally the start keyframe) the handler links.</summary>
+    private List<Keyframe>? CartTrack(RflEvent handler)
+    {
+        var linked = new HashSet<int>(handler.Links);
+        return _level.Sections<GroupsSection>().SelectMany(g => g.Groups)
+            .Where(g => g.IsMoving != 0 && g.MovingData is { Keyframes.Count: >= 2 })
+            .Select(g => g.MovingData!.Keyframes)
+            .FirstOrDefault(k => k.Any(f => linked.Contains(f.Uid)));
+    }
+
+    private bool _stagesDone;
+    private Dictionary<int, HashSet<int>>? _spawnStages;
+
+    /// <summary>
+    /// Payload spawn stages: per respawn uid that a checkpoint links, the stages it is live in (stage k = checkpoint k, in
+    /// track order, is the cart's target). Alpine switches the respawns a checkpoint links on while that checkpoint is the
+    /// cart's target and off once it is captured, and never switches a respawn no checkpoint links, which stays live in
+    /// every stage (behaviour from alpinefaction game_patch/multi/gametype.cpp:877-887, rev_should_enable_respawn_point).
+    /// Null when the level has no cart track with checkpoints (every spawn is live together).
+    /// </summary>
+    internal Dictionary<int, HashSet<int>>? SpawnStages()
+    {
+        if (_stagesDone)
+        {
+            return _spawnStages;
+        }
+
+        _stagesDone = true;
+        if (_level.Objects.FirstOrDefault(o => o.Kind == LevelObjectKind.Event && o.ClassName == "Payload_Handler")?.Model is not RflEvent he
+            || CartTrack(he) is not { } track)
+        {
+            return null;
+        }
+
+        var byUid = new Dictionary<int, LevelObject>();
+        foreach (LevelObject o in _level.Objects)
+        {
+            byUid.TryAdd(o.Uid, o);
+        }
+
+        var stages = new Dictionary<int, HashSet<int>>();
+        int stage = 0;
+        for (int k = 1; k < track.Count; k++)
+        {
+            if (byUid.GetValueOrDefault(track[k].EventUid) is { ClassName: "Payload_Checkpoint", Model: RflEvent cp })
+            {
+                foreach (int uid in cp.Links)
+                {
+                    if (!stages.TryGetValue(uid, out HashSet<int>? set))
+                    {
+                        stages[uid] = set = new HashSet<int>();
+                    }
+
+                    set.Add(stage);
+                }
+
+                stage++;
+            }
+        }
+
+        _spawnStages = stage > 0 ? stages : null;
+        return _spawnStages;
+    }
+
+    /// <summary>True when two respawns can be live at the same time (always outside payload maps with checkpoints).</summary>
+    internal bool LiveTogether(int uidA, int uidB)
+    {
+        if (SpawnStages() is not { } stages)
+        {
+            return true;
+        }
+
+        bool a = stages.TryGetValue(uidA, out HashSet<int>? sa), b = stages.TryGetValue(uidB, out HashSet<int>? sb);
+        return !a || !b || sa!.Overlaps(sb!);
+    }
+
     /// <summary>The payload report, or null when the level has no cart track (no handler linked to a mover with keyframes).</summary>
     internal JsonObject? PayloadReport()
     {
@@ -46,12 +122,7 @@ public sealed partial class SpatialAnalysis
             return null;
         }
 
-        // The cart: the moving group one of whose keyframes (normally the start keyframe) the handler links.
-        var linked = new HashSet<int>(he.Links);
-        List<Keyframe>? track = _level.Sections<GroupsSection>().SelectMany(g => g.Groups)
-            .Where(g => g.IsMoving != 0 && g.MovingData is { Keyframes.Count: >= 2 })
-            .Select(g => g.MovingData!.Keyframes)
-            .FirstOrDefault(k => k.Any(f => linked.Contains(f.Uid)));
+        List<Keyframe>? track = CartTrack(he);
         if (track is null)
         {
             _payloadReport = new JsonObject { ["handler"] = handler.Uid, ["track"] = null, ["note"] = "The Payload_Handler links no mover with at least 2 keyframes." };

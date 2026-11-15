@@ -16,13 +16,13 @@ namespace Ged.Core.Scripting;
 /// its latest brushes. Results are tables shaped exactly like the CLI / MCP JSON; points are vec values.
 /// Measurements are cached per geometry and object layout, and budgeted (sample cap, time limit).
 /// </summary>
-[ScriptDoc("Spatial queries on the compiled geometry: raycast, los, point_info, clearance, walk, routes, graph, sightlines, cover, cells, area_report, spawn_report, item_report, locations, setpieces. Results carry geometry freshness.", Since = 2)]
+[ScriptDoc("Spatial queries on the compiled geometry: raycast, los, point_info, clearance, walk, routes, graph, sightlines, cover, cells, area_report, spawn_report, item_report, locations, setpieces, purpose. Results carry geometry freshness.", Since = 2)]
 public sealed class ScriptSpatial
 {
     /// <summary>Keys whose 3-number arrays become vec values in Lua results.</summary>
     internal static readonly HashSet<string> PointKeys = new(StringComparer.Ordinal)
     {
-        "pos", "to", "from", "a", "b", "snapped", "normal", "around", "min", "max", "widest_cell", "start", "end",
+        "pos", "to", "from", "a", "b", "snapped", "normal", "around", "min", "max", "widest_cell", "start", "end", "foot", "top", "bridge_gap",
     };
 
     private readonly ScriptContext _ctx;
@@ -91,7 +91,7 @@ public sealed class ScriptSpatial
     [ScriptOptions(nameof(ScriptOptionSets.SpatialCells))]
     public Dictionary<string, object?> Cells(ScriptArgs? args = null) => Measure("spatial.cells", "cells", args, ScriptOptionSets.SpatialCells);
 
-    [ScriptDoc("An area report (region, around + radius, or the level): floor area, widths, headroom, ceilings, walls, spaces, dressing, textures, items, spawns, with the exemplar targets.",
+    [ScriptDoc("An area report (region, around + radius, or the level): floor, widths, headroom, sky (outdoor_fraction counts sky faces), ceilings, walls, spaces, dressing, textures, items, spawns vs targets.",
         Example = "local r = spatial.area_report{around = {0, 0, 0}, radius = 16} print(r.floor_area, r.dressing_per100)", Since = 2)]
     [ScriptOptions(nameof(ScriptOptionSets.SpatialArea))]
     public Dictionary<string, object?> AreaReport(ScriptArgs? args = null) => Measure("spatial.area_report", "area_report", args, ScriptOptionSets.SpatialArea);
@@ -178,7 +178,7 @@ public sealed class ScriptSpatial
         {
             SpatialLevel level = SpatialLevel.FromDocument(_ctx.Document, null, f);
             var sizes = new Assets.TextureSizeLookup(_ctx.Assets);
-            return sizes.Available ? level.WithTextureSize(n => sizes.Get(n)) : level;
+            return sizes.Available ? level.WithTextureSize(n => sizes.Get(n), n => sizes.GetGrain(n) ?? Editing.TextureGrain.None) : level;
         }
         catch (SpatialException ex)
         {
@@ -300,6 +300,11 @@ public sealed class ScriptSpatial
         Example = "local s = spatial.setpieces() if (s.bridge_span_max or 0) < 20 then log.warn(\"no landmark-scale bridge\") end", Since = 2)]
     [ScriptOptions(nameof(ScriptOptionSets.SpatialSetPieces))]
     public Dictionary<string, object?> Setpieces(ScriptArgs? args = null) => Measure("spatial.setpieces", "setpieces", args, ScriptOptionSets.SpatialSetPieces);
+
+    [ScriptDoc("Function checks (grader G27-G31): bridges and stair flights with the route each serves or its fault, route ledges, area ways out, misplaced rocks, orphan cover, landmarks. Seconds, then cached.",
+        Example = "local p = spatial.purpose() for _, b in ipairs(p.bridges) do if b.fault then log.warn(b.fault) end end", Since = 2)]
+    [ScriptOptions(nameof(ScriptOptionSets.SpatialPurpose))]
+    public Dictionary<string, object?> Purpose(ScriptArgs? args = null) => Measure("spatial.purpose", "purpose", args, ScriptOptionSets.SpatialPurpose);
 }
 
 /// <summary>The <c>design</c> global: the self-review grader (DESIGN-QUALITY-SPEC §(d), E11).</summary>

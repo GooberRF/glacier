@@ -147,6 +147,7 @@ public sealed partial class AutomationCommands
         };
         var sizes = new Ged.Core.Assets.TextureSizeLookup(_host.Assets);
         Func<string, (int, int)?>? textures = sizes.Available ? n => sizes.Get(n) : null;
+        Func<string, Ged.Core.Editing.TextureGrain>? grains = sizes.Available ? n => sizes.GetGrain(n) ?? Ged.Core.Editing.TextureGrain.None : null;
         if (action == "none")
         {
             if (state == "none")
@@ -154,7 +155,7 @@ public sealed partial class AutomationCommands
                 throw new AutomationException(SpatialNoGeometry, "The level has no compiled geometry to measure. Build it first, or pass build preview / sealed.");
             }
 
-            return SpatialQueries.DocumentLevel(doc, state, textures);
+            return SpatialQueries.DocumentLevel(doc, state, textures, textureGrain: grains);
         }
 
         CompiledLevel compiled = await Task.Run(() => LevelOperations.Compile(doc, _host.Assets, _host.BuildSettings, sealedBuild: action == "sealed",
@@ -164,7 +165,7 @@ public sealed partial class AutomationCommands
             throw new AutomationException(SpatialNoGeometry, "The fresh build produced no geometry (the level has no closed rooms).");
         }
 
-        return SpatialQueries.DocumentLevel(doc, state, textures, compiled.Geometry, action);
+        return SpatialQueries.DocumentLevel(doc, state, textures, compiled.Geometry, action, grains);
     }
 
     /// <summary>Error code: no compiled geometry, or no playable floor, to measure.</summary>

@@ -126,6 +126,32 @@ public sealed class KitPopulationTests
         AssertLintClean(run);
     }
 
+    /// <summary>
+    /// A small storage room (100 m², 4 m high) is where the storage theme stands its racks: a rack's shelf boards over
+    /// a low stack leave a column a walk step high but with too little headroom under the top board at 2.40 m, so
+    /// that column is lost floor and counts against the walk budget. Seeds 5 and 6 took 2.5 % of the floor when it
+    /// was not counted.
+    /// </summary>
+    [Fact]
+    public void Dress_Counts_Floor_Under_A_Low_Shelf_Against_The_Walk_Budget()
+    {
+        KitRun run = Run("""
+            local out = {}
+            for i, seed in ipairs({ 4, 5, 6 }) do
+              local r = kit.room{ name = "store" .. i, pos = { (i - 1) * 30, 0, 0 }, size = {10, 4, 10} }
+              local d = kit.dress{ room = r, theme = "storage", seed = seed }
+              out[#out + 1] = string.format("%d:%.5f", seed, d.walk.change)
+            end
+            return table.concat(out, ";")
+            """);
+        foreach (string p in run.Result.ReturnValue!.Split(';'))
+        {
+            Assert.True(Math.Abs(Num(p.Split(':')[1])) <= 0.02, $"seed {p}: kit.dress changed the walkable floor by more than 2 % ({run.Result.ReturnValue})");
+        }
+
+        Assert.DoesNotContain(run.Log.Entries, e => e.Message.Contains("changed the walkable floor", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("kit.dress{theme = 'jungle'}", "unknown theme 'jungle'")]
     [InlineData("kit.dress{theme = 'yard', densty = 1}", "unknown option 'densty'")]

@@ -112,6 +112,16 @@ internal static class CliApp
 
         try
         {
+            if (a.Verb == "modules")
+            {
+                return ModulesCli.Run(a, stdout, stderr, env);
+            }
+
+            if (a.ModuleOptions.Count > 0)
+            {
+                throw new UsageException($"{string.Join(", ", a.ModuleOptions.Keys)} only apply to 'modules'.", a.Verb);
+            }
+
             if (a.Verb == "api")
             {
                 return Api(a, stdout);
@@ -125,6 +135,11 @@ internal static class CliApp
             if (a.Verb == "mcp")
             {
                 return await Mcp.McpCommand.RunAsync(a, stderr, env);
+            }
+
+            if (a.Verb == "ref")
+            {
+                return await RefCli.RunAsync(a, stdout, stderr, env);
             }
 
             AutomationRequest request = BuildRequest(a, out IReadOnlyList<string> explicitPaths, out bool needsAssets);
@@ -286,6 +301,11 @@ internal static class CliApp
                 : "--allow-import only applies to 'run'.", verb);
         }
 
+        if (a.RefOptions.Count > 0)
+        {
+            throw new UsageException($"{a.RefOptions.Keys.First()} only applies to 'ref'.", verb);
+        }
+
         if (a.DryRun && verb != "run")
         {
             throw new UsageException("--dry-run only applies to 'run'.", verb);
@@ -335,9 +355,14 @@ internal static class CliApp
                 Max(a, 2);
                 string script = a.Positionals.FirstOrDefault() ?? throw new UsageException("run needs a Lua script file.", verb);
                 string source;
+                Dictionary<string, string> modules;
                 try
                 {
                     source = File.ReadAllText(script);
+
+                    // The modules it imports from its own folder travel with the run (sources, not paths), so an
+                    // attached editor reads nothing from disk for them.
+                    modules = Ged.Core.Scripting.ScriptModuleResolver.CollectLocal(script, source);
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -346,6 +371,16 @@ internal static class CliApp
 
                 args["script"] = source;
                 args["name"] = Path.GetFileName(script);
+                if (modules.Count > 0)
+                {
+                    var m = new JsonObject();
+                    foreach ((string key, string text) in modules.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                    {
+                        m[key] = text;
+                    }
+
+                    args["modules"] = m;
+                }
                 Level(a.Positionals.Count > 1 ? a.Positionals[1] : null);
                 if (a.DryRun)
                 {
@@ -1019,12 +1054,17 @@ internal static class CliApp
             args["view"] = view;
         }
 
-        foreach ((string flag, string key) in new[] { ("--y", "y"), ("--thickness", "thickness"), ("--below", "below"), ("--fov", "fov") })
+        foreach ((string flag, string key) in new[] { ("--y", "y"), ("--thickness", "thickness"), ("--below", "below"), ("--fov", "fov"), ("--hfov", "hfov") })
         {
             if (Opt(flag) is { } v)
             {
                 args[key] = Number(flag, v);
             }
+        }
+
+        if (Opt("--eye-height") is { } eyeHeight)
+        {
+            args["eyeHeight"] = Wrap(() => Ged.Automation.Reference.ReferenceCamera.ParseHeight(eyeHeight)); // metres or eye / crouch / jump
         }
 
         foreach ((string flag, string key) in new[] { ("--room", "room"), ("--uid", "uid") })
@@ -1240,7 +1280,7 @@ internal static class CliApp
     /// private copy of the editor's open level fetched with <c>snapshot</c> (so the editor never needs a
     /// second GPU device, and the render can never touch the user's document).
     /// </summary>
-    private static async Task<AutomationResponse> RenderAsync(
+    internal static async Task<AutomationResponse> RenderAsync(
         CliArguments a,
         AutomationRequest request,
         IReadOnlyList<string> explicitPaths,
@@ -1332,7 +1372,7 @@ internal static class CliApp
 
     // ---- output -------------------------------------------------------------------------------
 
-    private static int Report(CliArguments a, AutomationResponse response, TextWriter stdout, TextWriter stderr)
+    internal static int Report(CliArguments a, AutomationResponse response, TextWriter stdout, TextWriter stderr)
     {
         if (a.Json)
         {
@@ -1430,6 +1470,9 @@ internal static class CliText
                 case "grade":
                     Grade(x, o);
                     break;
+                case Ged.Automation.Reference.ReferenceCommand.Name:
+                    RefCli.Text(x, o);
+                    break;
                 default:
                     o.WriteLine(x.ToJsonString(AutomationJson.Indented));
                     break;
@@ -1463,6 +1506,11 @@ internal static class CliText
                 string extra = string.Join(", ", loc!.AsObject().Where(kv => kv.Key is not ("kind" or "pos")).Take(4).Select(kv => $"{kv.Key} {kv.Value?.ToJsonString()}"));
                 o.WriteLine($"  at {loc["pos"]?.ToJsonString()} ({S(loc, "kind")}{(extra.Length > 0 ? ": " + extra : string.Empty)})");
             }
+
+            if (f["detail"] is JsonObject detail)
+            {
+                GradeDetail(detail, o);
+            }
         }
 
         o.WriteLine();
@@ -1482,6 +1530,10 @@ internal static class CliText
             {
                 JsonArray t = a!["target"]!.AsArray();
                 o.WriteLine($"  {S(a, "metric")} = {a["value"]?.ToJsonString() ?? "n/a"}: {S(a, "status")} (target {t[0]!.ToJsonString()}-{t[1]!.ToJsonString()})");
+                if (a["detail"] is JsonObject detail && S(a, "status") != "within")
+                {
+                    GradeDetail(detail, o, "    ");
+                }
             }
         }
 
@@ -1492,6 +1544,37 @@ internal static class CliText
                 ? $"{sp["bridges"]?.ToJsonString() ?? "0"} bridge(s)"
                 : $"{sp["bridges"]?.ToJsonString() ?? "0"} bridge(s); landmark bridge span {N("bridge_span", " m")} (gap {N("bridge_gap_width", " m")}, {N("bridge_gap_depth", " m")} deep, {N("bridge_width", " m")} wide), longest span {N("bridge_span_max", " m")}";
             o.WriteLine($"Set pieces: {bridge}; tallest landmark {N("landmark_height_max", " m")}; tallest atrium {N("atrium_height_max", " m")}");
+        }
+    }
+
+    /// <summary>A grade detail: its summary, then every counted space (largest first) or the floor-height bins.</summary>
+    private static void GradeDetail(JsonObject d, TextWriter o, string indent = "  ")
+    {
+        o.WriteLine($"{indent}detail:   {S(d, "summary")}");
+        if (d["spaces"] is JsonArray spaces && spaces.Count > 0)
+        {
+            var near = new HashSet<int>((d["near_median_ranks"] as JsonArray ?? new JsonArray()).Select(n => n!.GetValue<int>()));
+            o.WriteLine($"{indent}spaces (m2, largest first; * = nearest the median):");
+            foreach (JsonNode? sp in spaces)
+            {
+                int rank = sp!["rank"]!.GetValue<int>();
+                o.WriteLine($"{indent}  #{rank}{(near.Contains(rank) ? "*" : string.Empty)} {sp["area"]?.ToJsonString()} {S(sp, "side")} at {sp["pos"]?.ToJsonString()} (floor {sp["min"]?.ToJsonString()} to {sp["max"]?.ToJsonString()}){(S(sp, "archetype") is { } arch ? " " + arch : string.Empty)}");
+            }
+
+            if (B(d, "truncated"))
+            {
+                o.WriteLine($"{indent}  ... ({I(d, "counted")} counted; --json lists the first 80)");
+            }
+        }
+
+        if (d["bins"] is JsonArray bins)
+        {
+            string Row(JsonNode b) => $"y {b["y_from"]?.ToJsonString()} to {b["y_to"]?.ToJsonString()}: {b["area"]?.ToJsonString()} m2";
+            o.WriteLine($"{indent}classes:  {string.Join(", ", bins.Select(b => Row(b!)))}");
+            if (d["near_misses"] is JsonArray near && near.Count > 0)
+            {
+                o.WriteLine($"{indent}short:    {string.Join(", ", near.Select(b => Row(b!)))} (each needs {d["min_area_m2"]?.ToJsonString()} m2)");
+            }
         }
     }
 

@@ -166,7 +166,7 @@ internal static class SpatialFixtures
         kit.bridge{name = 'road', from = {-16, 12.125, -8}, to = {16, 12.125, -8}, width = 8, style = 'truss', landmark = false}
         level.brush{pos = {0, 12.175, -8.55}, size = {32, 0.1, 0.1}, detail = true}
         level.brush{pos = {0, 12.175, -7.45}, size = {32, 0.1, 0.1}, detail = true}
-        kit.bridge{name = 'foot', from = {-30, 12.125, 10}, to = {30, 12.125, 10}, width = 3, style = 'plank', landmark = false}
+        kit.bridge{name = 'foot', from = {-30, 12.125, 10}, to = {30, 12.125, 10}, width = 3, style = 'plank', landmark = false, purpose = 'report'}
         for _, x in ipairs({-23.25, 23.25}) do
           for _, z in ipairs({7, 13}) do kit.platform{name = 'wall' .. x .. z, pos = {x, 0, z}, size = {13.5, 1}, height = 16} end
         end
@@ -180,6 +180,53 @@ internal static class SpatialFixtures
 
         local nook = kit.room{name = 'nook', pos = {-36, 0, 26}, size = {6, 4, 6}}
         kit.corridor{a = nook, b = yard, width = 3, height = 4}
+        """;
+
+    /// <summary>A 60 m kit.canyon gorge open to the sky through show_sky tops (no ceiling missing: the level stays sealed).</summary>
+    public const string Canyon = """
+        kit.canyon{name = 'gorge', path = { {0, 0, -30}, {0, 0, 30} }, width = 16, height = 16}
+        for _, z in ipairs({ -20, -5, 10, 25 }) do level.place{kind = 'respawn', pos = {0, 0, z}} end
+        """;
+
+    /// <summary>
+    /// A hall with a gallery 4 m up: stairs up to the gallery (a route) and stairs built against the hall's end wall
+    /// with nothing beyond their top (purpose off, so the kit builds them): a flight that serves no route.
+    /// </summary>
+    public const string Flights = """
+        local h = kit.room{name = 'h', pos = {0, 0, 0}, size = {40, 10, 24}}
+        kit.platform{name = 'gallery', pos = {0, 0, 8}, size = {40, 8}, height = 4}
+        kit.stairs{name = 'up', pos = {-10, 0, -4}, dir = '+z', rise = 4, width = 3}
+        kit.stairs{name = 'wallward', pos = {10, 0, -3}, dir = '-z', rise = 4, width = 3, purpose = 'off'}
+        for _, x in ipairs({ -16, -4, 4, 16 }) do level.place{kind = 'respawn', pos = {x, 0, 0}} end
+        level.place{kind = 'respawn', pos = {0, 4, 8}}
+        """;
+
+    /// <summary>
+    /// A raised floor 4 m up around a 16 x 10 m pit, a plank bridge across the pit and two stairs down into it from the
+    /// floor the bridge joins (purpose off): the pit is a dead end in the bridge's gap, so both flights serve no route.
+    /// </summary>
+    public const string PitBridge = """
+        kit.room{name = 'h', pos = {0, 0, 0}, size = {40, 12, 24}}
+        kit.platform{name = 'west', pos = {-14, 0, 0}, size = {12, 24}, height = 4}
+        kit.platform{name = 'east', pos = {14, 0, 0}, size = {12, 24}, height = 4}
+        kit.platform{name = 'north', pos = {0, 0, 8.5}, size = {16, 7}, height = 4}
+        kit.platform{name = 'south', pos = {0, 0, -8.5}, size = {16, 7}, height = 4}
+        kit.stairs{name = 'pit_e', pos = {0, 0, -4}, dir = '+x', rise = 4, width = 2, purpose = 'off'}
+        kit.stairs{name = 'pit_w', pos = {0, 0, 4}, dir = '-x', rise = 4, width = 2, purpose = 'off'}
+        kit.bridge{name = 'span', from = {-10, 4.125, 0}, to = {10, 4.125, 0}, width = 3, style = 'plank', landmark = false, purpose = 'off'}
+        for _, p in ipairs({ {-14, 4, 0}, {14, 4, 0}, {0, 4, 9}, {0, 4, -9} }) do level.place{kind = 'respawn', pos = p} end
+        """;
+
+    /// <summary>
+    /// Two rooms on floors 1 m apart joined only by a corridor whose two halves meet in a 1 m step: a route ledge (the
+    /// route between the rooms makes players hop).
+    /// </summary>
+    public const string Ledge = """
+        local a = kit.room{name = 'a', pos = {0, 0, 0}, size = {16, 6, 16}}
+        local b = kit.room{name = 'b', pos = {33, 1, 0}, size = {16, 6, 16}}
+        kit.corridor{name = 'low', width = 3, path = { {8, 0, 0}, {20, 0, 0} }}
+        kit.corridor{name = 'high', width = 3, path = { {20, 1, 0}, {25, 1, 0} }}
+        for _, p in ipairs({ {-4, 0, -4}, {4, 0, 4}, {29, 1, -4}, {37, 1, 4} }) do level.place{kind = 'respawn', pos = p} end
         """;
 
     /// <summary>The fixture's kit script plus spawns in each named room (fixtures without explicit spawns).</summary>
@@ -198,6 +245,10 @@ internal static class SpatialFixtures
         "standable" => Standable + "\n" + Populate("h", 3),
         "standable_cover" => Standable + "\n" + Populate("h", 3) + "kit.platform{name = 'block', pos = {12, 0, -10}, size = {1.5, 1.5}, height = 1.6}\n",
         "cartbridge" => CartBridge,
+        "canyon" => Canyon,
+        "flights" => Flights,
+        "pit_bridge" => PitBridge,
+        "ledge" => Ledge,
         _ => throw new ArgumentException(name),
     };
 

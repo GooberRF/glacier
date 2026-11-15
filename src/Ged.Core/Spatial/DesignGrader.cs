@@ -181,7 +181,7 @@ public static class DesignGrader
                 }
             }
 
-            failures.Add(new JsonObject
+            var failure = new JsonObject
             {
                 ["id"] = id,
                 ["group"] = check["group"]?.GetValue<string>(),
@@ -192,7 +192,15 @@ public static class DesignGrader
                 ["values"] = values,
                 ["fix"] = check["fix"]?.GetValue<string>(),
                 ["locations"] = locations,
-            });
+            };
+            if (check["explain"]?.GetValue<string>() is { } explain)
+            {
+                // The distribution behind the number (every space the median counts, the floor-height bins), so the fix
+                // can be steered: which spaces sit either side of the limit, which bins are short of a class.
+                failure["detail"] = analysis.Detail(explain, LimitOf(rule!, check["explain_metric"]?.GetValue<string>()));
+            }
+
+            failures.Add(failure);
         }
 
         JsonObject verdictDoc = Table["verdict"]!.AsObject();
@@ -222,7 +230,7 @@ public static class DesignGrader
             ["not_applicable"] = notApplicable,
             ["targets"] = Targets(playerClass, cls),
             ["targets_basis"] = cls == "payload" ? $"payload (playable_area, area_per_spawn); player class {playerClass} (the rest)" : $"player class {playerClass}",
-            ["advisories"] = Advisories(metrics, playerClass, cls),
+            ["advisories"] = WithDetails(Advisories(metrics, playerClass, cls), analysis),
             ["advisory_rule"] = Table["players"]?["advisory"]?.DeepClone(),
             ["set_pieces"] = new JsonObject
             {
@@ -311,6 +319,67 @@ public static class DesignGrader
 
         return list;
     }
+
+    /// <summary>The advisory metrics that carry a detail (the distribution behind the number), by detail kind.</summary>
+    private static readonly Dictionary<string, string> AdvisoryDetails = new(StringComparer.Ordinal) { ["floor_height_classes"] = "floor_height_classes" };
+
+    /// <summary>Adds the detail of each advisory that has one (the floor-height bins: which count, which are short).</summary>
+    private static JsonArray WithDetails(JsonArray advisories, SpatialAnalysis analysis)
+    {
+        foreach (JsonNode? a in advisories)
+        {
+            if (a?["metric"]?.GetValue<string>() is { } metric && AdvisoryDetails.TryGetValue(metric, out string? kind))
+            {
+                a["detail"] = analysis.Detail(kind);
+            }
+        }
+
+        return advisories;
+    }
+
+    /// <summary>The upper limit a rule puts on <paramref name="metric"/> (its first <c>max</c>), or null.</summary>
+    private static double? LimitOf(JsonNode rule, string? metric)
+    {
+        if (metric is null)
+        {
+            return null;
+        }
+
+        if (rule is JsonObject o)
+        {
+            if (o["metric"]?.GetValue<string>() == metric && o["max"] is JsonNode max)
+            {
+                return max.GetValue<double>();
+            }
+
+            foreach (KeyValuePair<string, JsonNode?> kv in o)
+            {
+                if (kv.Value is JsonObject or JsonArray && LimitOf(kv.Value, metric) is double d)
+                {
+                    return d;
+                }
+            }
+        }
+        else if (rule is JsonArray arr)
+        {
+            foreach (JsonNode? x in arr)
+            {
+                if (x is not null && LimitOf(x, metric) is double d)
+                {
+                    return d;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True for a check of the exemplar study's grader (research/exemplar-study/data/grader.json); the function checks
+    /// (G27-G32, <c>"study": false</c>) came later and are calibrated by the purpose calibration gate instead.
+    /// </summary>
+    public static bool IsStudyCheck(string id) =>
+        Table["checks"]!.AsArray().FirstOrDefault(c => c!["id"]!.GetValue<string>() == id) is not JsonObject c || c["study"]?.GetValue<bool>() != false;
 
     /// <summary>The ids of the checks that fail (table order), for calibration.</summary>
     public static List<string> FailedIds(JsonObject grade) =>

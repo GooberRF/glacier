@@ -743,7 +743,18 @@
         edge (<code>"top"</code> hangs it from the highest; an edge number or <code>"+x"</code> … <code>"-z"</code>
         picks another), <code>face:wrap_from(other_face)</code> continues a neighbouring face's texture around
         the corner, and <code>brush:fit_faces()</code> fits one texture repeat to every face of a crate, panel or
-        door however it is rotated (<code>fit_faces{axes = "v"}</code> fits only the height, for a trim strip).</li>
+        door however it is rotated (<code>fit_faces{axes = "v"}</code> fits only the height, for a trim strip).
+        <code>level.uv_align{}</code> lines up the textures of every brush (or <code>brushes =</code> a list or query,
+        or <code>selection = true</code>) the way a mapper does by hand, as one undo step: floors and ceilings share one
+        map, wall textures stand on the floor line, wrap around corners and fit their height to whole repeats, ramps
+        and rock map at true length with the texture folded across every edge, and no wall reads mirrored; faces already
+        fitted to whole tiles are kept. Beams, posts, pilasters and rails get a girder or trim texture laid along their
+        length, as stock levels do, with no repeat across a narrow face; ones already textured that way (library
+        modules) keep their mapping. <code>catalog.texture_info(name).grain</code> tells which way a texture's features
+        run. It never runs on a level by itself. <code>level.uv_report{}</code> measures the
+        same things without changing anything and lists the worst places (mirrored walls, broken seams, stretched
+        slopes, girder textures stacked across a post) with their positions; AI assistants have both in the <code>align_textures</code> tool
+        (<code>report = true</code> only measures).</li>
         <li><strong>Objects.</strong> <code>level.place{kind = "item", class = "Medical Kit", pos = {0, 0.5, 4}}</code>
         places any placeable kind with a name, rotation (<code>yaw</code> or <code>rot = {yaw, pitch, roll}</code>),
         properties and links in one call. Every object, brush and mover reads and writes its
@@ -784,7 +795,12 @@
       Console) and returns it. Glacier ships the
       <strong>design kit</strong>; your own modules go in the scripts library's <code>lib\</code> folder
       as <code>&lt;name&gt;.lua</code> (module files are libraries, so they do not appear in the Scripts
-      menu). A module runs in the same sandbox, limits and undo step as the script that imports it.</p>
+      menu). A script run from a file with <code>glacier-cli run</code> (or the MCP <code>run_lua</code>
+      tool's <code>file</code>) can also import the <code>.lua</code> files beside it that it names with a
+      literal string, such as <code>ged.import("graph")</code>: that folder only, never a sub-folder or a
+      parent, and the modules travel with the run, so a run sent to the editor works the same. Scripts
+      run from the Script Editor import from <code>lib\</code> only. A module runs in the same sandbox,
+      limits and undo step as the script that imports it.</p>
 <pre><code>local kit = ged.import("kit")
 local hall  = kit.room{ name = "hall",  pos = {0, 0, 0},  size = {16, 6, 16} }
 local annex = kit.room{ name = "annex", pos = {15, 0, 0}, size = {12, 6, 12} }
@@ -813,7 +829,10 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
         every 4 m, a 128 px one every 2 m. Rock is mapped the same way. Without an RF install mounted every
         texture counts as 256 px (one repeat per 4 m). Change <code>kit.defaults.ppm</code>, or set it to
         <code>nil</code> to tile every texture at <code>kit.defaults.tile_metres</code>. Kit stairs start
-        each tread's texture at its nosing, and ramps run theirs up the slope without stretching.</li>
+        each tread's texture at its nosing, and ramps run theirs up the slope without stretching. Every kit part's
+        textures are then lined up as <code>level.uv_align</code> does, and <code>kit.build_layout</code> lines up the
+        whole layout at the end so textures continue from one part into the next; set
+        <code>kit.defaults.uv_align = false</code> to keep the plain box map.</li>
         <li><strong>Palettes and trims.</strong> <code>kit.palette{theme = "industrial"}</code> (also
         <code>"bunker"</code>, <code>"admin"</code>, <code>"cave"</code>, <code>"marsbase"</code>) returns a
         coherent set of stock textures for a zone; pass its <code>textures</code> to <code>kit.room</code>,
@@ -901,8 +920,8 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
           <tr><td><code>summary &lt;level&gt;</code></td><td>A structured level summary (<code>--detail brief|normal|full</code>): bounds, brushes, objects, links, rooms, lint counts and tags.</td></tr>
           <tr><td><code>analyze &lt;level&gt;</code></td><td>Measures the level from its compiled geometry (floor area, headroom, corridor and doorway sizes, stairs, room graph, lighting, spawn and item spacing) without opening it for editing.</td></tr>
           <tr><td><code>norms</code></td><td>The corpus norms built into Glacier: how released levels are typically proportioned (doorway and corridor widths and heights, headroom, light density, texture tiling), as percentiles over many levels, aggregates only. <code>--metric opening.width</code> shows one measurement per group of levels (a curated reference set, all levels, deathmatch, CTF, single-player, …); <code>--compare &lt;level&gt;</code> shows where a level sits (below, within or above the typical range). The design kit's default sizes follow the reference set, and the linter adds info hints (never errors) when a level falls outside the typical range. Needs no level except with <code>--compare</code>.</td></tr>
-          <tr><td><code>grade &lt;level&gt;</code></td><td>The design grader: measures the level and checks its scale, shape, flow (loops, chokepoints, dead ends), population (items, dressing, spawns, cover, sightlines) and texturing against limits calibrated on well-regarded levels, with CTF, King of the Hill and Payload rules and their own limits for open-air / floating-platform maps. Prints the verdict — <em>PASS</em> (at most 2 failing checks), <em>REVIEW</em> (3–4) or <em>FAIL</em> (5 or more, or a hard check) — and each failing check with the measured values, a fix hint and the places to act on, followed by the player-class targets as <em>advisories</em> (playable area, floor per spawn, loops, floor-height classes: below, within or above the range of well-regarded levels — a Payload map takes the Payload layout budget for playable area and floor per spawn; never counted in the verdict) and the set pieces (the landmark bridge with its span, gap, depth and width, the longest span, the tallest landmark and atrium) (<code>--gametype</code>, <code>--players</code>, <code>--json</code>; <code>--metrics</code> adds the whole metric table; <code>--fail-on review|fail</code> exits 6). Read-only; a level with missing or out-of-date geometry is measured on a private preview build.</td></tr>
-          <tr><td><code>spatial &lt;op&gt; &lt;level&gt;</code></td><td>Spatial queries on the compiled geometry: <code>raycast</code>, <code>los</code>, <code>point_info</code>, <code>clearance</code>, <code>walk</code> (floor reachable on foot, by lift, jump pad or teleport; spawns and items off the floor), <code>routes</code>, <code>graph</code> (loops, chokepoints, pockets), <code>sightlines</code>, <code>cover</code>, <code>cells</code>, <code>area_report</code>, <code>spawn_report</code>, <code>item_report</code>, <code>locations</code> and <code>setpieces</code> (bridges with their span — the deck end to end — width, free length over the gap and its depth; walkways that are not bridges, with the reason; free-standing landmarks with their height; atria; the largest spaces; <code>--max</code> caps each list). Every result says which build it measured. The same queries are the Lua <code>spatial</code> global and the MCP tool <code>spatial_query</code>.</td></tr>
+          <tr><td><code>grade &lt;level&gt;</code></td><td>The design grader: measures the level and checks its scale, shape, flow (loops, chokepoints, dead ends), population (items, dressing, spawns, cover, sightlines) and texturing against limits calibrated on well-regarded levels, with CTF, King of the Hill and Payload rules and their own limits for open-air / floating-platform maps. Prints the verdict — <em>PASS</em> (at most 2 failing checks), <em>REVIEW</em> (3–4) or <em>FAIL</em> (5 or more, or a hard check) — and each failing check with the measured values, a fix hint and the places to act on, followed by the player-class targets as <em>advisories</em> (playable area, floor per spawn, loops, floor-height classes: below, within or above the range of well-regarded levels — a Payload map takes the Payload layout budget for playable area and floor per spawn; never counted in the verdict) and the set pieces (the landmark bridge with its span, gap, depth and width, the longest span, the tallest landmark and atrium). A failing median-space check lists every space it counts with its area and location and how many more small spaces the median needs; the floor-height classes (floor binned by height in 0.5 m steps, a bin counting once it holds 2% of the playable floor) list the bins that count and the ones short of counting; Payload spawn safety counts only the spawn pairs live in the same checkpoint stage (<code>--gametype</code>, <code>--players</code>, <code>--json</code>; <code>--metrics</code> adds the whole metric table; <code>--fail-on review|fail</code> exits 6). Read-only; a level with missing or out-of-date geometry is measured on a private preview build.</td></tr>
+          <tr><td><code>spatial &lt;op&gt; &lt;level&gt;</code></td><td>Spatial queries on the compiled geometry: <code>raycast</code>, <code>los</code>, <code>point_info</code>, <code>clearance</code>, <code>walk</code> (floor reachable on foot, by lift, jump pad or teleport; spawns and items off the floor), <code>routes</code>, <code>graph</code> (loops, chokepoints, pockets), <code>sightlines</code>, <code>cover</code>, <code>cells</code>, <code>area_report</code> (its sky share, <code>outdoor_fraction</code>, counts floor under sky faces as sky), <code>spawn_report</code>, <code>item_report</code>, <code>locations</code>, <code>purpose</code> (the function checks: every bridge with the route it serves or why it serves none, rock props that do not fit their space, free-standing cover with no sightline to break, and how visible each landmark is) and <code>setpieces</code> (bridges with their span — the deck end to end — width, free length over the gap and its depth; walkways that are not bridges, with the reason; free-standing landmarks with their height; atria; the largest spaces; <code>--max</code> caps each list). Every result says which build it measured. The same queries are the Lua <code>spatial</code> global and the MCP tool <code>spatial_query</code>.</td></tr>
           <tr><td><code>save &lt;level&gt;</code></td><td>Saves with the editor's save rules (<code>--out &lt;path&gt;</code> to save a copy). A level whose geometry is missing or out of date is built first (sealed, unlit), because the game cannot load a level with brushes and no compiled geometry; <code>--no-build</code> skips that with a warning. <code>run --save</code> does the same. Every save also writes the
             level's sidecar (see below).</td></tr>
           <tr><td><code>open &lt;level&gt; --attach</code></td><td>Opens a level in the running editor.</td></tr>
@@ -920,6 +939,9 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
           <tr><td><code>render &lt;level&gt; --out &lt;image.png&gt;</code></td><td>Draws the level to a PNG — by default a
             floor plan of one storey with a metric grid, scale bar, object symbols, UID labels, links and a legend — so you
             (or an AI agent) can check the layout. See <a href="#cli-render">Rendering images</a>.</td></tr>
+          <tr><td><code>ref add|view|list|camera|compare|scale</code></td><td>Matches the level to reference
+            screenshots (concept art): registers a crop of a concept image, gives it a matched camera, and renders the
+            level from that camera beside it. See <a href="#cli-reference">Matching reference screenshots</a>.</td></tr>
         </tbody>
       </table></div>
       <ul>
@@ -974,7 +996,10 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
           <tr><td><code>--view top|bottom|front|back|left|right</code></td><td>An orthographic view of the whole level (no slicing).</td></tr>
           <tr><td><code>--view iso</code></td><td>A three-quarter perspective from above (<code>--fov</code>, default 45°), framed on the level's geometry
             (its sky room left out).</td></tr>
-          <tr><td><code>--camera x,y,z --look x,y,z</code></td><td>A perspective view from any point (<code>--fov</code>, default 60°). Show-sky faces
+          <tr><td><code>--camera x,y,z --look x,y,z</code></td><td>A perspective view from any point (<code>--fov</code>, the vertical
+            field of view, default 60°; or <code>--hfov</code>, the horizontal one, such as Red Faction's 90°, at any image size).
+            <code>--eye-height &lt;m&gt;</code> (or <code>eye</code> 1.7, <code>crouch</code> 1.1, <code>jump</code> 3) stands the camera that
+            high above the highest floor at or below the camera point, keeping the pitch. Show-sky faces
             show the level's sky room as the game draws it — from the sky room's centre, turned with the camera — or a
             plain sky colour when the level has no sky room.</td></tr>
           <tr><td><code>--region minx,miny,minz,maxx,maxy,maxz</code>, <code>--room &lt;index&gt;</code>, <code>--uid &lt;uid&gt;</code></td><td>Frame a box, a compiled room, or one object / brush instead of the whole level. A plan of a region frames the
@@ -1004,8 +1029,111 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
       camera's view-projection matrix for perspective views). Rendering needs a graphics device:
       Direct3D 11 (or its software fallback) on Windows, OpenGL 3.3 on Linux; without one the command
       fails with exit code 1.</p>
+      <h4 id="cli-reference">Matching reference screenshots</h4>
+      <p>When a level is built from concept art, <code>glacier-cli ref</code> compares the level with each
+      screenshot from a matching camera, so you (or an AI agent) can see exactly where the build differs. The
+      references live in a folder of your choosing (<code>--refs &lt;dir&gt;</code>: one PNG per reference plus
+      <code>references.json</code>); the level itself is never changed. The same operations are the MCP tools
+      <code>reference_view</code>, <code>reference_edit</code> and <code>reference_compare</code>, and the scale
+      table is the MCP resource <code>glacier://reference/scale</code>.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>ref view &lt;image&gt; --out &lt;png&gt;</code></td><td>The concept image with a labelled grid in its own
+            pixels, to read a screenshot's rectangle; with <code>--crop x,y,w,h</code> it zooms on the crop
+            (and <code>--snap</code> shows it snapped onto the panel's frame).</td></tr>
+          <tr><td><code>ref add &lt;image&gt; --id &lt;id&gt;</code></td><td>Stores a crop (<code>--crop</code>, <code>--snap</code>) as a
+            reference with the area it shows (<code>--area</code>) and notes (<code>--notes</code>); <code>--replace</code>
+            overwrites one with the same id.</td></tr>
+          <tr><td><code>ref view &lt;id&gt; --out &lt;png&gt;</code></td><td>The stored reference enlarged with a grid in fractions
+            (0–1 from the top-left) and its marks.</td></tr>
+          <tr><td><code>ref camera &lt;id&gt;</code></td><td>Sets the matched camera: <code>--camera</code> and <code>--look</code> (or
+            <code>--heading</code> / <code>--pitch</code>), <code>--hfov</code> (default 90°), <code>--eye-height</code>, and
+            nudges in the camera's own frame (<code>--move forward,right,up</code> metres, <code>--turn heading,pitch</code>
+            degrees). Marks on the picture give an estimate: <code>--horizon</code> the pitch and roll, <code>--vp</code> (with
+            <code>--vp-dir</code>, the lines' direction in the level) the heading, <code>--object x,base,top,metres</code> (a
+            thing of known height on the floor) the eye height and its distance, and <code>--measure</code> heights in metres;
+            <code>--apply-estimate</code> puts them on the camera. <code>--ignore x,y,w,h</code> leaves a first-person weapon or
+            caption out of the comparison.</td></tr>
+          <tr><td><code>ref compare &lt;id&gt; &lt;level&gt; --out &lt;png&gt;</code></td><td>Renders the level from the reference's camera
+            (headless, or the editor's level with <code>--attach</code>) at the reference's aspect and field of view and
+            writes one sheet: reference and render side by side, a 50/50 blend, and an edge overlay (orange reference, cyan
+            render, white both, with each picture's skyline), all on one grid with both horizons. <code>--json</code> adds
+            detail density, plain top, skyline, brightness, colour warmth, the horizons and the edge overlap, with hints to
+            check by eye. Camera options here are one-off and not saved.</td></tr>
+          <tr><td><code>ref list</code></td><td>The references with their areas, cameras and marks.</td></tr>
+          <tr><td><code>ref scale [&lt;count&gt; &lt;unit&gt;]</code></td><td>Known sizes measured on the stock levels — a door panel
+            2.5 m tall and 2 m wide, a doorway 2.25 m wide, a corridor 4.75 m wide and 4.5 m high, a room 5 m high, a stair
+            step 0.25 by 0.75 m, a player about 1.8 m with the eye at 1.7 m, a 1.33 m jump — and a count converted to metres
+            (<code>ref scale 3 door_height</code> is 7.5 m).</td></tr>
+        </tbody>
+      </table></div>
+      <p>A value that starts with a minus sign is written with an equals sign, for example
+      <code>--camera=-136,1.7,-146</code>. The numbers are hints, not a score: concept art never matches a game
+      render pixel for pixel, so judge the sheet by eye.</p>
       <div class="note">On Linux, <code>glacier-cli</code> is included in the tar.gz package (the
       AppImage starts the editor).</div>
+      <h3 id="cli-modules">The module library (glacier-cli modules)</h3>
+      <p>A <strong>module</strong> is a small hand-built assembly — a pilaster, a base trim, a door frame, a
+      ceiling beam or truss, a railing, a pipe, a machine, a rock formation — saved as a group file with a
+      description of how it attaches and how it may stretch. The design kit's detailing functions
+      (<code>kit.wall_detail</code>, <code>kit.frame_opening</code>, <code>kit.ceiling_detail</code>,
+      <code>kit.detail</code> and the others) build with modules from a <strong>module library</strong>.</p>
+      <p><code>glacier-cli modules harvest</code> builds the library from levels you choose. It reads each
+      level (loose <code>.rfl</code> files, and the levels inside <code>.vpp</code> packfiles) without
+      changing it, finds the detail that recurs, merges near-identical copies, and writes one
+      <code>.rfg</code> group file per module — it opens in the editor like any saved group —
+      plus an <code>index.json</code> per source group that lists each module's category, role, attachment,
+      stretch and repeat axes, style, textures, size, and the level and position it came from.</p>
+      <pre>glacier-cli modules harvest --rf-dir "C:\Games\RedFaction"
+glacier-cli modules harvest mylevel.rfl --group mine --out library\modules
+glacier-cli modules stats
+glacier-cli modules list --category pilaster --style bunker --limit 10
+glacier-cli modules show pilaster_04f7c88b
+glacier-cli modules sheet --rf-dir "C:\Games\RedFaction" --out modulesheet</pre>
+      <div class="tablewrap"><table>
+        <tbody>
+          <tr><td><code>harvest</code></td><td>Without a file, harvests every source in the manifest
+            <code>library\sources.json</code> (folders, file patterns, a group name for each, and packfiles to
+            mount together). With a level or packfile, harvests just that into <code>--group</code>.
+            <code>--out</code> names the library folder; it may not be, contain, or lie inside a source folder.
+            The same sources always produce the same files.</td></tr>
+          <tr><td><code>list</code>, <code>show</code>, <code>stats</code></td><td>Browse the library:
+            filter by <code>--category</code>, <code>--attach</code>, <code>--role</code>, <code>--style</code>
+            or <code>--group</code>; <code>show &lt;id&gt;</code> prints one module in full;
+            <code>stats</code> counts modules by category, style and group, and your curation (kept,
+            rejected, relabelled, undecided). <code>list --include-rejected</code> also lists the modules you
+            rejected. Add <code>--json</code> for machine-readable output.</td></tr>
+          <tr><td><code>sheet</code></td><td>Draws every selected module on its own — lit, in a three-quarter
+            view, against a plain grey floor and the wall it mounts on — to <code>&lt;out&gt;\thumbs\&lt;id&gt;.png</code>
+            and writes <code>&lt;out&gt;\index.html</code>, a contact sheet you open in a web browser. The best
+            <code>--top</code> modules of each category are shown (24 by default; <code>--group</code>,
+            <code>--category</code> and <code>--style</code> narrow the selection, <code>--size</code> sets the
+            thumbnail size in pixels). Modules with textures from a level's own packfile are drawn with them
+            when that packfile is still where it was harvested from. A card warns when a module would not
+            show where it is placed (it lies behind its wall, or its brushes face inward).</td></tr>
+        </tbody>
+      </table></div>
+      <p><strong>Curating the library.</strong> The harvest sorts modules by rule, so some land in the wrong
+      category or are not worth keeping. Open the sheet's <code>index.html</code> and, for each card, choose
+      <strong>Keep</strong> or <strong>Reject</strong> (or press <kbd>K</kbd>, <kbd>R</kbd> or <kbd>U</kbd> with the
+      mouse over it), correct its category, role or styles, and add a note. Filters at the top show one group,
+      category or style, or only the cards you have not decided yet. Your choices are kept in the browser until
+      you click <strong>Download curation.json</strong>; save the file as <code>library\modules\curation.json</code>
+      (the download already includes everything the previous file held). Glacier applies it whenever the library
+      loads: rejected modules are no longer offered to scripts, the design kit or the module tools, a corrected
+      category, role or style replaces the harvested one, and kept modules are preferred (they rank 0.5 above
+      their harvest score). A harvest never changes <code>curation.json</code>; it reports entries that name
+      modules the new harvest no longer produced. Entries with an unknown id or value are skipped with a
+      warning.</p>
+      <p><strong>Where the library lives.</strong> Glacier looks for it in this order: the folder given with
+      <code>--modules</code> (the <code>modules</code> commands) or the <code>GED_MODULE_LIBRARY</code> environment variable
+      (every command, scripts and the editor); then
+      <code>library\modules</code> beside the program; then <code>library\modules</code> in the folder that
+      holds <code>Glacier.sln</code> when running from a source checkout. With no library the detailing
+      functions still work: they build simpler parts of their own and say so in their result
+      (<code>fallback = true</code>). Modules that use textures from a level's own packfile are only
+      offered when those textures are available to the level being built.</p>
     </section>
 
     <!-- 13 -->
@@ -1145,6 +1273,18 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
 level.objects_tagged("ai.session"):select()        -- every object an agent created
 level.brushes_tagged("kit.name", "hall"):select()  -- the parts of the room named "hall"</code></pre>
       <p>Tags are saved with the level and do nothing in the game.</p>
+      <p>Everything the kit places for a reason also carries <code>kit.role</code> — <code>cover</code>,
+      <code>route</code>, <code>landmark</code>, <code>theme_detail</code> or <code>fixture</code> — and
+      <code>kit.purpose</code>, a sentence saying what it serves: the sightline a cover cluster breaks, the
+      places a bridge joins, what can see a landmark, the theme and space a prop dresses.
+      <code>kit.roles{}</code> lists them, and <code>level.brushes_tagged("kit.role", "cover"):select()</code>
+      selects all the cover. The kit refuses elements without a purpose — a bridge whose ends are already
+      joined by the floor below, stairs or another crossing, a landmark nothing can see, boulders on a built
+      room's floor, a flight of stairs that climbs into a wall, onto a box or beside another way up to the same
+      floor — and the design grader's function checks (G27–G31) find such elements in any level: bridges that serve
+      no route, misplaced rocks, cover with nothing to break, stairs that lead into a wall, onto nothing or down into
+      a dead-end pit under a bridge, and doorways or corridors where the route between two floors makes players hop a
+      step instead of walking a ramp or stairs.</p>
 
       <h3 id="ai-organic">Caves, canyons and rocks</h3>
       <p>Besides rooms on a grid, the design kit builds natural spaces along a floor path on any
@@ -1189,6 +1329,23 @@ level.brushes_tagged("kit.name", "hall"):select()  -- the parts of the room name
         8 players about 3,300–4,900 m²; 16 players up to about 6,400 m². CTF and King of the Hill maps are
         larger, and Payload maps are three to five legs long. A Payload cart route can run and turn on any
         heading and cross a chasm on a cart bridge.</li>
+        <li><strong>Composed like a building.</strong> Rooms of very different sizes share walls, wings
+        stand at an angle, corridors bend and odd-shaped rooms fill the corners between them. CTF halves
+        mirror each other, a King of the Hill hill sits inside a ring of rooms, a Payload track turns a
+        corner inside a yard and bends between its legs, and open-air platforms stand at free angles round
+        a central one.</li>
+        <li><strong>From a sketch.</strong> An agent can also trace a sketch or concept image into the same
+        plan: each area becomes an outline in metres and each connection follows the sketch's bends; the
+        plan is then checked and built the same way. Keep a traced plan within about 450 m of the level's
+        origin, where angled geometry builds watertight.</li>
+        <li><strong>Finished like a mapper's rooms.</strong> Once the geometry stands, every area is
+        detailed by default from its kind and texture palette: pilasters and trims along the long walls, frames
+        round the doorways, beams under roofed ceilings (never under open sky), railings along gallery edges,
+        raised floors and bridge decks that drop away, handrails on stairs, and rock formations in cave areas —
+        taken from the module library when it is installed, otherwise built from plain stock-textured parts,
+        and kept clear of doorways, routes, stairs, spawns and the Payload cart's track. A pit room is a deep
+        chasm crossed by its bridge, with no stairs down into it. The agent can turn the pass off
+        (<code>detail = false</code>) or leave out single parts.</li>
         <li><strong>Loops, not dead ends.</strong> Every area has at least two ways in and out (one small
         reward room at most), routes loop, the level spans at least three storeys, CTF bases have three
         exits on two heights with three lanes between them, a King of the Hill hill is sunken or raised

@@ -295,6 +295,18 @@ public sealed class ScriptBrushQuery
         return this;
     }
 
+    [ScriptDoc("Lines the set's textures up as level.uv_align does (groups stay inside the set) as one undo step. Returns the query.",
+        Example = "level.brushes_tagged(\"kit\"):uv_align{}", Since = 2)]
+    [ScriptOptions(nameof(ScriptOptionSets.UvAlignQuery))]
+    public ScriptBrushQuery UvAlign(ScriptArgs? options = null)
+    {
+        const string Api = "brush_query:uv_align";
+        options ??= new ScriptArgs();
+        options.RejectUnknown(Api, ScriptOptionSets.UvAlignQuery);
+        ScriptLevel.AlignBrushes(_ctx, Api, _uids, options);
+        return this;
+    }
+
     [ScriptDoc("Scales the UVs of every textured face about each face's UV centroid by (su, sv), non-zero, as one undo step. Returns the query.", Since = 2)]
     public ScriptBrushQuery ScaleUv(double su, double sv)
     {

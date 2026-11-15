@@ -41,7 +41,16 @@ public sealed partial class SpatialAnalysis
     /// <summary>One detected bridge (internal form, for metrics and tests).</summary>
     internal sealed record SetPieceBridge(
         Vec3d Centre, Vec3d From, Vec3d To, double Span, double GapWidth, double Width, double GapDepth, double DeckY,
-        bool UnderPlayable, double? SpaceBelowArea, double? SpaceBelowLength, int? RoutesBetweenEnds);
+        bool UnderPlayable, double? SpaceBelowArea, double? SpaceBelowLength, int? RoutesBetweenEnds,
+        int[]? Deck = null, int EndA = -1, int EndB = -1, DeckFrame? Frame = null);
+
+    /// <summary>A deck's plan frame: centre (Mx, Mz), axis (Ax, Az) and the free span's extent along (U) and across (V) it.</summary>
+    internal sealed record DeckFrame(double Mx, double Mz, double Ax, double Az, double U0, double U1, double V0, double V1)
+    {
+        public double U(Vec3d p) => ((p.X - Mx) * Ax) + ((p.Z - Mz) * Az);
+
+        public double V(Vec3d p) => (-(p.X - Mx) * Az) + ((p.Z - Mz) * Ax);
+    }
 
     /// <summary>The bridges E9 found, the landmark bridge first (<see cref="Significance"/>).</summary>
     internal List<SetPieceBridge> SetPieceBridges { get; } = new();
@@ -512,7 +521,7 @@ public sealed partial class SpatialAnalysis
             routes = cg.Graph.DisjointPaths(new[] { na }, new[] { nb }, 4, null).Count;
         }
 
-        return new SetPieceBridge(mid, At(s0), At(s1), span, gap, width, depth, deckY, underPlayable, belowArea, belowLen, routes);
+        return new SetPieceBridge(mid, At(s0), At(s1), span, gap, width, depth, deckY, underPlayable, belowArea, belowLen, routes, comp.ToArray(), endLo, endHi, new DeckFrame(mx, mz, ax, az, u0, u1, v0, v1));
     }
 
     /// <summary>
@@ -835,7 +844,10 @@ public sealed partial class SpatialAnalysis
         return new JsonArray(list.OrderByDescending(l => l.Height).Select(l => (JsonNode)l.Json).ToArray());
     }
 
-    /// <summary>The largest spaces: area, length and width, headroom, sky share, archetype and the floor's bounding box.</summary>
+    /// <summary>
+    /// The largest spaces: area, length and width, headroom, sky share (under open sky or a sky face), open-sky share (no
+    /// ceiling at all, the study's definition the archetype reads), archetype and the floor's bounding box.
+    /// </summary>
     private JsonArray LargestSpaces(int n)
     {
         var list = new JsonArray();
@@ -849,7 +861,8 @@ public sealed partial class SpatialAnalysis
                 ["length"] = R(sh.Length),
                 ["width"] = R(sh.Width),
                 ["headroom"] = double.IsFinite(sh.HeadroomP50) ? R(sh.HeadroomP50) : null,
-                ["sky"] = R(sh.Sky),
+                ["sky"] = R(SkyShare(m)),
+                ["open_sky"] = R(sh.Sky),
                 ["archetype"] = sh.Archetype,
                 ["min"] = P3(new Vec3d(m.Min(i => _s[i].P.X), m.Min(i => _s[i].P.Y), m.Min(i => _s[i].P.Z))),
                 ["max"] = P3(new Vec3d(m.Max(i => _s[i].P.X), m.Max(i => _s[i].P.Y), m.Max(i => _s[i].P.Z))),

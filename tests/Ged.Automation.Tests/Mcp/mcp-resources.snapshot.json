@@ -50,6 +50,13 @@
       "mimeType": "text/x-lua"
     },
     {
+      "name": "reference-scale",
+      "title": "Known sizes for reading scale",
+      "uri": "glacier://reference/scale",
+      "description": "Red Faction dimensions measured on the stock levels (door panel, doorway, corridor, room height, stair step) plus player, eye and jump heights, with ranges and sources: count them in a reference screenshot to read its scale.",
+      "mimeType": "application/json"
+    },
+    {
       "name": "norms",
       "title": "Corpus norms: metrics",
       "uri": "glacier://norms",

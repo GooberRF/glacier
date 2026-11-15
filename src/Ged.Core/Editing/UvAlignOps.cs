@@ -194,14 +194,6 @@ public static class UvAlignOps
         return bestD - worstD <= 1e-5 ? -1 : best;
     }
 
-    /// <summary>The handedness the box map gives a face with world normal <paramref name="n"/>: the sign of (∇U × ∇V)·n.</summary>
-    private static double BoxHandedness(Vec3d n)
-    {
-        (int uAxis, int vAxis) = GeometryUtil.DominantProjection(new Vec3((float)n.X, (float)n.Y, (float)n.Z));
-        Vec3d gu = Axis(uAxis), gv = Axis(vAxis).Scale(-1);
-        return Math.Sign(gu.Cross(gv).Dot(n)) is var s && s != 0 ? s : 1;
-    }
-
     private static Vec3d Axis(int a) => a switch
     {
         0 => new Vec3d(1, 0, 0),
@@ -216,8 +208,9 @@ public static class UvAlignOps
     /// the edge (the image's bottom row is on it, its top points into the face: panels on a floor line, tread
     /// plates from a stair nosing, a ramp texture running up the slope); with true it hangs from it (the image's
     /// top row on the edge: a frieze under a ceiling line, a riser read from its nosing). U is anchored in world
-    /// space (continuous along collinear edges) and keeps the box map's handedness, so the texture is not
-    /// mirrored relative to box-mapped neighbours. Scale: <paramref name="tilesPerMetreU"/> / <paramref name="tilesPerMetreV"/>
+    /// space (continuous along collinear edges), and the texture reads the right way round from the side the face is
+    /// seen (its winding normal: outward on a solid brush, into the room on an air brush), the handedness of stock RED
+    /// levels ((U × V)·normal &gt; 0, as <see cref="UvAutoAlign.UprightFrame"/>). Scale: <paramref name="tilesPerMetreU"/> / <paramref name="tilesPerMetreV"/>
     /// when given, else the face's current scale along each axis (one tile per
     /// <see cref="GeometryUtil.DefaultTileMetres"/> when its UVs are degenerate). Returns false (and leaves the face
     /// unchanged) for a degenerate face or edge.
@@ -266,7 +259,7 @@ public static class UvAlignOps
         // V grows down the image: standing on the edge, "down" points out of the face across the edge.
         Vec3d vDir = hang ? inward : inward.Scale(-1);
         Vec3d uDir = along;
-        if (Math.Sign(uDir.Cross(vDir).Dot(normal)) != BoxHandedness(normal))
+        if (uDir.Cross(vDir).Dot(normal) < 0)
         {
             uDir = uDir.Scale(-1);
         }

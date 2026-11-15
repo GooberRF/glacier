@@ -17,6 +17,7 @@ public sealed class ScriptKitCore
     private readonly ScriptContext _ctx;
     private ScriptKitProbe? _probe;
     private long[] _sigs = Array.Empty<long>();
+    private readonly Dictionary<string, int[]> _zones = new(StringComparer.Ordinal);
 
     internal ScriptKitCore(ScriptContext ctx) => _ctx = ctx;
 
@@ -104,6 +105,18 @@ public sealed class ScriptKitCore
 
         return s;
     }
+
+    /// <summary>
+    /// Limits the population spaces named <paramref name="name"/> to the floor inside these air brushes (UIDs): a
+    /// kit.build_layout zone, whose box also holds the floor of a turned or traced neighbour. kit_probe.lua registers a
+    /// zone when a population call names it.
+    /// </summary>
+    public void Zone(string name, ScriptArgs uids) =>
+        _zones[name] = uids.Items.Select(v => (int)Convert.ToDouble(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+
+    /// <summary>The node test of the space named <paramref name="name"/> (see <see cref="Zone"/>), or null for no zone.</summary>
+    internal Func<double, double, double, bool>? ZoneFilter(KitProbe probe, string name) =>
+        _zones.TryGetValue(name, out int[]? uids) ? probe.InsideAny(uids) : null;
 
     /// <summary>Plans kit.spawn_points (see kit_items.lua): positions, headings and the report.</summary>
     public Dictionary<string, object?> SpawnPlan(ScriptArgs args)
@@ -231,12 +244,15 @@ public sealed class ScriptKitProbe
         }
     }
 
-    /// <summary>The floor lattice over a box (stride 1 = full lattice with neighbour links).</summary>
-    public ScriptKitLattice Lattice(double x0, double z0, double x1, double z1, double ylo, double yhi, double headroom, int stride = 1)
+    /// <summary>
+    /// The floor lattice over a box (stride 1 = full lattice with neighbour links); zone = a registered layout zone's
+    /// name (see <see cref="ScriptKitCore.Zone"/>) keeps the nodes inside its own air brushes.
+    /// </summary>
+    public ScriptKitLattice Lattice(double x0, double z0, double x1, double z1, double ylo, double yhi, double headroom, int stride = 1, string? zone = null)
     {
         using (_core.Context.EnterHostOperation())
         {
-            return new ScriptKitLattice(_core.Context, Model.Lattice(x0, z0, x1, z1, ylo, yhi, headroom, stride));
+            return new ScriptKitLattice(_core.Context, Model.Lattice(x0, z0, x1, z1, ylo, yhi, headroom, stride, zone is null ? null : _core.ZoneFilter(Model, zone)));
         }
     }
 
@@ -422,6 +438,45 @@ public sealed class ScriptKitLattice
 
         return new ScriptKitDressSpace(Ctx, new KitDressSpace(Model, s, keep, objects, KitArgs.Num(a, "budget", 0.015)));
     }
+
+    /// <summary>
+    /// {catch_a, catch_b, detour}: the floor on each side of a crossing from node a to node b (cross metres long) that
+    /// reaches the far end at least margin sooner across it, and the walk between the ends without it (nil = none).
+    /// </summary>
+    public Dictionary<string, object?> RouteCatchment(int a, int b, double cross, double margin)
+    {
+        if (a < 1 || b < 1 || a > Model.Count || b > Model.Count)
+        {
+            throw new ScriptApiException("route_catchment: a and b must be node ids of this lattice.");
+        }
+
+        (double ca, double cb, double detour) = Model.RouteCatchment(a, b, cross, margin);
+        return new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["catch_a"] = ca, ["catch_b"] = cb, ["detour"] = double.IsFinite(detour) ? detour : null,
+        };
+    }
+
+    /// <summary>
+    /// {detour, top_area, foot_area}: for a flight from node foot up to node top, the walk between them on foot without
+    /// it (nil = none within limit metres) and the floor each end leads on to (m², at most cap).
+    /// </summary>
+    public Dictionary<string, object?> FlightRoute(int foot, int top, double limit, double cap)
+    {
+        if (foot < 1 || top < 1 || foot > Model.Count || top > Model.Count)
+        {
+            throw new ScriptApiException("flight_route: foot and top must be node ids of this lattice.");
+        }
+
+        (double detour, double topArea, double footArea) = Model.FlightRoute(foot, top, limit, cap);
+        return new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["detour"] = double.IsFinite(detour) ? detour : null, ["top_area"] = topArea, ["foot_area"] = footArea,
+        };
+    }
+
+    /// <summary>The node nearest a world point within r metres (floor up to ytol above and ytol + 1.5 below), or 0.</summary>
+    public int Nearest(double x, double y, double z, double r, double ytol) => Model.Nearest(x, y, z, r, ytol);
 
     /// <summary>The node of column (i, k) nearest height y within tol (0 = none).</summary>
     public int NodeAt(double i, double k, double y, double tol) => Model.NodeAt((long)i, (long)k, y, tol);

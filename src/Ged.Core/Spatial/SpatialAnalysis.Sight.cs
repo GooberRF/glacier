@@ -388,7 +388,7 @@ public sealed partial class SpatialAnalysis
 
     private JsonObject? _spawnReport;
 
-    /// <summary>Per playable multiplayer spawn: uid, position, nearest spawn, exposure, distance to the nearest item, visible spawns within 30 m.</summary>
+    /// <summary>Per playable multiplayer spawn: uid, position, nearest spawn, exposure, distance to the nearest item, visible spawns within 30 m (on a payload map only those live in the same checkpoint stage).</summary>
     internal List<(int Uid, Vec3d P, double Nearest, double Exposure, double ToItem, List<int> Sees)> SpawnDetails { get; } = new();
 
     private JsonObject SpawnReport()
@@ -431,6 +431,17 @@ public sealed partial class SpatialAnalysis
         var pairLos = new bool[pairList.Count];
         For(pairList.Count, k => pairLos[k] = Los(EyeOf(_w.SpawnSample[pairList[k].A]), EyeOf(_w.SpawnSample[pairList[k].B])));
         int losPairs = pairLos.Count(x => x);
+
+        // Pairs live at the same time: on a payload map a respawn a checkpoint links is live only while that checkpoint
+        // is the cart's target, so two groups of different stages never spawn together (every pair elsewhere).
+        bool staged = SpawnStages() is not null;
+        var live = new bool[pairList.Count];
+        for (int k = 0; k < pairList.Count; k++)
+        {
+            live[k] = !staged || LiveTogether(_obj.Spawns[pairList[k].A].Uid, _obj.Spawns[pairList[k].B].Uid);
+        }
+
+        int livePairs = live.Count(x => x), liveLos = Enumerable.Range(0, pairList.Count).Count(k => live[k] && pairLos[k]);
         List<List<(Vec3d Eye, Vec3d Target)>> spawnDraws = sp.Select(x => DrawExposure(_s[_w.SpawnSample[x.i]].P, SpawnExposureRadius, SpawnExposureTargets)).ToList();
         if (_o.StableSampling)
         {
@@ -446,7 +457,7 @@ public sealed partial class SpatialAnalysis
             var sees = new List<int>();
             for (int p = 0; p < pairList.Count; p++)
             {
-                if (pairLos[p] && (pairList[p].A == si || pairList[p].B == si))
+                if (pairLos[p] && live[p] && (pairList[p].A == si || pairList[p].B == si))
                 {
                     sees.Add(_obj.Spawns[pairList[p].A == si ? pairList[p].B : pairList[p].A].Uid);
                 }
@@ -460,6 +471,10 @@ public sealed partial class SpatialAnalysis
             ["count"] = sp.Count,
             ["nn"] = Dist(nn),
             ["los_pairs_within30_fraction"] = pairList.Count > 0 ? R(losPairs / (double)pairList.Count) : null,
+            ["los_pairs_within30_live_fraction"] = livePairs > 0 ? R(liveLos / (double)livePairs) : null,
+            ["pairs_within30"] = pairList.Count,
+            ["pairs_within30_live"] = livePairs,
+            ["staged"] = staged,
             ["exposure40"] = Dist(expo),
             ["to_nearest_item"] = Dist(toItem),
             ["area_per_spawn"] = sp.Count > 0 ? R(_w.PlayArea / sp.Count) : null,

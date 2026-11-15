@@ -120,6 +120,9 @@ public sealed class ScatterOptions : RockOptions
 
     /// <summary>Extra clearance between rocks, metres.</summary>
     public double Gap { get; init; } = 0.25;
+
+    /// <summary>Along a tube: the band beside the floor's edge (metres) a rock's centre stays in (the wall foot); null = anywhere outside the walkway.</summary>
+    public double? Band { get; init; }
 }
 
 /// <summary>Options of <see cref="RockGen.Pit"/>.</summary>
@@ -440,6 +443,11 @@ public static class RockGen
                 // margin), but never reaches into the guaranteed walkway.
                 double hiLat = (width / 2) - o.Margin;
                 double loLat = tube.ClearWidth > 0 ? (tube.ClearWidth / 2) + reach + 0.05 : 0;
+                if (o.Band is double band)
+                {
+                    loLat = Math.Max(loLat, hiLat - band); // rubble at the wall foot, the open middle left clear
+                }
+
                 if (hiLat < loLat)
                 {
                     continue;

@@ -12,7 +12,7 @@ namespace Ged.Core.Scripting;
 /// <see cref="EditorDocument"/>. Placement routes through the document's undoable
 /// <c>PlaceObject</c>/<c>PlaceEvent</c>; deletion collapses into one undo entry.
 /// </summary>
-public sealed class ScriptLevel
+public sealed partial class ScriptLevel
 {
     private readonly ScriptContext _ctx;
 
@@ -260,7 +260,7 @@ public sealed class ScriptLevel
 
         Vec3 pos = args.Vec(Api, "pos", Vec3.Zero);
         Mat3 rot = args.Has("rot") ? ScriptRotation.FromArgs(Api, "rot", args.Named["rot"]) : Mat3.Identity;
-        Dictionary<string, string> tags = ScriptTags.Table(Api, args.Table(Api, "tags"));
+        Dictionary<string, string> tags = ScriptTags.TableWithName(Api, args);
         int uid = _ctx.Brushes.CreateBrush(p, pos, rot);
         _ctx.NoteCreated(uid);
         _ctx.Changes.Record("placed");
@@ -400,7 +400,7 @@ public sealed class ScriptLevel
         args.RejectUnknown(ScriptOptionSets.BrushFromPoints);
         Editing.Organic.HullBrushParams p = HullParams(Api, args);
         List<Editing.Organic.Vec3d> points = HullPoints(Api, "'points'", null, args.Named.TryGetValue("points", out object? raw) ? raw : null);
-        Dictionary<string, string> tags = ScriptTags.Table(Api, args.Table(Api, "tags"));
+        Dictionary<string, string> tags = ScriptTags.TableWithName(Api, args);
         Brush brush = BuildHull(Api, null, points, p);
 
         brush.Uid = _ctx.Document.AllocateUid();
@@ -433,7 +433,7 @@ public sealed class ScriptLevel
                 "Each entry is a list of 4 to 256 points, e.g. hulls = {{{0,0,0}, {4,0,0}, {0,0,4}, {2,3,2}}}.");
         }
 
-        Dictionary<string, string> tags = ScriptTags.Table(Api, args.Table(Api, "tags"));
+        Dictionary<string, string> tags = ScriptTags.TableWithName(Api, args);
 
         // Validate every point list, check the call's hull-building budget, then build every hull before
         // anything is added (all-or-nothing, P6).

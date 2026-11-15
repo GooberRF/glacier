@@ -113,7 +113,7 @@ public sealed class UvAlignOpsTests
         Assert.Equal(before.Gu.Length, after.Gu.Length, 5); // scale kept
         Assert.Equal(before.Gv.Length, after.Gv.Length, 5);
         Assert.Equal(-0.25, after.Gv.Y, 5);                 // V still grows downward
-        Assert.Equal(before.Gu.X, after.Gu.X, 5);           // U runs along +X like the box map (not mirrored)
+        Assert.Equal(-before.Gu.X, after.Gu.X, 5);          // U runs along -X: read the right way round from +Z (stock RED; the box map mirrors this face)
         for (int i = 0; i < c.Count; i++)
         {
             Uv uv = wall.Vertices[i].TextureCoords;

@@ -13,7 +13,8 @@ namespace Ged.Core.Tests.Spatial;
 /// Study parity (DESIGN-QUALITY-SPEC §(g) Q1 gate) and grader calibration. The measurement core reproduces the
 /// exemplar study: on every study level, every metric of research/exemplar-study/data/metrics.csv within ±10% (whole
 /// counts within ±1), measured with the study's settings (no movement links); and the grader's per-level failure lists
-/// equal data/grader.json. With the level classes on (and with the default movement links), the open-air exemplars
+/// equal data/grader.json (over the study's own checks; the later function checks G27-G31 are gated by
+/// PurposeCalibrationTests). With the level classes on (and with the default movement links), the open-air exemplars
 /// (E6, E9, E11, dm20) reach PASS or REVIEW, no counter-example passes and both generated levels FAIL. Skipped without
 /// the local study data.
 /// </summary>
@@ -85,7 +86,8 @@ public sealed class StudyParityTests
         Assert.True(compared >= 100, $"only {compared} metrics compared");
         Assert.True(off.Count == 0, $"{stem}: {off.Count} metric(s) outside ±10% (counts ±1):\n" + string.Join("\n", off));
 
-        List<string> failed = DesignGrader.FailedIds(DesignGrader.Grade(a, new GradeOptions { Classes = false, Gametype = StudyData.Labels[stem].Gametype })).OrderBy(x => x).ToList();
+        List<string> failed = DesignGrader.FailedIds(DesignGrader.Grade(a, new GradeOptions { Classes = false, Gametype = StudyData.Labels[stem].Gametype }))
+            .Where(DesignGrader.IsStudyCheck).OrderBy(x => x).ToList();
         Assert.Equal(StudyData.Failures[stem].OrderBy(x => x), failed);
     }
 
@@ -103,7 +105,9 @@ public sealed class StudyParityTests
 
         // The study's own measurement: the per-level failure lists of grader.json.
         SpatialAnalysis study = SpatialAnalysis.Run(level, SpatialOptions.Study);
-        List<string> failed = DesignGrader.FailedIds(DesignGrader.Grade(study, new GradeOptions { Classes = false, Gametype = gametype })).OrderBy(x => x).ToList();
+        // (The study's checks only: the function checks G27-G31 came later; PurposeCalibrationTests holds them.)
+        List<string> failed = DesignGrader.FailedIds(DesignGrader.Grade(study, new GradeOptions { Classes = false, Gametype = gametype }))
+            .Where(DesignGrader.IsStudyCheck).OrderBy(x => x).ToList();
         Assert.Equal(StudyData.Failures[stem].OrderBy(x => x), failed);
 
         // The product defaults (movement links on, level classes on) keep every group where it belongs.

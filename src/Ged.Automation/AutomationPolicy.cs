@@ -21,7 +21,7 @@ public sealed class AutomationPolicy
     /// <summary>The commands that change the document, the undo history or files (refused when <see cref="ReadOnly"/>).</summary>
     public static readonly IReadOnlySet<string> MutatingCommands = new HashSet<string>(StringComparer.Ordinal)
     {
-        "new", "open", "run", "build", "save", "undo", "redo",
+        "new", "open", "run", "build", "save", "undo", "redo", "harvest",
     };
 
     /// <summary>Allows discarding unsaved changes, overwriting another existing file, and a script's delete / save / package.</summary>

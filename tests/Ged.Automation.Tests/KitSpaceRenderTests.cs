@@ -191,7 +191,7 @@ public sealed class KitSpaceRenderTests
             "kit.floor_section{ min = {-36, 0, -11}, max = {36, 0, 11}, y = 0, rise = -10 }\n" +
             "for i, style in ipairs({ 'truss', 'arch', 'girder', 'plank' }) do\n" +
             "  local x = -27 + (i - 1) * 18\n" +
-            "  kit.bridge{ name = 'bridge_' .. style, from = {x, 0.125, -14}, to = {x, 0.125, 14}, width = 3.5, style = style, frame_texture = 'mtl_airgirder01.tga' }\n" +
+            "  kit.bridge{ name = 'bridge_' .. style, from = {x, 0.125, -14}, to = {x, 0.125, 14}, width = 3.5, style = style, frame_texture = 'mtl_airgirder01.tga', purpose = 'report' }\n" +
             "end\n" +
             "kit.landmark{ name = 'tower', pos = {-22, 0, 32}, height = 32, style = 'tower' }\n" +
             "kit.landmark{ name = 'pylon', pos = {0, 0, 34}, height = 30, base = 7, style = 'pylon', texture = 'mtl_airgirder01.tga' }\n" +

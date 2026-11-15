@@ -104,6 +104,7 @@ internal static class LevelRenderer
         // ---- camera -------------------------------------------------------------------------------
         var cam = new Camera { AspectRatio = (float)w / h };
         float? fovDeg = null;
+        float? floorUnderCamera = null;
         Vector3? look = null;
         if (ortho)
         {
@@ -170,12 +171,13 @@ internal static class LevelRenderer
         {
             // Frame what is drawn: the level's geometry (its sky room left out), or the geometry inside the region (the
             // rest is cut away), else the framed box's corners — fitted on their projection, not a bounding sphere.
-            float fv = (spec.FovDegrees ?? 45f) * (MathF.PI / 180f);
+            float isoFov = spec.HFovDegrees is float isoH ? RenderSpec.VerticalFov(isoH, w, h) : spec.FovDegrees ?? 45f;
+            float fv = isoFov * (MathF.PI / 180f);
             List<Vector3> points = IsoPoints(index, spec, framedOn, boxMin, boxMax);
             (Vector3 c, float dist, float near, float far) = FitIso(cam, fv, points);
             cam.NearPlane = near;
             cam.FarPlane = far;
-            fovDeg = spec.FovDegrees ?? 45f;
+            fovDeg = isoFov;
             look = c;
             if (spec.Region is not null)
             {
@@ -185,7 +187,24 @@ internal static class LevelRenderer
         else
         {
             Vector3 eye = spec.CameraPosition!.Value, at = spec.CameraLook!.Value;
-            float fov = spec.FovDegrees ?? RenderSpec.DefaultFov;
+            if (spec.EyeHeight is float eyeHeight)
+            {
+                // The camera's Y is the search start: stand on the highest floor at or below it, keep the pitch.
+                if (index.FloorBelow(eye) is float floor)
+                {
+                    float dy = floor + eyeHeight - eye.Y;
+                    eye.Y += dy;
+                    at.Y += dy;
+                    floorUnderCamera = floor;
+                    notes.Add($"The camera stands {eyeHeight.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} m above the floor at y={floor.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} (eyeHeight).");
+                }
+                else
+                {
+                    notes.Add("eyeHeight: no floor lies under the camera position, so the camera stays where it was given.");
+                }
+            }
+
+            float fov = spec.HFovDegrees is float hfov ? RenderSpec.VerticalFov(hfov, w, h) : spec.FovDegrees ?? RenderSpec.DefaultFov;
             cam.FieldOfView = fov * (MathF.PI / 180f);
             cam.LookAt(eye, at);
             cam.NearPlane = 0.1f;
@@ -327,6 +346,8 @@ internal static class LevelRenderer
                     Up = V(up),
                     Look = look is Vector3 lk ? V(lk) : null,
                     FovDegrees = fovDeg,
+                    HFovDegrees = fovDeg is float vf ? Dto.R(RenderSpec.HorizontalFov(vf, w, h)) : null,
+                    Floor = floorUnderCamera is float fl ? Dto.R(fl) : null,
                     OrthoHalfHeight = ortho ? Dto.R(cam.OrthoZoom) : null,
                 },
                 WorldPerPixel = Sig(wpp),

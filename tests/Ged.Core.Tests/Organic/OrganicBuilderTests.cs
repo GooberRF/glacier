@@ -396,9 +396,10 @@ public sealed class OrganicBuilderTests
     {
         KitRun run = Run("local b = level.brush{pos = {0,2,0}, size = 4, air = true}\nlocal x = b.uid + b.uid + b.uid\nb:tag('a', 'b')\nreturn x");
         // ged.import("kit") (harness) plus the kit's own imports of its extension modules (kit_struct, kit_space,
-        // kit_layout, kit_dress, kit_probe, kit_core from kit_probe, kit_core again from kit_dress, kit_items,
-        // kit_probe and kit_core again from kit_items, kit_uv), level.brush, b:tag.
-        Assert.Equal(14, run.Result.FacadeCalls);
+        // kit_layout, kit_compose, kit_compose_payload, kit_compose_open, kit_dress, kit_probe, kit_core from kit_probe,
+        // kit_core again from kit_dress, kit_items, kit_probe and kit_core again from kit_items, kit_uv, kit_modules,
+        // kit_probe again from kit_modules), level.brush, b:tag.
+        Assert.Equal(19, run.Result.FacadeCalls);
         Assert.True(run.Result.ScriptTime > TimeSpan.Zero);
     }
 
