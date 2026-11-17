@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using Ged.Core.IO.Vpp;
 
@@ -93,7 +94,28 @@ public static class PackfileBuilder
             total += data.Length;
         }
 
-        builder.Write(outputPath);
+        // Written beside the target first and then moved over it, so an existing packfile is replaced in place only by
+        // a complete one (a failed write leaves the old packfile as it was).
+        string? dir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        string temp = outputPath + ".tmp";
+        try
+        {
+            builder.Write(temp);
+            File.Move(temp, outputPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temp))
+            {
+                File.Delete(temp);
+            }
+        }
+
         return new PackfileBuildResult
         {
             OutputPath = outputPath,

@@ -43,6 +43,13 @@ public enum EditorIcon
     Item = 28,           // pickup star
     Generic = 29,        // dot
     KeyframeSilver = 30, // hollow diamond — a non-start (silver) mover keyframe
+    WeatherRegion = 31,  // cloud with rain (Alpine)
+    VehicleFactory = 32, // jeep (Alpine)
+    ProjectionCamera = 33, // projector with beam (Alpine)
+    RopeEmitter = 34,    // hook and hanging rope (Alpine)
+    DirectionalLight = 35, // sun with parallel rays (Alpine)
+    WaypointHelper = 36, // ring with cross (Alpine)
+    Terrain = 37,        // hills over a grid line (Alpine)
 }
 
 /// <summary>
@@ -117,6 +124,14 @@ public static class IconAtlas
             [EditorIcon.KeyframeSilver] = "Icon_Keyframe_Silver.tga",
             [EditorIcon.Note] = "Icon_AFNote.tga",
             [EditorIcon.Corona] = "Icon_AFCorona.tga",
+
+            // Alpine RED's icons for its 1.5 objects (editor_patch/weather_region.cpp:31, projection_camera.cpp:18,
+            // rope_emitter.cpp:34, dir_light.cpp:32).
+            [EditorIcon.WeatherRegion] = "Icon_AFWeather.tga",
+            [EditorIcon.ProjectionCamera] = "Icon_AFProjection.tga",
+            [EditorIcon.RopeEmitter] = "Icon_AFRope.tga",
+            [EditorIcon.DirectionalLight] = "Icon_AFDirLight.tga",
+            [EditorIcon.Terrain] = "Icon_AFTerrain.tga", // editor_patch/terrain.cpp:60-65
         };
 
     /// <summary>
@@ -411,6 +426,52 @@ public static class IconAtlas
                 break;
             case EditorIcon.Item:
                 p.Poly(Star(16, 16, 10, 4.5f, 5), fill: true);
+                break;
+            case EditorIcon.WeatherRegion:
+                p.Disc(12, 12, 5);
+                p.Disc(20, 12, 5);
+                p.Disc(16, 9, 5.5f);
+                p.Rect(11, 11, 10, 5, fill: true);
+                for (int i = 0; i < 3; i++)
+                {
+                    p.Line(11 + (i * 5), 20, 9 + (i * 5), 26, 1.8f);
+                }
+
+                break;
+            case EditorIcon.VehicleFactory:
+                p.Poly(new[] { V(5, 21), V(7, 15), V(12, 15), V(15, 10), V(22, 10), V(25, 15), V(27, 16), V(27, 21) }, fill: true);
+                p.Disc(10, 22, 3.5f);
+                p.Disc(22, 22, 3.5f);
+                break;
+            case EditorIcon.ProjectionCamera:
+                p.Rect(5, 11, 10, 10, fill: true);
+                p.Poly(new[] { V(15, 14), V(27, 8), V(27, 24), V(15, 18) }, fill: false, 1.8f);
+                break;
+            case EditorIcon.RopeEmitter:
+                // Two anchors and the rope sagging between them.
+                p.Disc(4, 14, 3.2f);
+                p.Disc(28, 14, 3.2f);
+                p.Arc(16, -6, 24, 0.98f, 2.16f, 2.8f);
+                break;
+            case EditorIcon.DirectionalLight:
+                p.Disc(9, 9, 4.5f);
+                for (int i = 0; i < 3; i++)
+                {
+                    float o = i * 6f;
+                    p.Line(12 + o, 14, 18 + o, 24, 2f);
+                    p.Poly(new[] { V(19.5f + o, 26.5f), V(15.5f + o, 23f), V(20.5f + o, 21f) }, fill: true);
+                }
+
+                break;
+            case EditorIcon.WaypointHelper:
+                p.Ring(16, 16, 9, 2.2f);
+                p.Line(16, 9, 16, 23, 1.8f);
+                p.Line(9, 16, 23, 16, 1.8f);
+                break;
+            case EditorIcon.Terrain:
+                // A hill profile over the ground line.
+                p.Poly(new[] { V(3, 24), V(9, 15), V(13, 19), V(20, 8), V(29, 24) }, fill: true);
+                p.Line(2, 27, 30, 27, 1.8f);
                 break;
             default:
                 p.Disc(16, 16, 4);

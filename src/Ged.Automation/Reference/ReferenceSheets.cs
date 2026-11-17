@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Numerics;
 using Ged.Automation.Rendering;
+using Ged.Core.IO.Tex;
 
 namespace Ged.Automation.Reference;
 

@@ -87,6 +87,15 @@ public sealed partial class MainWindow
             byte[] rflBytes = File.ReadAllBytes(levelPath);
             GameLauncher.StageLevel(cmd, rflBytes);
 
+            // A packfile beside the staged copy that still holds an older copy wins over it in game (the level's own
+            // folder was already checked by the save).
+            if (!string.Equals(Path.GetFullPath(cmd.DestinationRflPath), Path.GetFullPath(levelPath), StringComparison.OrdinalIgnoreCase)
+                && Ged.Core.Packaging.StalePackfileCheck.NoteFor(cmd.DestinationRflPath) is { } stalePack)
+            {
+                LogOperation("Playtest", stalePack);
+                _notifications.Notify(Services.NotificationSeverity.Warning, stalePack);
+            }
+
             // Compose through the launch template (blank = direct on Windows; "wine {exe} {args}"
             // on Linux by default). A wrapped launch invokes the wrapper directly (no shell), so
             // the wrapper (e.g. wine) resolves via PATH and receives the arguments verbatim.

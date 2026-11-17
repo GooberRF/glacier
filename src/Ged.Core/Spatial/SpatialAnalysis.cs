@@ -85,6 +85,9 @@ public sealed partial class SpatialAnalysis
     private readonly double _g;
     private readonly int _focusClipped;
 
+    /// <summary>The ground the level's terrains make (floor under a terrain's top is not floor), or null without terrains.</summary>
+    internal TerrainGround? Ground { get; }
+
     private SpatialAnalysis(SpatialLevel level, SpatialOptions options, CancellationToken ct)
     {
         _level = level;
@@ -92,7 +95,8 @@ public sealed partial class SpatialAnalysis
         _ct = ct;
         _rng = new Random(options.Seed);
         _obj = new SpatialObjects(level);
-        _sp = SpaceSampler.Build(level.Geometry, ct);
+        Ground = TerrainGround.Of(level.Rfl);
+        _sp = SpaceSampler.Build(level.Geometry, ct, ground: Ground);
         SpaceSampler.FocusRect? focus = null;
         if (options.Focus)
         {

@@ -17,9 +17,9 @@ internal static class CliHelp
               compiled geometry is built, stale, or an unsealed preview.
             """,
         ["new"] = """
-            glacier-cli new --out <path.rfl>
+            glacier-cli new <path.rfl>   (or: glacier-cli new --out <path.rfl>)
               Creates a new level from the File > New template (level properties, a Player Start,
-              no geometry) and saves it to --out. With --attach, creates it in the editor instead
+              no geometry) and saves it there. With --attach, creates it in the editor instead
               (--out optional; unsaved changes there need --allow-destructive).
             """,
         ["open"] = """
@@ -60,17 +60,36 @@ internal static class CliHelp
               editor-only sidecar <level>.gedlayout.json (see 'help save').
             """,
         ["build"] = """
-            glacier-cli build <level.rfl> [--sealed] [--light] [--no-shadows] [--save | --out <path>]
+            glacier-cli build <level.rfl> [--sealed] [--light] [--no-shadows] [--pipeline alpine|legacy]
+                              [--density <0-255>] [--codec bc7|raw] [--save | --out <path>]
               Compiles the level and applies the result, exactly like Geometry > Build.
               Default is the fast unsealed preview; --sealed runs the full sealed build;
               --light also bakes lighting (always sealed). Saving after a preview re-seals first.
+              --pipeline / --density / --codec store the level's lightmap pipeline before the bake (see light).
+              --no-shadows is RED's Calculate Lighting (no shadows): a quick placement bake, too bright to
+              judge the lighting by (see 'help light').
               With Geometry > Repair Holes When Building on (the default) a sealed build also repairs
               small holes and lists what it repaired ('repair' in --json).
             """,
         ["light"] = """
-            glacier-cli light <level.rfl> [--no-shadows] [--save | --out <path>]
+            glacier-cli light <level.rfl> [--no-shadows] [--pipeline alpine|legacy] [--density <0-255>]
+                              [--codec bc7|raw] [--save | --out <path>]
               Compiles a sealed build and bakes lighting, exactly like Calculate Lighting.
-              The same as 'build --sealed --light'.
+              The same as 'build --sealed --light'. The level's lightmap pipeline decides what is baked:
+              alpine (the default) bakes the stock lightmaps plus Alpine Faction's Direct3D 11 surface
+              charts, saved with the level; legacy bakes the stock lightmaps only.
+              --no-shadows              bake without shadows, as RED's Calculate Lighting (no shadows) does:
+                                        every light lights every surface within its range, through walls
+                                        and floors, so interiors near bright or many lights bake to full
+                                        strength or brighter (white in the lightmaps view). It is a quick
+                                        check of light placement; judge brightness, mood and dark areas
+                                        only on a full bake (without --no-shadows).
+              --pipeline alpine|legacy  store the pipeline on the level first
+              --density <n>             store the Alpine lightmap density first: 0 = default (8 texels
+                                        per unit), 1-128, 255 = Alpine charts off
+              --codec bc7|raw           the Alpine lightmap codec: bc7 (the default, as Alpine RED ships
+                                        it) or raw RGB8 (larger; for comparing with Alpine RED's
+                                        -rawlightmaps bakes). Not stored in the level.
             """,
         ["holes"] = """
             glacier-cli holes <level.rfl> [--fail-on-holes]
@@ -152,6 +171,7 @@ internal static class CliHelp
             glacier-cli ref add <image> --refs <dir> --id <id> [--crop x,y,w,h] [--snap] [--area <text>]
                             [--notes <text>] [--replace]
             glacier-cli ref view <image> [--crop x,y,w,h] [--snap] --out <png> [--side <px>]
+            glacier-cli ref view <image> [--crop x,y,w,h] --step <px> | --zoom <n> --out <png>
             glacier-cli ref view <id> --refs <dir> --out <png>
             glacier-cli ref list --refs <dir>
             glacier-cli ref camera <id> --refs <dir> [--camera x,y,z] [--look x,y,z | --heading <deg> --pitch <deg>]
@@ -167,6 +187,8 @@ internal static class CliHelp
                        reference set (--refs: a folder with references.json; the level is never changed).
               view     an image with a coordinate grid: a concept image in its pixels (to read crops),
                        or a stored reference in fractions 0-1 with its marks (to read cue positions).
+                       --step / --zoom: the fine grid of Lua ref.grid (the crop enlarged with crisp
+                       pixels, every line labelled, x,y at crossings) to read map corners exactly.
               camera   sets the reference's matched camera: position and look (or heading / pitch),
                        nudges in the camera's frame (--move forward,right,up metres; --turn heading,pitch
                        degrees), the horizontal field of view (default 90) and the eye height above the
@@ -182,6 +204,39 @@ internal static class CliHelp
                        top, skyline, brightness, warmth, horizons, edge overlap) and hints.
               scale    known Red Faction dimensions measured on the stock levels (door 2.5 m, doorway,
                        corridor, room height, stairs, player, eye, jump) and count x unit in metres.
+            """,
+        ["audit"] = """
+            glacier-cli audit <level.rfl> [--json] [--out <report.json>] [--sealed] [--rf-dir <dir>]
+              The craft audit: the gate a level passes before it is reported done (read-only). On the
+              stored compiled geometry (a sealed build in this process when there is none, or with
+              --sealed) and the objects, it reports props sunk into or floating over the floor, pushed
+              into walls or placed at random (rocks on built floors, props in doorways, on stairs, lone
+              in the open); stair flights, ramps and bridges that lead nowhere, into a wall or onto
+              nothing (read from the geometry: tags not needed); dead-end perches; doorways, frames and
+              doors with solid, a drop, void or no headroom on a side; pieces built with purpose off
+              that still fail it; flat-sided (prism) rock; and areas dressed far below the corpus
+              norms. Every finding has a position, a UID where there is one (uids lists every brush
+              involved, e.g. a bridge's deck or the brushes behind flat rock), and a fix. With an RF
+              install (--rf-dir or GED_RF_DIR) objects are tested with their real mesh bounds. The
+              measurement has no time limit, so the same level gives the same findings on any machine;
+              a check that could not run is listed under "skipped" and the report is not clean.
+              Exit code 0 when clean, 1 with findings.
+            """,
+        ["recreate-score"] = """
+            glacier-cli recreate-score <candidate.rfl> --truth <reference.rfl | truth.json> --out <dir>
+                                       [--allow-mirror] [--json]
+              Scores how closely the candidate level recreates a reference, 0-100 (read-only: neither
+              level is modified). The reference is another level (its compiled geometry) or a
+              digitised mockup map (truth.json: playable mask, route, area markers, elevation
+              profile). The candidate is aligned first (yaw in 1 degree steps plus translation; for a
+              mockup also scale), so it may use any origin and orientation; --allow-mirror also
+              tries the mirror image (reported as mirrored). Metrics: walkable-floor plan IoU per
+              height band, wall-boundary distance, floor-height distribution, enclosed air (level
+              reference) or route coverage, area markers and route elevation profile (mockup).
+              Writes <out>/score.json and overlay PNGs: overlay_plan.png (reference grey, candidate
+              cyan, overlap white), overlay_band_<n>.png per height band, and overlay_mockup.png
+              (the candidate over the mockup's map). A level without stored geometry is measured on
+              a private preview build.
             """,
         ["modules"] = """
             glacier-cli modules harvest [--sources <file.json>] [--root <dir>] [--out <dir>] [--group <name>]
@@ -260,15 +315,28 @@ internal static class CliHelp
               Framing (plan / ortho / iso; default: the whole level, or the plan's storey):
                 --region minx,miny,minz,maxx,maxy,maxz | --room <index> | --uid <uid>
               Options:
-                --mode lit|textured|lightmaps|rooms|wireframe|seethrough
+                --mode lit|textured|lightmaps|rooms|wireframe|seethrough|heights
                                   default lit (lightmaps; falls back to textures, then room
-                                  colours, when the level is not lit or no RF install is mounted)
+                                  colours, when the level is not lit or no RF install is mounted).
+                                  heights (--plan and --view top): walkable floor coloured by its
+                                  height alone, every other surface grey, with the heights symbols
+                                  and legend unless --overlays says otherwise: a clean image for
+                                  Lua ref.heights to decode
                 --size WxH        image size (default 1024x1024, at most 4096 per side)
-                --overlays <list> any of grid,scale,objects,labels,links,holes,legend, or none
-                                  (default for --plan: grid,scale,objects,labels,links,legend;
+                --overlays <list> any of grid,scale,objects,labels,links,holes,legend,heights, or
+                                  none (default for --plan: grid,scale,objects,labels,links,legend;
                                   other views: none). The legend comes with any other overlay
                                   unless nolegend is listed. holes runs a sealed leak check.
                                   icons / noicons in the list work like --icons / --no-icons.
+                                  heights (--plan and --view top) marks how floors change height:
+                                  walkable floor tinted by height over the texture (colour bar in
+                                  the legend, blue low to red high), ramps and slopes with contour
+                                  lines, white uphill chevrons and "y0 -> y1 m", stairs with tread
+                                  lines, an uphill arrow and "y0 -> y1 m", drop edges (more than a
+                                  0.6 m step, no ramp or stairs) as a heavy violet line with ticks
+                                  on the low side and the drop, and "+y" spot heights on flat
+                                  floor. --json lists them under heights (range, ramps, stairs,
+                                  drops, flats).
                 --no-overlays     same as --overlays none (and no 3-D object icons)
                 --icons | --no-icons
                                   draw the editor's 3-D object icons (lights, spawns, events,
@@ -456,7 +524,7 @@ internal static class CliHelp
 
             Commands:
               info <level>                 level name, version, counts, geometry state
-              new --out <path>             create a new level from the File > New template
+              new <path>                   create a new level from the File > New template
               run <script.lua> [<level>]   run a Lua script as one undoable step
               build <level>                compile geometry (--sealed, --light)
               light <level>                sealed build + lighting (= build --sealed --light)
@@ -475,6 +543,10 @@ internal static class CliHelp
               render <level> --out <png>   floor plan / view image + pixel-to-world mapping
               ref add|view|list|camera|compare|scale
                                            match the level to reference screenshots (help ref)
+              audit <level>                the craft audit: sunk props, stairs and doorways to nowhere,
+                                           flat rock, basic areas (help audit)
+              recreate-score <level> --truth <level|truth.json> --out <dir>
+                                           score how closely a level recreates a reference (0-100)
               open <level> --attach        open a level in the running editor
               undo --attach                undo the editor's latest command-line run (--steps <n>)
               redo --attach                redo what undo took back (--steps <n>)

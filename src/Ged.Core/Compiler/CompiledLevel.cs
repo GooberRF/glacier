@@ -33,7 +33,19 @@ public sealed class CompiledLevel
     /// </summary>
     public bool AlpineBuild { get; set; }
 
+    /// <summary>[ALPINE] The terrains this build compiled and their chunk-to-room mappings (null when none were built).</summary>
+    public TerrainBuild? Terrain { get; set; }
+
     /// <summary>Lighting bake measurements (null when no bake ran).</summary>
+    /// <summary>The build's Alpine chart bake, when it ran one (finished after the movers are lit).</summary>
+    public Lighting.Alpine.AlpineChartBakeJob? AlpineChartJob { get; set; }
+
+    /// <summary>The static bake's Alpine fixed-pipeline shading state (null with Legacy lighting or a stock bake).</summary>
+    public Lighting.Alpine.AlpineShading? AlpineShading { get; set; }
+
+    /// <summary>True once the chart bake's result was recorded (<see cref="LightingBaker.FinishAlpineCharts"/>).</summary>
+    internal bool AlpineChartsReported { get; set; }
+
     public BakeStats? BakeStats { get; set; }
 
     /// <summary>
@@ -46,6 +58,12 @@ public sealed class CompiledLevel
     /// possibly-non-convex merged polygons, occluding the wrong area. Null when no shadow bake ran.
     /// </summary>
     internal OccluderBvh? StaticOccluders { get; set; }
+
+    /// <summary>
+    /// The liquid and show-sky faces the static bake's Alpine directional lights consulted, carried so the mover bake
+    /// lights movers with the same sun / Directional Light objects (null when the level has none).
+    /// </summary>
+    internal DirectionalOccluders? DirectionalOccluders { get; set; }
 
     /// <summary>
     /// Mover brush UIDs whose geometry was re-baked (lightmap surfaces + per-vertex UVs rebuilt into this

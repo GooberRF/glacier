@@ -568,6 +568,24 @@ internal sealed class OutlinerPanel : UserControl
             }));
         }
 
+        // Alpine terrain: Convert to Brushes (one detail brush per chunk; the terrain is deleted, one undo step).
+        if (o.Kind == LevelObjectKind.Terrain && !o.IsReadOnly)
+        {
+            menu.Items.Add(MenuItem("Convert to Brushes", () =>
+            {
+                if (_host is not { } h)
+                {
+                    return;
+                }
+
+                if (h.Document is { } d && !d.IsSelected(o))
+                {
+                    h.Selection.SelectObject(o);
+                }
+
+                h.Dispatcher.Invoke(Ged.Core.Input.CommandIds.ObjTerrainToBrushes);
+            }));
+        }
         return menu;
     }
 

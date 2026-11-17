@@ -560,7 +560,7 @@ internal static class ScriptFieldCatalog
         }
 
         IReadOnlyList<InspectorField> schemaFields = obj.Kind == LevelObjectKind.Keyframe
-            ? MoverInspectorSchema.KeyframeFields
+            ? MoverInspectorSchema.KeyframeFields.Concat(MoverInspectorSchema.KeyframePathFields).ToList()
             : ObjectInspectorCatalog.For(obj.Kind);
         foreach (InspectorField f in schemaFields)
         {
@@ -655,7 +655,7 @@ internal static class ScriptFieldCatalog
     public static ScriptFieldSet ForMover(ScriptContext ctx, Group mover)
     {
         var fields = new List<ScriptField>();
-        foreach (InspectorField f in MoverInspectorSchema.MoverFields)
+        foreach (InspectorField f in MoverInspectorSchema.MoverFields.Concat(MoverInspectorSchema.MoverPathFields))
         {
             InspectorField field = f;
             (double Min, double Max) range = field.EffectiveKey == "starting_keyframe"
@@ -703,7 +703,9 @@ internal static class ScriptFieldCatalog
             return infos.ToArray();
         }
 
-        IReadOnlyList<InspectorField> schema = kind == LevelObjectKind.Keyframe ? MoverInspectorSchema.KeyframeFields : ObjectInspectorCatalog.For(kind);
+        IReadOnlyList<InspectorField> schema = kind == LevelObjectKind.Keyframe
+            ? MoverInspectorSchema.KeyframeFields.Concat(MoverInspectorSchema.KeyframePathFields).ToList()
+            : ObjectInspectorCatalog.For(kind);
         object? sample = SampleModel(kind);
         foreach (InspectorField f in schema)
         {

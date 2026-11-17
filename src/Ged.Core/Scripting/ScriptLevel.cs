@@ -26,6 +26,41 @@ public sealed partial class ScriptLevel
     [ScriptDoc("The number of brushes in the level.", Example = "log.info(level.brush_count .. \" brushes\")")]
     public int BrushCount => _ctx.Brushes.Brushes.Count;
 
+    [ScriptDoc("Counts from the last build: {brushes, objects, built, faces, rooms, surfaces, surface_cap (32767), unlit_faces (lit faces with no lightmap surface), unlit_min/max, surface_budget_ok}.", Example = "local s = level.stats(); log.info(s.surfaces .. ' of ' .. s.surface_cap .. ' lightmap surfaces')", Since = 2)]
+    public Dictionary<string, object?> Stats()
+    {
+        Geometry? g = null;
+        foreach (IO.Rfl.RflSection s in _ctx.Document.Rfl.Sections)
+        {
+            if (s.Content is IO.Rfl.Sections.GeometrySection geo)
+            {
+                g = geo.Geometry;
+                break;
+            }
+        }
+
+        Compiler.SurfaceBudgetState budget = Compiler.SurfaceBudgetState.FromGeometry(g);
+        var o = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["brushes"] = (double)_ctx.Brushes.Brushes.Count,
+            ["objects"] = (double)_ctx.Document.Objects.Count,
+            ["built"] = g is { Faces.Count: > 0 },
+            ["faces"] = (double)(g?.Faces.Count ?? 0),
+            ["rooms"] = (double)(g?.Rooms.Count ?? 0),
+            ["surfaces"] = (double)(g?.Surfaces.Count ?? 0),
+            ["surface_cap"] = (double)Compiler.SurfaceBuilder.MaxLevelSurfaces,
+            ["unlit_faces"] = (double)budget.UnlitFaces,
+            ["surface_budget_ok"] = !budget.Over,
+        };
+        if (budget.UnlitMin is { } a && budget.UnlitMax is { } b)
+        {
+            o["unlit_min"] = a;
+            o["unlit_max"] = b;
+        }
+
+        return o;
+    }
+
     /// <summary>Lua: <c>level.objects</c> — handles for every level object (iterate with <c>ipairs</c>).</summary>
     [ScriptDoc("Every level object as object[] (iterate with ipairs).", Example = "for _, o in ipairs(level.objects) do log.info(o.kind) end")]
     public ScriptObjectHandle[] Objects =>
@@ -52,6 +87,10 @@ public sealed partial class ScriptLevel
         LevelObject? o = _ctx.Document.FindByUid(uid);
         return o is null ? null : new ScriptObjectHandle(_ctx, o);
     }
+
+    /// <summary>Lua: <c>level.object(uid)</c> — the object with UID <paramref name="uid"/>, or nil (as find_uid).</summary>
+    [ScriptDoc("The level object with this UID, or nil — the handle for a uid an audit finding, a report or a log names (find_uid under another name; brushes: level.find_brush).", Example = "local o = level.object(42) if o then log.info(o.kind) end", Since = 2)]
+    public ScriptObjectHandle? Object(int uid) => FindUid(uid);
 
     /// <summary>Lua: <c>level.find_brush(uid)</c> — the brush with UID <paramref name="uid"/>, or nil.</summary>
     [ScriptDoc("The brush with this UID, or nil.", Example = "local b = level.find_brush(7)")]
@@ -809,19 +848,7 @@ public sealed partial class ScriptLevel
     public ScriptBrushQuery BrushesIn(ScriptArgs box)
     {
         (Vec3 min, Vec3 max) = Box("level.brushes_in", box);
-        var hits = new List<int>();
-        foreach (Brush b in _ctx.Brushes.Brushes)
-        {
-            ScriptAabb bb = ScriptBrushHandle.WorldBounds(b);
-            if (bb.Min.X <= max.X && bb.Max.X >= min.X &&
-                bb.Min.Y <= max.Y && bb.Max.Y >= min.Y &&
-                bb.Min.Z <= max.Z && bb.Max.Z >= min.Z)
-            {
-                hits.Add(b.Uid);
-            }
-        }
-
-        return new ScriptBrushQuery(_ctx, hits);
+        return new ScriptBrushQuery(_ctx, _ctx.BrushIndex.UidsIn(min, max));
     }
 
     [ScriptDoc("An object_query of the objects whose position lies inside the box {min=, max=} (metres, inclusive).", Example = "level.objects_in{min={-8,0,-8}, max={8,6,8}}", Since = 2)]
@@ -1103,7 +1130,52 @@ public sealed partial class ScriptLevel
         }
 
         ScriptTags.Merge(_ctx, Api, new[] { placed.Uid }, tags);
+        if (args.Bool(Api, "seat", false))
+        {
+            Seat(Api, handle, placed, pos.Y);
+        }
+
         return handle;
+    }
+
+    private Func<LevelObject, (Vec3 Min, Vec3 Max)?>? _meshBounds;
+
+    /// <summary>
+    /// level.place{seat = true}: stock clutter and item meshes have their origin at their centre, so an object placed at
+    /// a floor point sinks half its height into the floor. Moves it up so the lowest corner of its mesh bounds (as
+    /// rotated) rests on <paramref name="floorY"/>. Needs a mounted install for the meshes; without one it warns.
+    /// </summary>
+    private void Seat(string api, ScriptObjectHandle handle, LevelObject placed, float floorY)
+    {
+        if (_ctx.Assets is not { } vfs)
+        {
+            _ctx.Log.Warn($"{api}: seat needs the game's meshes (an RF install: --rf-dir or GED_RF_DIR); {placed.Kind} {placed.Uid} is left at its position.");
+            return;
+        }
+
+        _meshBounds ??= Linting.CraftAudit.MeshBoundsFrom(vfs);
+        if (_meshBounds(placed) is not { } mb)
+        {
+            _ctx.Log.Warn($"{api}: no mesh bounds for {placed.Kind} '{placed.ClassName}', so it cannot be seated; it is left at its position.");
+            return;
+        }
+
+        Mat3 m = Editing.ObjectRotation.TryGetOrientation(placed.Model, out Mat3 o, out _) ? o : Mat3.Identity;
+        float low = float.MaxValue;
+        foreach (float x in new[] { mb.Min.X, mb.Max.X })
+        {
+            foreach (float y in new[] { mb.Min.Y, mb.Max.Y })
+            {
+                foreach (float z in new[] { mb.Min.Z, mb.Max.Z })
+                {
+                    low = MathF.Min(low, (x * m.Right.Y) + (y * m.Up.Y) + (z * m.Forward.Y));
+                }
+            }
+        }
+
+        // The mesh's lowest point is pos.y + low; lift it onto the floor point given.
+        Vec3 p = placed.Position;
+        handle.SetPos(p.X, floorY - low, p.Z);
     }
 
     /// <summary>
@@ -1160,6 +1232,12 @@ public sealed partial class ScriptLevel
         return handle;
     }
 
+    private ScriptTerrains? _terrain;
+
+    [ScriptDoc("The level's Alpine terrains: level.terrain.create{…}, all(), get(uid or name). Build Geometry compiles each into detail rooms, one per chunk.",
+        Example = "local t = level.terrain.create{nx = 65, nz = 65} t:generate{seed = 3, height_range = 24}", Since = 2)]
+    public ScriptTerrains Terrain => _terrain ??= new ScriptTerrains(_ctx);
+
     private ScriptPropertyBag? _props;
     private ScriptPropertyBag? _alpine;
 
@@ -1167,9 +1245,22 @@ public sealed partial class ScriptLevel
         Example = "level.props:set_many{level_name = \"Arena\", ambient_color = {60, 60, 60}}", Since = 2)]
     public ScriptPropertyBag Props => _props ??= new ScriptPropertyBag(_ctx, "level.props", LevelPropertiesSchema.Fields);
 
-    [ScriptDoc("The Alpine level properties (legacy timers/movers, headlamp, static-mesh ambient, RF2-style geomod, payload_* rules), plus the read-only Alpine 1.5 lighting, sun and level settings.",
+    [ScriptDoc("The Alpine level properties: legacy timers/movers, headlamp, RF2-style geomod, payload_* rules, and the Alpine 1.5 lighting, sun_*, minimap_*, flight ceiling and far clip settings.",
         Example = "level.alpine:set(\"starts_with_headlamp\", true)", Since = 2)]
     public ScriptPropertyBag Alpine => _alpine ??= new ScriptPropertyBag(_ctx, "level.alpine", AlpineLevelPropertiesSchema.ScriptFields);
+
+    [ScriptDoc("The Level Flags Outside / Inside buttons: flags every built room and every room effect outside (true) or inside (false), as RED does. Returns how many rooms and room effects changed.",
+        Example = "level.set_all_rooms_outside(true)", Since = 2)]
+    public int SetAllRoomsOutside(bool outside)
+    {
+        int changed = Editing.LevelRoomFlags.SetAllRooms(_ctx.Document, outside);
+        if (changed > 0)
+        {
+            _ctx.Changes.Record(outside ? "rooms flagged outside" : "rooms flagged inside");
+        }
+
+        return changed;
+    }
 
     private static LevelObjectKind ResolvePlaceKind(string api, string kindName)
     {

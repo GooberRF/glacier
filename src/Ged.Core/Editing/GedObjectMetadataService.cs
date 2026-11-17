@@ -30,7 +30,50 @@ public sealed class GedObjectMetadataService
     // ---- reads ---------------------------------------------------------------
 
     /// <summary>The metadata entry for <paramref name="uid"/>, or null.</summary>
-    public GedObjectMetadataRecord? Entry(int uid) => FindSection()?.Entries.FirstOrDefault(e => e.Uid == uid);
+    public GedObjectMetadataRecord? Entry(int uid)
+    {
+        GedObjectMetadataSection? s = FindSection();
+        if (s is null)
+        {
+            return null;
+        }
+
+        int at = IndexOf(s, uid);
+        return at >= 0 ? s.Entries[at] : null;
+    }
+
+    /// <summary>The position of <paramref name="uid"/>'s first record in the section, or -1.</summary>
+    private int IndexOf(GedObjectMetadataSection s, int uid)
+    {
+        // A uid -> position index (a kit run reads and writes the tags of thousands of brushes, and a scan per call
+        // made each cost the whole chunk): rebuilt when the list, its length or its revision moved; a hit is checked
+        // against the list itself.
+        List<GedObjectMetadataRecord> list = s.Entries;
+        if (!ReferenceEquals(list, _indexList) || list.Count != _indexCount || s.Revision != _indexRevision)
+        {
+            _index.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                _index.TryAdd(list[i].Uid, i);
+            }
+
+            _indexList = list;
+            _indexCount = list.Count;
+            _indexRevision = s.Revision;
+        }
+
+        if (!_index.TryGetValue(uid, out int at))
+        {
+            return -1;
+        }
+
+        return at < list.Count && list[at].Uid == uid ? at : list.FindIndex(e => e.Uid == uid);
+    }
+
+    private List<GedObjectMetadataRecord>? _indexList;
+    private int _indexCount = -1;
+    private int _indexRevision = -1;
+    private readonly Dictionary<int, int> _index = new();
 
     /// <summary>The raw payload of the first block of <paramref name="type"/> on <paramref name="uid"/>, or null.</summary>
     public byte[]? BlockPayload(int uid, GedMetadataType type) =>
@@ -163,12 +206,8 @@ public sealed class GedObjectMetadataService
         // time, so copying and serializing the whole chunk per write would be quadratic). The first record of a UID
         // is the one written, and the resulting entry order is the same as rewriting the whole list.
         RflSection? existing = FindHost();
-        List<GedObjectMetadataRecord> entries = (existing?.Content as GedObjectMetadataSection)?.Entries ?? new List<GedObjectMetadataRecord>();
-        var first = new Dictionary<int, int>();
-        for (int i = 0; i < entries.Count; i++)
-        {
-            first.TryAdd(entries[i].Uid, i);
-        }
+        var existingSection = existing?.Content as GedObjectMetadataSection;
+        List<GedObjectMetadataRecord> entries = existingSection?.Entries ?? new List<GedObjectMetadataRecord>();
 
         var changes = new Dictionary<int, (int Index, GedObjectMetadataRecord? Before, GedObjectMetadataRecord After)>();
         var order = new List<int>();
@@ -176,7 +215,7 @@ public sealed class GedObjectMetadataService
         {
             if (!changes.TryGetValue(uid, out var c))
             {
-                int idx = first.TryGetValue(uid, out int fi) ? fi : -1;
+                int idx = existingSection is null ? -1 : IndexOf(existingSection, uid);
                 GedObjectMetadataRecord? before = idx >= 0 ? entries[idx].Clone() : null;
                 c = (idx, before, before?.Clone() ?? new GedObjectMetadataRecord { Uid = uid });
                 changes[uid] = c;
@@ -216,6 +255,7 @@ public sealed class GedObjectMetadataService
 
         void Do()
         {
+            ((GedObjectMetadataSection)host.Content!).Revision++;
             List<GedObjectMetadataRecord> list = ((GedObjectMetadataSection)host.Content!).Entries;
             foreach (var c in replaced)
             {
@@ -237,6 +277,7 @@ public sealed class GedObjectMetadataService
 
         void Undo()
         {
+            ((GedObjectMetadataSection)host.Content!).Revision++;
             List<GedObjectMetadataRecord> list = ((GedObjectMetadataSection)host.Content!).Entries;
             // Undo runs on the state this command left (later commands undone first): its new records are the last ones.
             list.RemoveRange(list.Count - added.Count, added.Count);

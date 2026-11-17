@@ -2,9 +2,51 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Ged.Core.Lighting.Alpine;
 using Ged.Core.Model;
 
 namespace Ged.Core.Lighting;
+
+/// <summary>
+/// The occluders only Alpine directional lights consult (the stock occluder set never holds them): liquid surfaces,
+/// which block a light whose "liquid occludes" is set, and show-sky faces, which block one whose "sky passes" is off
+/// (editor_patch/lightmap.cpp:1876-1903, 2685-2703).
+/// </summary>
+internal sealed class DirectionalOccluders
+{
+    public DirectionalOccluders(OccluderBvh liquid, OccluderBvh sky)
+    {
+        Liquid = liquid;
+        Sky = sky;
+    }
+
+    public OccluderBvh Liquid { get; }
+
+    public OccluderBvh Sky { get; }
+
+    /// <summary>The liquid-surface and show-sky triangles of <paramref name="faces"/> (polygons as vertex lists).</summary>
+    public static DirectionalOccluders Build(IEnumerable<(ushort Flags, IReadOnlyList<Vec3> Polygon)> faces)
+    {
+        var liquid = new List<(Vec3, Vec3, Vec3)>();
+        var sky = new List<(Vec3, Vec3, Vec3)>();
+        foreach ((ushort flags, IReadOnlyList<Vec3> poly) in faces)
+        {
+            var f = (FaceFlags)flags;
+            List<(Vec3, Vec3, Vec3)>? into = (f & FaceFlags.LiquidSurface) != 0 ? liquid : (f & FaceFlags.ShowSky) != 0 ? sky : null;
+            if (into is null || poly.Count < 3)
+            {
+                continue;
+            }
+
+            for (int i = 1; i < poly.Count - 1; i++)
+            {
+                into.Add((poly[0], poly[i], poly[i + 1]));
+            }
+        }
+
+        return new DirectionalOccluders(OccluderBvh.Build(liquid), OccluderBvh.Build(sky));
+    }
+}
 
 /// <summary>
 /// A rigid local→world transform for a MOVER surface. RED stores mover lightmap surfaces in the mover's
@@ -19,8 +61,9 @@ public sealed class SurfaceBake
 {
     public SurfaceBake(
         Surface surface, bool fullBright, IReadOnlyList<SmoothFace>? smoothFaces = null, float lightMultiplier = 1f,
-        MoverTransform? moverTransform = null)
+        MoverTransform? moverTransform = null, int surfaceIndex = -1)
     {
+        SurfaceIndex = surfaceIndex;
         Surface = surface;
         FullBright = fullBright;
         SmoothFaces = smoothFaces;
@@ -29,6 +72,12 @@ public sealed class SurfaceBake
     }
 
     public Surface Surface { get; }
+
+    /// <summary>
+    /// The surface's index in its solid (the occluder tree's surface ids), or −1: with the Alpine pipeline a receiver's
+    /// shadow rays skip its own surface's triangles (editor_patch/lightmap.cpp:1374-1376).
+    /// </summary>
+    public int SurfaceIndex { get; }
 
     /// <summary>Non-null for a mover surface baked in local space against the world at its rest position.</summary>
     public MoverTransform? MoverTransform { get; }
@@ -73,7 +122,24 @@ public static class Lightmapper
         IReadOnlyList<EngineLight> lights,
         OccluderBvh occluders,
         AmbientField ambient,
-        LightingOptions options)
+        LightingOptions options) =>
+        Bake(surfaces, pages, lights, occluders, ambient, options, extra: null, charts: null, alpine: null);
+
+    /// <summary>
+    /// The full bake: <paramref name="extra"/> carries the occluders only Alpine directional lights consult (liquid
+    /// and show-sky faces); <paramref name="charts"/>, when given, runs Alpine's chart bake after the stock pass,
+    /// against the same lights, occluders and ambient (<see cref="Alpine.AlpineChartBaker"/>).
+    /// </summary>
+    internal static BakeStats Bake(
+        IReadOnlyList<SurfaceBake> surfaces,
+        IReadOnlyList<Lightmap> pages,
+        IReadOnlyList<EngineLight> lights,
+        OccluderBvh occluders,
+        AmbientField ambient,
+        LightingOptions options,
+        DirectionalOccluders? extra,
+        Alpine.IAlpineChartCapture? charts,
+        Alpine.AlpineShading? alpine)
     {
         var stats = new BakeStats { Surfaces = surfaces.Count };
 
@@ -168,7 +234,7 @@ public static class Lightmapper
                     }
                 }
 
-                buffers[si] = ComputeDirect(s, sb, mappers[si], active, affecting, occluders, ambient, options);
+                buffers[si] = ComputeDirect(s, sb, mappers[si], s.W, s.H, active, affecting, occluders, ambient, options, extra, alpine);
             }
 
             local.Texels += s.W * s.H;
@@ -192,9 +258,30 @@ public static class Lightmapper
 
         // Gather bounces (Bounced method): fetch the direct-lit colour from each texel's
         // hemisphere against the surface field, scale by the albedo approximation, add.
+        // The Alpine chart bake shades the charts with the direct kernel only; the stock surfaces' indirect term is
+        // carried onto them afterwards, so keep it apart (charts only — the stock path is untouched).
+        float[][]? indirect = null;
         if (options.LightBounces > 0)
         {
+            float[][]? direct = charts is null ? null : CopyBuffers(buffers);
             BounceGather(surfaces, buffers, mappers, widths, heights, po, options);
+            if (direct is not null)
+            {
+                indirect = new float[count][];
+                for (int si = 0; si < count; si++)
+                {
+                    if (buffers[si] is { } fin && direct[si] is { } dir)
+                    {
+                        var d = new float[fin.Length];
+                        for (int i = 0; i < d.Length; i++)
+                        {
+                            d[i] = fin[i] - dir[i];
+                        }
+
+                        indirect[si] = d;
+                    }
+                }
+            }
         }
 
         // Cross-surface lightmap seam blend across coplanar surfaces a portal split into
@@ -229,7 +316,260 @@ public static class Lightmapper
         stats.Texels = texelTotal;
         stats.MaxLightsOnAnyFace = maxLights;
         stats.OverLimitFaces = overLimit;
+
+        if (charts is not null)
+        {
+            var context = new ShadeContext(active, bounds, occluders, ambient, options, extra, po) { Alpine = alpine };
+            charts.Capture(context, surfaces, pages, cookieCrisp, indirect);
+            if (charts is Alpine.AlpineChartBakeJob job)
+            {
+                stats.Pipeline = job.Settings.Pipeline;
+                if (job.Finished)
+                {
+                    stats.AlpineLightmaps = job.Result;
+                    stats.AlpineSkipped = job.Skipped;
+                }
+            }
+        }
+
+        foreach (EngineLight l in active)
+        {
+            if (l.Type == EngineLightType.Directional)
+            {
+                stats.DirectionalLights++;
+            }
+        }
+
+        stats.LiquidEmitters = alpine?.Liquid.Count ?? 0;
+
         return stats;
+    }
+
+    private static float[][] CopyBuffers(float[][] buffers)
+    {
+        var copy = new float[buffers.Length][];
+        for (int i = 0; i < buffers.Length; i++)
+        {
+            copy[i] = buffers[i] is { } b ? (float[])b.Clone() : null!;
+        }
+
+        return copy;
+    }
+
+    /// <summary>The shared state of one bake that a chart pass shades against (the stock pass's own lights and occluders).</summary>
+    internal sealed class ShadeContext
+    {
+        public ShadeContext(
+            List<EngineLight> active, Aabb[] bounds, OccluderBvh occluders, AmbientField ambient, LightingOptions options,
+            DirectionalOccluders? extra, ParallelOptions parallel)
+        {
+            Active = active;
+            Bounds = bounds;
+            Occluders = occluders;
+            Ambient = ambient;
+            Options = options;
+            Extra = extra;
+            Parallel = parallel;
+        }
+
+        public List<EngineLight> Active { get; }
+
+        public Aabb[] Bounds { get; }
+
+        public OccluderBvh Occluders { get; }
+
+        public AmbientField Ambient { get; }
+
+        public LightingOptions Options { get; }
+
+        public DirectionalOccluders? Extra { get; }
+
+        public ParallelOptions Parallel { get; }
+
+        /// <summary>The Alpine fixed pipeline's occluders, rules and liquid emitters (null: the stock shadow model).</summary>
+        public Alpine.AlpineShading? Alpine { get; init; }
+
+        /// <summary>The lights whose range reaches <paramref name="sb"/> (the stock pass's culling).</summary>
+        public List<int> Affecting(SurfaceBake sb)
+        {
+            Surface s = sb.Surface;
+            Aabb sbox = sb.MoverTransform is MoverTransform mtb ? WorldAabb(s.BoundingBox, mtb) : s.BoundingBox;
+            var affecting = new List<int>();
+            for (int i = 0; i < Active.Count; i++)
+            {
+                if (Overlaps(Bounds[i], sbox))
+                {
+                    affecting.Add(i);
+                }
+            }
+
+            return affecting;
+        }
+
+        /// <summary>
+        /// Shades a <paramref name="w"/> × <paramref name="h"/> texel view of a surface placed by
+        /// <paramref name="mapper"/> with exactly the stock pass's per-texel kernel; returns the float buffer.
+        /// </summary>
+        public float[] Shade(SurfaceBake sb, SurfaceTexelMapper mapper, int w, int h, List<int> affecting) =>
+            ComputeDirect(sb.Surface, sb, mapper, w, h, Active, affecting, Occluders, Ambient, Options, Extra, Alpine);
+
+        /// <summary>
+        /// Lights arbitrary points with the same light model as a surface texel — Alpine RED's
+        /// <c>lightmap_light_terrain_points</c> (editor_patch/lightmap.cpp:4721-4830): the ambient seed (the smallest
+        /// custom-ambient room containing the point, else the level's) halved, every light whose range reaches the
+        /// points' padded bounds, each shadow-casting light masked by the occluders from the point lifted
+        /// <paramref name="lift"/> along its own normal, the kernel at the point's own normal as a smooth receiver
+        /// (no face of the receiver is skipped), clamped at zero. Returns RGB floats per point.
+        /// </summary>
+        public float[] ShadePoints(IReadOnlyList<Vec3> pos, IReadOnlyList<Vec3> nrm, float lift, float footprint)
+        {
+            int count = pos.Count;
+            var buf = new float[count * 3];
+            if (count == 0)
+            {
+                return buf;
+            }
+
+            Vec3 lo = new(float.MaxValue, float.MaxValue, float.MaxValue), hi = new(float.MinValue, float.MinValue, float.MinValue);
+            foreach (Vec3 p in pos)
+            {
+                lo = Vec3Math.Min(lo, p);
+                hi = Vec3Math.Max(hi, p);
+            }
+
+            float pad = MathF.Max(lift, 0.02f);
+            var box = new Aabb(new Vec3(lo.X - pad, lo.Y - pad, lo.Z - pad), new Vec3(hi.X + pad, hi.Y + pad, hi.Z + pad));
+            var affecting = new List<int>();
+            for (int i = 0; i < Active.Count; i++)
+            {
+                if (Active[i].Type == EngineLightType.Directional || Overlaps(Bounds[i], box))
+                {
+                    affecting.Add(i);
+                }
+            }
+
+            Alpine.AlpineOccluders? tree = Alpine?.Tree;
+            bool doShadows = Alpine is not null ? Options.CastShadows && tree is { IsEmpty: false } : Options.CastShadows && !Occluders.IsEmpty;
+            var skip = new uint[affecting.Count];
+            var oneSide = new uint[affecting.Count];
+            if (Alpine is not null)
+            {
+                for (int a = 0; a < affecting.Count; a++)
+                {
+                    (skip[a], oneSide[a]) = Ged.Core.Lighting.Alpine.AlpineOccluders.RayFlags(Active[affecting[a]], Alpine.Settings);
+                }
+            }
+
+            (uint Skip, uint OneSide) liquidRays = Alpine is { Liquid.Count: > 0 }
+                ? Ged.Core.Lighting.Alpine.AlpineOccluders.RayFlags(new EngineLight { Type = EngineLightType.Point }, Alpine.Settings)
+                : default;
+            const int noSurface = int.MinValue;
+            System.Threading.Tasks.Parallel.For(0, count, Parallel, i =>
+            {
+                Vec3 p = pos[i], n = nrm[i];
+                Vec3 amb = Ambient.At(p, -1);
+                float br = amb.X * 0.5f, bg = amb.Y * 0.5f, bb = amb.Z * 0.5f;
+                Vec3 origin = p.Add(n.Scale(lift));
+                var plane = new RfPlane(n, -n.Dot(p));
+                for (int a = 0; a < affecting.Count; a++)
+                {
+                    EngineLight light = Active[affecting[a]];
+                    if (light.Type == EngineLightType.Directional)
+                    {
+                        float dw = Alpine is not null
+                            ? AlpineDirectionalContribution(light, p, n, origin, n, tree, noSurface, footprint, skip[a], oneSide[a], Options.CastShadows)
+                            : DirectionalContribution(light, p, n, origin, plane, Occluders, Extra, Options.CastShadows);
+                        br += dw * light.Color.X;
+                        bg += dw * light.Color.Y;
+                        bb += dw * light.Color.Z;
+                        continue;
+                    }
+
+                    float f = LightKernel.Factor(light, p, n, true);
+                    if (f <= 0f)
+                    {
+                        continue;
+                    }
+
+                    if (light.Cookie is not null)
+                    {
+                        f *= CookieProjection.Mask(light, p);
+                        if (f <= 0f)
+                        {
+                            continue;
+                        }
+                    }
+
+                    float shadow = 1f;
+                    if (doShadows && light.CastsShadows)
+                    {
+                        shadow = Alpine is not null
+                            ? tree!.PointMask(light, origin, n, noSurface, footprint, skip[a], oneSide[a]) / 255f
+                            : ShadowSample(Occluders, origin, light, plane);
+                        if (shadow <= 0f)
+                        {
+                            continue;
+                        }
+                    }
+
+                    float wt = f * shadow;
+                    br += wt * light.Color.X;
+                    bg += wt * light.Color.Y;
+                    bb += wt * light.Color.Z;
+                }
+
+                if (Alpine is { Liquid.Count: > 0 })
+                {
+                    foreach (Alpine.AlpineLiquidEmitter em in Alpine.Liquid)
+                    {
+                        float fall = em.Falloff(p);
+                        if (!(fall > 0f))
+                        {
+                            continue;
+                        }
+
+                        byte vis = Options.CastShadows
+                            ? em.Visibility(doShadows ? tree : null, origin, n, noSurface, footprint, liquidRays.Skip, liquidRays.OneSide)
+                            : (byte)255;
+                        if (vis == 0)
+                        {
+                            continue;
+                        }
+
+                        float k = vis / 255f * fall * em.Surface.FormFactor(p, n);
+                        br += em.Color.X * k;
+                        bg += em.Color.Y * k;
+                        bb += em.Color.Z * k;
+                    }
+                }
+
+                buf[i * 3] = MathF.Max(br, 0f);
+                buf[(i * 3) + 1] = MathF.Max(bg, 0f);
+                buf[(i * 3) + 2] = MathF.Max(bb, 0f);
+            });
+
+            return buf;
+        }
+    }
+
+    /// <summary>
+    /// The stock pass's float→byte conversion of a <paramref name="w"/> × <paramref name="h"/> buffer (interior
+    /// smoothing when the fragment is at least 9×9, then the overbright clamp), into a packed RGB8 array.
+    /// </summary>
+    internal static byte[] EncodeBuffer(float[] buf, int w, int h, LightingOptions options, bool cookieCrisp)
+    {
+        if (options.Quality && options.SmoothIterations > 0 && !cookieCrisp && w >= 9 && h >= 9)
+        {
+            SmoothBufferInterior(buf, w, h, options.SmoothIterations);
+        }
+
+        var px = new byte[w * h * 3];
+        for (int i = 0; i < w * h; i++)
+        {
+            LightEncoder.Encode(buf[i * 3], buf[(i * 3) + 1], buf[(i * 3) + 2], options.ProportionalClamp, px, i * 3);
+        }
+
+        return px;
     }
 
     /// <summary>
@@ -353,9 +693,10 @@ public static class Lightmapper
     }
 
     private static float[] ComputeDirect(
-        Surface s, SurfaceBake sb, SurfaceTexelMapper mapper,
+        Surface s, SurfaceBake sb, SurfaceTexelMapper mapper, int w, int h,
         List<EngineLight> lights, List<int> affecting,
-        OccluderBvh occluders, AmbientField ambient, LightingOptions options)
+        OccluderBvh occluders, AmbientField ambient, LightingOptions options, DirectionalOccluders? extra,
+        Alpine.AlpineShading? alpine)
     {
         Vec3 flatNormal = s.Plane.Normal;
         bool smooth = s.ShouldSmooth != 0;
@@ -378,7 +719,43 @@ public static class Lightmapper
         bool interp = smooth && sb.SmoothFaces is { Count: > 0 } && mover is null;
         bool doShadows = options.CastShadows && !occluders.IsEmpty;
 
-        int w = s.W, h = s.H;
+        // The Alpine fixed pipeline: shadow rays against its own occluder tree with each light's face-class rules, the
+        // receiver's own surface skipped, mask bytes rounded as Alpine rounds them; liquid rooms glow
+        // (editor_patch/lightmap.cpp:1876-2072, 2861-2960).
+        Alpine.AlpineOccluders? alpineTree = alpine?.Tree;
+        Vec3 alpineNs = shadowPlane.Normal;
+        float footprint = 0f;
+        uint[]? alpineSkip = null, alpineOneSide = null;
+        List<Alpine.AlpineLiquidEmitter>? glows = null;
+        (uint Skip, uint OneSide) liquidRays = default;
+        if (alpine is not null)
+        {
+            doShadows = options.CastShadows && alpineTree is { IsEmpty: false };
+            Vec3 t00 = mapper.World(0, 0);
+            float ec = mapper.World(1, 0).Sub(t00).Length(), er = mapper.World(0, 1).Sub(t00).Length();
+            footprint = MathF.Sqrt(ec * er);
+            alpineSkip = new uint[affecting.Count];
+            alpineOneSide = new uint[affecting.Count];
+            for (int a = 0; a < affecting.Count; a++)
+            {
+                (alpineSkip[a], alpineOneSide[a]) = Alpine.AlpineOccluders.RayFlags(lights[affecting[a]], alpine.Settings);
+            }
+
+            if (alpine.Liquid.Count > 0)
+            {
+                Aabb wbox = mover is MoverTransform mtl ? WorldAabb(s.BoundingBox, mtl) : s.BoundingBox;
+                foreach (Alpine.AlpineLiquidEmitter em in alpine.Liquid)
+                {
+                    if (Overlaps(em.Bounds, wbox))
+                    {
+                        (glows ??= new List<Alpine.AlpineLiquidEmitter>()).Add(em);
+                    }
+                }
+
+                liquidRays = Alpine.AlpineOccluders.RayFlags(new EngineLight { Type = EngineLightType.Point }, alpine.Settings);
+            }
+        }
+
         var buf = new float[w * h * 3]; // per-surface float buffer (blended before clamp)
 
         Vec3 bbMin = s.BoundingBox.P1;
@@ -484,6 +861,19 @@ public static class Lightmapper
                 for (int a = 0; a < affecting.Count; a++)
                 {
                     EngineLight light = lights[affecting[a]];
+                    if (light.Type == EngineLightType.Directional)
+                    {
+                        // Alpine's sun / Directional Light objects: a type-1 light, deduplicated per face, so the
+                        // detail-subroom double gather (LightMultiplier) does not apply (lightmap.cpp:2654-2683).
+                        float dw = alpine is not null
+                            ? AlpineDirectionalContribution(light, p, n, origin, alpineNs, alpineTree, sb.SurfaceIndex, footprint, alpineSkip![a], alpineOneSide![a], options.CastShadows)
+                            : DirectionalContribution(light, p, n, origin, shadowPlane, occluders, extra, options.CastShadows);
+                        br += dw * light.Color.X;
+                        bg += dw * light.Color.Y;
+                        bb += dw * light.Color.Z;
+                        continue;
+                    }
+
                     float f = LightKernel.Factor(light, p, n, smooth);
                     if (f <= 0f)
                     {
@@ -508,7 +898,9 @@ public static class Lightmapper
                         // 2-sample penumbra when enabled.
                         shadow = options.SoftShadows
                             ? AreaShadow.Mask(occluders, origin, light.Position, options.SoftShadowRadius, options.SoftShadowSamples, shadowPlane)
-                            : ShadowSample(occluders, origin, light, shadowPlane);
+                            : alpine is not null
+                                ? alpineTree!.PointMask(light, origin, alpineNs, sb.SurfaceIndex, footprint, alpineSkip![a], alpineOneSide![a]) / 255f
+                                : ShadowSample(occluders, origin, light, shadowPlane);
                         if (shadow <= 0f)
                         {
                             continue;
@@ -519,6 +911,33 @@ public static class Lightmapper
                     br += wt * light.Color.X;
                     bg += wt * light.Color.Y;
                     bb += wt * light.Color.Z;
+                }
+
+                // Liquid emission: visibility × falloff × the surface's form factor, once per liquid room
+                // (lightmap.cpp:2941-2959); the stand-in light is deduplicated, so no subroom double gather.
+                if (glows is not null)
+                {
+                    foreach (Alpine.AlpineLiquidEmitter em in glows)
+                    {
+                        float fall = em.Falloff(p);
+                        if (!(fall > 0f))
+                        {
+                            continue;
+                        }
+
+                        byte vis = options.CastShadows
+                            ? em.Visibility(doShadows ? alpineTree : null, origin, alpineNs, sb.SurfaceIndex, footprint, liquidRays.Skip, liquidRays.OneSide)
+                            : (byte)255;
+                        if (vis == 0)
+                        {
+                            continue;
+                        }
+
+                        float k = vis / 255f * fall * em.Surface.FormFactor(p, n);
+                        br += em.Color.X * k;
+                        bg += em.Color.Y * k;
+                        bb += em.Color.Z * k;
+                    }
                 }
 
                 int bo = ((row * w) + col) * 3;
@@ -701,6 +1120,97 @@ public static class Lightmapper
 
         float denom = 1f / (va + vb + vc); // interior
         v = vb * denom; w = vc * denom; u = 1f - v - w;
+    }
+
+    /// <summary>
+    /// One directional light's weight at a texel, before its premultiplied colour: RED's type-1 kernel
+    /// <c>0.25 · N·L</c> with no attenuation and no wrap (RED.exe FUN_004894c0 case 1), times the bounded volume's
+    /// weight (editor_patch/lightmap.cpp:2861-2932), times the shadow mask — Alpine RED's per-texel ray trace along
+    /// the light's 1 or 9 fixed directions to 1e6 units or the volume exit (lightmap.cpp:1920-1983), the mask byte
+    /// rounded as Alpine rounds it.
+    /// </summary>
+    private static float DirectionalContribution(
+        in EngineLight light, Vec3 p, Vec3 n, Vec3 origin, RfPlane plane, OccluderBvh occluders,
+        DirectionalOccluders? extra, bool castShadows)
+    {
+        Vec3[] dirs = light.ShadowDirections ?? new[] { light.Position };
+        float f = 0.25f * n.Dot(dirs[0]);
+        if (!(f > 0f))
+        {
+            return 0f;
+        }
+
+        if (light.Volume is { } volume)
+        {
+            float wv = volume.Weight(p);
+            if (!(wv > 0f))
+            {
+                return 0f;
+            }
+
+            f *= wv;
+        }
+
+        if (!castShadows || !light.CastsShadows)
+        {
+            return f;
+        }
+
+        AlpineLightVolume? clip = light.OutsideCasts ? null : light.Volume;
+        int lit = 0;
+        for (int k = 0; k < dirs.Length; k++)
+        {
+            // Alpine clips at the volume exit along the world direction toward the light (lightmap.cpp:1946-1950).
+            float tMax = clip is not null ? MathF.Min(1e6f, clip.RayExitDistance(origin, dirs[k])) : 1e6f;
+            bool blocked = occluders.OccludedAlong(origin, dirs[k], tMax, plane)
+                || (extra is not null && light.LiquidOccludes && extra.Liquid.OccludedAlong(origin, dirs[k], tMax, plane))
+                || (extra is not null && !light.SkyPasses && extra.Sky.OccludedAlong(origin, dirs[k], tMax, plane));
+            if (!blocked)
+            {
+                lit++;
+            }
+        }
+
+        int taken = dirs.Length;
+        int mask = ((lit * 255) + (taken / 2)) / taken;
+        return mask == 0 ? 0f : f * (mask / 255f);
+    }
+
+    /// <summary>
+    /// A directional light's weight with the Alpine fixed pipeline: the same kernel and volume weight as
+    /// <see cref="DirectionalContribution"/>, the shadow from Alpine's occluder tree with the light's face-class rules
+    /// (editor_patch/lightmap.cpp:1876-1954); without occluders the light is unshadowed (Alpine leaves the stock projector
+    /// in charge of an empty tree, which shadows nothing).
+    /// </summary>
+    private static float AlpineDirectionalContribution(
+        in EngineLight light, Vec3 p, Vec3 n, Vec3 origin, Vec3 ns, Alpine.AlpineOccluders? tree, int skipSurf, float footprint,
+        uint skip, uint oneSide, bool castShadows)
+    {
+        Vec3[] dirs = light.ShadowDirections ?? new[] { light.Position };
+        float f = 0.25f * n.Dot(dirs[0]);
+        if (!(f > 0f))
+        {
+            return 0f;
+        }
+
+        if (light.Volume is { } volume)
+        {
+            float wv = volume.Weight(p);
+            if (!(wv > 0f))
+            {
+                return 0f;
+            }
+
+            f *= wv;
+        }
+
+        if (!castShadows || !light.CastsShadows || tree is null || tree.IsEmpty)
+        {
+            return f;
+        }
+
+        int mask = tree.DirectionalMask(light, origin, ns, skipSurf, footprint, skip, oneSide);
+        return mask == 0 ? 0f : f * (mask / 255f);
     }
 
     /// <summary>Shadow mask sample: 1 sample for point/spot, 2-sample penumbra (0/0.5/1) for tube/area lights.</summary>

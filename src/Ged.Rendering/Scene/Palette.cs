@@ -54,6 +54,16 @@ public static class Palette
         BillboardKind.Corona => Rgba(255, 255, 200),
         BillboardKind.Note => Rgba(255, 240, 150),
         BillboardKind.Bag => Rgba(200, 170, 120),
+
+        // Alpine 1.5 objects: Alpine RED's unselected colours (weather_region.cpp:783-788 rain blue, vehicle_factory.cpp:768
+        // orange, projection_camera.cpp:197-199 amber, dir_light.cpp:660-663 green-white, waypoint_helper.cpp:41-48 ground green).
+        BillboardKind.WeatherRegion => Rgba(64, 160, 255),
+        BillboardKind.VehicleFactory => Rgba(255, 140, 26),
+        BillboardKind.ProjectionCamera => Rgba(255, 192, 32),
+        BillboardKind.RopeEmitter => Rgba(220, 200, 170),
+        BillboardKind.DirectionalLight => Rgba(255, 224, 96),
+        BillboardKind.WaypointHelper => Rgba(60, 220, 60),
+        BillboardKind.Terrain => Rgba(150, 200, 110),
         BillboardKind.Vertex => Rgba(255, 255, 255),
         _ => Rgba(200, 200, 200),
     };

@@ -85,6 +85,13 @@ internal static class PaletteIcons
         LevelObjectKind.NoteObject => BillboardKind.Note,
         LevelObjectKind.CoronaObject => BillboardKind.Corona,
         LevelObjectKind.BagObject => BillboardKind.Bag,
+        LevelObjectKind.WeatherRegion => BillboardKind.WeatherRegion,
+        LevelObjectKind.VehicleFactory => BillboardKind.VehicleFactory,
+        LevelObjectKind.ProjectionCamera => BillboardKind.ProjectionCamera,
+        LevelObjectKind.RopeEmitter => BillboardKind.RopeEmitter,
+        LevelObjectKind.DirectionalLight => BillboardKind.DirectionalLight,
+        LevelObjectKind.WaypointHelper => BillboardKind.WaypointHelper,
+        LevelObjectKind.Terrain => BillboardKind.Terrain,
         LevelObjectKind.PlayerStart => BillboardKind.PlayerStart,
         _ => null,
     };

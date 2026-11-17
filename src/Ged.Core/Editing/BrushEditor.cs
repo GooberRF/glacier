@@ -143,7 +143,17 @@ public sealed class BrushEditor
         ModeChanged?.Invoke(mode);
     }
 
-    public Brush? FindBrush(int uid) => Brushes.FirstOrDefault(b => b.Uid == uid);
+    public Brush? FindBrush(int uid)
+    {
+        BrushesSection? s = FindSection();
+        if (s is null)
+        {
+            return null;
+        }
+
+        int i = IndexOfUid(s.Brushes, uid);
+        return i >= 0 ? s.Brushes[i] : null;
+    }
 
     /// <summary>True when the brush is locked (<see cref="BrushState.Locked"/>) — unselectable
     /// and untransformable until unlocked. Unknown UIDs read as unlocked.</summary>
@@ -153,7 +163,45 @@ public sealed class BrushEditor
     public int TimeIndex(int uid)
     {
         BrushesSection? s = FindSection();
-        return s is null ? -1 : s.Brushes.FindIndex(b => b.Uid == uid);
+        return s is null ? -1 : IndexOfUid(s.Brushes, uid);
+    }
+
+    /// <summary>
+    /// A counter that moves on every brush change notification (add, delete, reorder, geometry, flags, undo/redo,
+    /// external changes): caches of brush-derived data (bounds, volumes, the uid index) are valid while it holds.
+    /// </summary>
+    public long ChangeStamp { get; private set; }
+
+    // The uid -> list position index behind FindBrush / TimeIndex (a level holds thousands of brushes and scripts look
+    // brushes up by uid on every handle access). Rebuilt when the list, its length or ChangeStamp moved; every hit is
+    // verified against the list itself and a miss falls back to the scan, so a list edited without a change
+    // notification still answers exactly.
+    private List<Brush>? _uidList;
+    private int _uidCount = -1;
+    private long _uidStamp = -1;
+    private readonly Dictionary<int, int> _uidIndex = new();
+
+    private int IndexOfUid(List<Brush> list, int uid)
+    {
+        if (!ReferenceEquals(list, _uidList) || list.Count != _uidCount || _uidStamp != ChangeStamp)
+        {
+            _uidIndex.Clear();
+            for (int i = 0; i < list.Count; i++)
+            {
+                _uidIndex.TryAdd(list[i].Uid, i);
+            }
+
+            _uidList = list;
+            _uidCount = list.Count;
+            _uidStamp = ChangeStamp;
+        }
+
+        if (_uidIndex.TryGetValue(uid, out int at) && at < list.Count && list[at].Uid == uid)
+        {
+            return at;
+        }
+
+        return list.FindIndex(b => b.Uid == uid);
     }
 
     // ---- Selection ------------------------------------------------------------
@@ -1585,6 +1633,8 @@ public sealed class BrushEditor
     /// </summary>
     private void Changed(IReadOnlyCollection<int>? affectedUids = null)
     {
+        ChangeStamp++;
+
         // Selection cleanup runs every time (cheap; keeps the selection valid mid-batch).
         _selectedFaces.RemoveWhere(f => FindBrush(f.Brush) is null);
         _selectedVertices.RemoveWhere(v => FindBrush(v.Brush) is null);

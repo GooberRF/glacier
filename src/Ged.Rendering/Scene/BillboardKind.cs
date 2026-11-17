@@ -34,6 +34,17 @@ public enum BillboardKind
     Eax,
     PathNode,
 
+    // Alpine Faction 1.5 objects.
+    WeatherRegion,
+    VehicleFactory,
+    ProjectionCamera,
+    RopeEmitter,
+    DirectionalLight,
+    WaypointHelper,
+
+    /// <summary>An Alpine terrain (its icon sits at the centre of the footprint and height span).</summary>
+    Terrain,
+
     /// <summary>An editable-brush vertex dot (Vertex mode).</summary>
     Vertex,
     Other,

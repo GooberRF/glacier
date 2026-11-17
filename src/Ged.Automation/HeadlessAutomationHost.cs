@@ -18,12 +18,12 @@ namespace Ged.Automation;
 
 /// <summary>
 /// A window-less automation session: one <see cref="EditorDocument"/> (opened from a file or created
-/// from the File ▸ New template), the game asset library mounted from the resolved RF install, and the
-/// user's editor settings — so a headless build, script run, lint, or save produces exactly what the
+/// from the File â–¸ New template), the game asset library mounted from the resolved RF install, and the
+/// user's editor settings â€” so a headless build, script run, lint, or save produces exactly what the
 /// editor would. It tracks the same compiled-geometry state the editor's build controller does
 /// (brushes changed since the last build, unsealed preview applied, lighting changed since the last
 /// bake), which drives the shared save rules (<see cref="LevelSavePolicy"/>): a save after a preview
-/// build re-seals first, exactly like File ▸ Save.
+/// build re-seals first, exactly like File â–¸ Save.
 /// </summary>
 public sealed class HeadlessAutomationHost : IAutomationHost, IDisposable
 {
@@ -172,7 +172,7 @@ public sealed class HeadlessAutomationHost : IAutomationHost, IDisposable
     /// <summary>
     /// Adopts a copy of another session's level (the editor's <c>snapshot</c>): the serialized level
     /// bytes plus that session's compiled-geometry state, so build decisions match the source. The copy
-    /// is private — nothing done to it reaches the source document.
+    /// is private â€” nothing done to it reaches the source document.
     /// </summary>
     public void OpenSnapshot(byte[] data, string? path, LevelBuildState state)
     {
@@ -216,6 +216,9 @@ public sealed class HeadlessAutomationHost : IAutomationHost, IDisposable
     {
         EditorDocument doc = RequireDocument();
         ScriptMetadata meta = ScriptMetadata.Parse(run.Source);
+        string? pending = string.IsNullOrEmpty(doc.Path) && run.SaveTarget is { Length: > 0 } target
+            ? Path.GetDirectoryName(Path.GetFullPath(target))
+            : null;
         var log = new ScriptLog(new DelegateSink(capture));
         var services = new ScriptServices
         {
@@ -235,6 +238,10 @@ public sealed class HeadlessAutomationHost : IAutomationHost, IDisposable
             DefaultCeilingTexture = _settings.DefaultCeilingTexture,
             ImportFileAccess = path => PathPolicy.RequireScriptRead(path, "level.import_mesh"),
             MeshWriteAccess = path => PathPolicy.RequireScriptWrite(path, "level.import_mesh"),
+            FileReadAccess = (path, api) => PathPolicy.RequireScriptRead(path, api),
+            FileWriteAccess = (path, api) => PathPolicy.RequireScriptWrite(path, api),
+            PendingLevelFolder = pending,
+            ShotRender = request => Rendering.ShotRenderer.Render(doc, Assets, request),
             OperationsFactory = ctx => new AutomationScriptOperations(
                 ctx,
                 doc,
@@ -255,7 +262,19 @@ public sealed class HeadlessAutomationHost : IAutomationHost, IDisposable
             UndoLabel = run.UndoLabel,
         };
 
-        ScriptRunResult result = _runner.Run(services, run.Source, options, log, cancellation);
+        // A new level saved with --out: its folder is the level's folder for this run (reading a reference picture
+        // beside it, writing grids and masks there).
+        _pendingLevelFolder = pending;
+        ScriptRunResult result;
+        try
+        {
+            result = _runner.Run(services, run.Source, options, log, cancellation);
+        }
+        finally
+        {
+            _pendingLevelFolder = null;
+        }
+
         if (result.Committed)
         {
             _lightingDirty = true; // the editor marks lighting stale on any committed document change
@@ -399,9 +418,12 @@ public sealed class HeadlessAutomationHost : IAutomationHost, IDisposable
     private EditorDocument RequireDocument() =>
         _doc ?? throw new AutomationException(AutomationErrorCodes.NoDocument, "No level is open.");
 
+    /// <summary>The save target's folder while a script runs on a level with no file yet (see <see cref="AutomationScriptRun.SaveTarget"/>).</summary>
+    private string? _pendingLevelFolder;
+
     private IEnumerable<string?> AllowedRoots()
     {
-        yield return _doc?.Path is { Length: > 0 } p ? Path.GetDirectoryName(Path.GetFullPath(p)) : null;
+        yield return _doc?.Path is { Length: > 0 } p ? Path.GetDirectoryName(Path.GetFullPath(p)) : _pendingLevelFolder;
         yield return RfInstallDir is { Length: > 0 } rf ? Path.Combine(rf, "user_maps") : null;
         yield return AppPaths.ScriptsDirectory;
     }

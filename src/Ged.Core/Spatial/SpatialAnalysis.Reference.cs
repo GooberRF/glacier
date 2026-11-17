@@ -21,7 +21,7 @@ public sealed partial class SpatialAnalysis
         }
 
         var defaults = new MetricOptions();
-        SpaceSampler sp = SpaceSampler.Build(_level.Geometry, _ct);
+        SpaceSampler sp = SpaceSampler.Build(_level.Geometry, _ct, ground: Ground);
         sp.Measure(defaults.LatticePitch, defaults.MaxFloorSamples, focus: null, _o.Parallelism);
         List<SpaceSampler.Sample> valid = sp.Samples.Where(s => s.Valid).ToList();
         List<SpaceSampler.Sample> corr = valid.Where(s => s.Corridor).ToList();

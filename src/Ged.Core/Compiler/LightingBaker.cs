@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Ged.Core.Lighting;
+using Ged.Core.Lighting.Alpine;
 using Ged.Core.Model;
 
 namespace Ged.Core.Compiler;
@@ -71,10 +72,35 @@ internal static class LightingBaker
                 }
             }
 
-            bakeInput.Add(new SurfaceBake(surf, surfaces.FullBright[i], sf));
+            bakeInput.Add(new SurfaceBake(surf, surfaces.FullBright[i], sf, surfaceIndex: i));
         }
 
-        BakeStats stats = Lightmapper.Bake(bakeInput, result.Lightmaps, lights, occluders, ambient, options.Lighting);
+        // Alpine's directional lights (the sun, Directional Light objects) and its surface charts, when the level asks
+        // for them (both empty / null on a stock bake, which then runs exactly as before).
+        lights.AddRange(options.Lighting.DirectionalLights);
+        DirectionalOccluders? extra = options.Lighting.DirectionalLights.Count > 0
+            ? DirectionalOccludersOf(faces)
+            : null;
+        result.DirectionalOccluders = extra;
+        // The chart layout waits for the movers when the build lights any (their charts pack with the surfaces'), and for
+        // the terrain build mapping when it compiles terrain (only a built terrain gets a chart).
+        AlpineChartBakeJob? job = options.Lighting.AlpineCharts is { } chartSettings
+            ? new AlpineChartBakeJob(surfaces.Surfaces, chartSettings) { DeferFinish = options.Movers.Count > 0 || options.TerrainBrushUids.Count > 0 }
+            : null;
+        result.AlpineChartJob = job;
+
+        // The Alpine fixed pipeline (Legacy lighting off) shades against its own occluder tree and adds liquid emission.
+        AlpineShading? alpine = options.Lighting.AlpineCharts is { FixedPipeline: true } fixedSettings
+            ? AlpineShadingOf(faces, rooms, options, fixedSettings, report)
+            : null;
+        result.AlpineShading = alpine;
+
+        BakeStats stats = Lightmapper.Bake(bakeInput, result.Lightmaps, lights, occluders, ambient, options.Lighting, extra, job, alpine);
+        result.BakeStats = stats;
+        if (job is { Finished: true })
+        {
+            FinishAlpineCharts(result, report);
+        }
 
         if (options.Lighting.WarnStockLightLimit && stats.OverLimitFaces > 0)
         {
@@ -86,6 +112,166 @@ internal static class LightingBaker
         }
 
         return stats;
+    }
+
+    /// <summary>
+    /// Completes the build's Alpine chart bake (after the movers were lit, when it waited for them), records the result
+    /// on the bake stats and binds it to the assembled geometry; logs its lines into <paramref name="report"/>. A no-op
+    /// without a chart bake.
+    /// </summary>
+    public static void FinishAlpineCharts(CompiledLevel result, BuildReport report)
+    {
+        if (result.AlpineChartJob is not { } job || result.AlpineChartsReported)
+        {
+            return;
+        }
+
+        // The terrains this build compiled and mapped get terrain charts (alpine_lightmaps.cpp:580-622: only a terrain
+        // whose build is current).
+        if (!job.Finished)
+        {
+            job.Terrains = result.Terrain is { } tb
+                ? tb.Terrains.Where(e => e.Mapping is not null).Select(e => e.Source).ToList()
+                : Array.Empty<AlpineTerrain>();
+        }
+
+        job.Finish();
+        result.AlpineChartsReported = true;
+        if (result.BakeStats is { } stats)
+        {
+            stats.AlpineLightmaps = job.Result;
+            stats.AlpineSkipped = job.Skipped;
+        }
+
+        if (job.Result is { } bake)
+        {
+            bake.Geometry = result.Geometry.Surfaces.Count == job.Surfaces.Count ? result.Geometry : bake.Geometry;
+        }
+
+        foreach (string line in job.Result?.Log ?? (IEnumerable<string>)Array.Empty<string>())
+        {
+            report.Add(BuildSeverity.Info, "Alpine lightmaps: " + line);
+        }
+
+        if (job.Skipped is { } skipped)
+        {
+            report.Add(BuildSeverity.Info, "Alpine lightmaps: " + skipped);
+        }
+    }
+
+    /// <summary>
+    /// The Alpine fixed pipeline's shading state for the static solid: the occluder tree over the compile's faces (the
+    /// faces of "No shadow cast" brushes left out; mover rest geometry folded in when "Movers cast shadows" is on), the
+    /// level's mesh occluders, and its liquid emitters (editor_patch/lightmap.cpp:1100-1257, 2152-2225).
+    /// </summary>
+    private static AlpineShading AlpineShadingOf(
+        List<CsgFace> faces, RoomBuildResult rooms, CompileOptions options, AlpineLightmapSettings settings, BuildReport report)
+    {
+        LightingOptions lo = options.Lighting;
+        var nsc = new HashSet<int>(settings.NoShadowCastBrushUids);
+        AlpineOccluders? tree = null;
+        if (lo.CastShadows)
+        {
+            var input = new List<AlpineOccluderFace>(faces.Count);
+            foreach (CsgFace f in faces)
+            {
+                if (string.IsNullOrEmpty(f.Texture) || f.Vertices.Count < 3)
+                {
+                    continue;
+                }
+
+                var poly = new Vec3[f.Vertices.Count];
+                var uvs = new Uv[f.Vertices.Count];
+                for (int i = 0; i < poly.Length; i++)
+                {
+                    poly[i] = f.Vertices[i].Position;
+                    uvs[i] = f.Vertices[i].Uv;
+                }
+
+                input.Add(new AlpineOccluderFace(poly, uvs, f.Flags, f.Texture, f.SurfaceIndex, f.Plane.Normal, f.IsPortal,
+                    nsc.Contains(f.SourceBrushUid) ? f.SourceBrushUid : -1));
+            }
+
+            if (lo.MoverShadows)
+            {
+                foreach (Brush m in options.Movers)
+                {
+                    input.AddRange(MoverLighting.MoverOccluderFaces(m, nsc, surfaceIds: false));
+                }
+            }
+
+            tree = AlpineOccluders.Build(input, settings.MeshesOcclude ? lo.MeshOccluders : null, settings.AlphaTestedOcclusion, lo.AlpineTextures);
+            ReportOccluders(tree, settings, options, report);
+        }
+
+        var log = new List<string>();
+        var liquidFaces = new List<(int, IReadOnlyList<Vec3>, Vec3)>();
+        foreach (CsgFace f in faces)
+        {
+            if (((FaceFlags)f.Flags & FaceFlags.LiquidSurface) != 0 && f.RoomIndex >= 0 && f.Vertices.Count >= 3)
+            {
+                liquidFaces.Add((f.RoomIndex, f.Vertices.ConvertAll(v => v.Position), f.Plane.Normal));
+            }
+        }
+
+        List<AlpineLiquidEmitter> liquid = AlpineShading.LiquidEmitters(lo.LiquidEmission, rooms.Rooms, liquidFaces, log);
+        foreach (string line in log)
+        {
+            report.Add(line.Contains(" but ", StringComparison.Ordinal) ? BuildSeverity.Warning : BuildSeverity.Info, "Lighting: " + line);
+        }
+
+        return new AlpineShading(tree, settings, liquid);
+    }
+
+    /// <summary>The bake log's occluder lines: what "No shadow cast" left out, and flags that resolved nothing (lightmap.cpp:1806-1843).</summary>
+    private static void ReportOccluders(AlpineOccluders tree, AlpineLightmapSettings settings, CompileOptions options, BuildReport report)
+    {
+        if (tree.AlphaTestedTriangles > 0)
+        {
+            report.Add(BuildSeverity.Info, $"Lighting: {tree.AlphaTestedTriangles} triangles block light by their texture's alpha.");
+        }
+
+        if (settings.MeshesOcclude && options.Lighting.MeshOccluders.Count > 0)
+        {
+            report.Add(BuildSeverity.Info, $"Lighting: {options.Lighting.MeshOccluders.Count} mesh triangles block light.");
+        }
+
+        if (settings.NoShadowCastBrushUids.Count == 0)
+        {
+            return;
+        }
+
+        int total = 0;
+        foreach (int n in tree.NoShadowCastDropped.Values)
+        {
+            total += n;
+        }
+
+        report.Add(BuildSeverity.Info,
+            $"Lighting: {tree.NoShadowCastDropped.Count} of {settings.NoShadowCastBrushUids.Count} \"No shadow cast\" brushes resolved, {total} occluder faces left out.");
+    }
+
+    /// <summary>The liquid-surface and show-sky faces of the compile, for the Alpine directional lights.</summary>
+    private static DirectionalOccluders DirectionalOccludersOf(List<CsgFace> faces)
+    {
+        var list = new List<(ushort, IReadOnlyList<Vec3>)>(faces.Count);
+        foreach (CsgFace f in faces)
+        {
+            if (f.IsPortal || f.Vertices.Count < 3)
+            {
+                continue;
+            }
+
+            var poly = new Vec3[f.Vertices.Count];
+            for (int i = 0; i < poly.Length; i++)
+            {
+                poly[i] = f.Vertices[i].Position;
+            }
+
+            list.Add(((ushort)f.Flags, poly));
+        }
+
+        return DirectionalOccluders.Build(list);
     }
 
     /// <summary>Triangulates the level's solid occluder faces for the shadow BVH.</summary>

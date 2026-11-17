@@ -13,7 +13,7 @@ namespace Ged.App.Dialogs;
 /// The Create-Level-Packfile review dialog: a per-kind tree of the scanned
 /// dependencies with include/exclude checkboxes, missing files highlighted with a
 /// blocking toggle, a live selected-count/size total, an output path (default
-/// user_maps\&lt;mode&gt;\&lt;level&gt;.vpp), and Build — which writes the level
+/// &lt;level folder&gt;\&lt;level&gt;.vpp) with a picker, and Build — which writes the level
 /// .rfl first followed by the checked files via <see cref="PackfileBuilder"/>.
 /// </summary>
 internal sealed class PackfileDialog : Window

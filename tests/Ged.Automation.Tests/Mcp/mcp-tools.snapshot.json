@@ -203,7 +203,7 @@
   {
     "name": "run_lua",
     "title": "Run lua",
-    "description": "The way to build and edit: runs Lua against the open level as ONE undo step labelled \"AI: <name>\" (any error rolls it all back). Prefer the design kit (local kit = ged.import(\"kit\")). Units: metres, degrees, seconds; colours 0-255; texture UVs in tile units (1 = one repeat). Axes: left-handed. +X right, +Y up, +Z forward. Globals: ged, level, selection, assets, ops, lint, log, rng, catalog, prefab, modules, geo, spatial, design. Seconds; limit timeout_s. Use dry_run to preview. Returns changes, created UIDs, log, errors with line:column and a hint. Next: build (sealed), check_holes, render_plan.",
+    "description": "The way to build and edit: runs Lua against the open level as ONE undo step labelled \"AI: <name>\" (any error rolls it all back). Prefer the design kit (local kit = ged.import(\"kit\")). Units: metres, degrees, seconds; colours 0-255; texture UVs in tile units (1 = one repeat). Axes: left-handed. +X right, +Y up, +Z forward. Globals: ged, level, selection, assets, ops, lint, log, rng, catalog, prefab, modules, geo, spatial, design, ref. Seconds; limit timeout_s. Use dry_run to preview. Returns changes, created UIDs, log, errors with line:column and a hint. Next: build (sealed), check_holes, render_plan.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -440,18 +440,19 @@
         },
         "overlays": {
           "type": "string",
-          "description": "Comma list of grid, scale, objects, labels, links, holes (runs a sealed leak check), legend; or none. Default: grid,scale,objects,labels,links,legend."
+          "description": "Comma list of grid, scale, objects, labels, links, holes (leak check), legend, heights; or none. Default: grid,scale,objects,labels,links,legend."
         },
         "mode": {
           "type": "string",
-          "description": "Shading: lit (lightmaps; falls back to textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough.",
+          "description": "Shading: lit (lightmaps; else textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough, heights.",
           "enum": [
             "lit",
             "textured",
             "lightmaps",
             "rooms",
             "wireframe",
-            "seethrough"
+            "seethrough",
+            "heights"
           ],
           "default": "lit"
         },
@@ -559,18 +560,19 @@
         },
         "overlays": {
           "type": "string",
-          "description": "Comma list of grid, scale, objects, labels, links, holes (runs a sealed leak check), legend, icons (editor object icons; off by default in iso/camera); or none. Default: none."
+          "description": "Comma list of grid, scale, objects, labels, links, holes (leak check), legend, heights, icons (editor object icons; off by default in iso/camera); or none. Default: none."
         },
         "mode": {
           "type": "string",
-          "description": "Shading: lit (lightmaps; falls back to textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough.",
+          "description": "Shading: lit (lightmaps; else textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough, heights.",
           "enum": [
             "lit",
             "textured",
             "lightmaps",
             "rooms",
             "wireframe",
-            "seethrough"
+            "seethrough",
+            "heights"
           ],
           "default": "lit"
         },
@@ -637,6 +639,18 @@
           "description": "Longest side, px.",
           "minimum": 200,
           "maximum": 4096
+        },
+        "step": {
+          "type": "integer",
+          "description": "image: fine grid step, px.",
+          "minimum": 1,
+          "maximum": 5000
+        },
+        "zoom": {
+          "type": "number",
+          "description": "image: crop zoom.",
+          "minimum": 0.25,
+          "maximum": 32
         },
         "refs_dir": {
           "type": "string",
@@ -907,14 +921,15 @@
         },
         "mode": {
           "type": "string",
-          "description": "Shading: lit (lightmaps; falls back to textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough.",
+          "description": "Shading: lit (lightmaps; else textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough, heights.",
           "enum": [
             "lit",
             "textured",
             "lightmaps",
             "rooms",
             "wireframe",
-            "seethrough"
+            "seethrough",
+            "heights"
           ],
           "default": "lit"
         },
@@ -939,7 +954,7 @@
   {
     "name": "build",
     "title": "Build",
-    "description": "Compiles the level exactly like the editor's Build and applies the result (brushes are not changed). Sealed by default here, because holes must never be measured on a preview. light also bakes lightmaps (slower). Seconds to minutes; reports progress. Next: check_holes, then lint.",
+    "description": "Compiles like the editor's Build and applies the result (brushes unchanged). Sealed by default: never measure holes on a preview. light also bakes lightmaps. Seconds to minutes; reports progress. Next: check_holes, then lint.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -957,6 +972,28 @@
           "type": "boolean",
           "description": "Cast shadows while baking (default true).",
           "default": true
+        },
+        "pipeline": {
+          "type": "string",
+          "description": "Store the lightmap pipeline first: alpine (stock + Alpine D3D11 charts, default) or legacy (stock only). Omit to keep it.",
+          "enum": [
+            "alpine",
+            "legacy"
+          ]
+        },
+        "density": {
+          "type": "integer",
+          "description": "Store the Alpine lightmap density first: 0 = default (8 px/m), 1-128, 255 = charts off. Omit to keep it.",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "codec": {
+          "type": "string",
+          "description": "Alpine lightmap codec for this bake: bc7 (default, as Alpine ships) or raw (uncompressed RGB8). Not stored in the level.",
+          "enum": [
+            "bc7",
+            "raw"
+          ]
         }
       },
       "additionalProperties": false
@@ -1196,6 +1233,107 @@
     },
     "annotations": {
       "title": "Align textures",
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "terrain",
+    "title": "Terrain",
+    "description": "One undo step. create: grid at center. generate: seeded hills. edit: resize, layers, holes, heightmap. sculpt: points = stroke, layers = mode[:radius:strength:layer]. query: facts, lint, lighting, y at points. to_brushes (keep = false: destructive).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "description": "Action.",
+          "enum": [
+            "create",
+            "generate",
+            "edit",
+            "sculpt",
+            "query",
+            "to_brushes"
+          ]
+        },
+        "terrain": {
+          "type": "string",
+          "description": "UID or name.",
+          "maxLength": 64
+        },
+        "center": {
+          "type": "array",
+          "description": "Centre (create).",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "nx": {
+          "type": "integer",
+          "description": "Vertices X, 2-257."
+        },
+        "nz": {
+          "type": "integer",
+          "description": "Vertices Z."
+        },
+        "layers": {
+          "type": "string",
+          "description": "Textures, ';' list."
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Noise seed.",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "description": "Noise.",
+          "enum": [
+            "fbm",
+            "ridged",
+            "billow",
+            "hybrid"
+          ]
+        },
+        "height_range": {
+          "type": "number",
+          "description": "Height span, m."
+        },
+        "holes": {
+          "type": "array",
+          "description": "Hole cells x, z, ...",
+          "items": {
+            "type": "number"
+          }
+        },
+        "heightmap": {
+          "type": "string",
+          "description": "PNG / RAW16 file."
+        },
+        "points": {
+          "type": "array",
+          "description": "x, z, ...",
+          "items": {
+            "type": "number"
+          }
+        },
+        "keep": {
+          "type": "boolean",
+          "description": "Keep it.",
+          "default": false
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Terrain",
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false,

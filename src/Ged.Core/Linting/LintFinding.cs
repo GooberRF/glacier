@@ -58,6 +58,12 @@ public enum LintCategory
     MissingGeometry,
 
     /// <summary>
+    /// The compiled geometry reached the lightmap surface cap (32,767, Alpine RED's limit): lit faces past it got no
+    /// surface and draw unlit.
+    /// </summary>
+    LightmapSurfaceCap,
+
+    /// <summary>
     /// A level metric (doorway width, corridor height, light density, …) lies outside the p5–p95 range of the shipped
     /// corpus norms. Always informational; never blocks a save.
     /// </summary>
@@ -95,6 +101,44 @@ public enum LintCategory
     /// and saving the level in Glacier re-stores the brush inward.
     /// </summary>
     AirBrushInsideOut,
+
+    /// <summary>
+    /// An Alpine Faction 1.5 object (vehicle factory, rope emitter, directional light, waypoint helper, projection
+    /// camera, mover path, liquid emission) that Alpine Faction refuses, ignores, or loads with a clamped value.
+    /// </summary>
+    AlpineObject,
+
+    /// <summary>
+    /// A multiplayer respawn point, the Player Start or a non-Air waypoint helper less than 0.5 m above the walkable floor
+    /// below it, or one of them (Air helpers included) inside solid. They belong about 1 m above the floor (Air helpers in
+    /// open air) so what spawns there starts clear of the floor. A warning; never blocks a save.
+    /// </summary>
+    SpawnHeight,
+
+    /// <summary>
+    /// Craft audit (<see cref="CraftAudit"/>): a clutter object, item, mesh or prop-sized detail brush sunk into the floor,
+    /// floating above it, pushed into a wall, or placed at random (a rock on a built floor, in a doorway, on a flight, lone
+    /// in the open). A warning.
+    /// </summary>
+    CraftProp,
+
+    /// <summary>Craft audit: a stair flight, ramp or bridge (read from the geometry) that leads nowhere, into a wall or onto nothing, or a step to hop on a route. A warning.</summary>
+    CraftStairs,
+
+    /// <summary>Craft audit: an empty dead-end perch or pit reached only by a flight. A warning.</summary>
+    CraftPerch,
+
+    /// <summary>Craft audit: a doorway, frame or door with solid, a drop, void or no headroom on one side. A warning.</summary>
+    CraftOpening,
+
+    /// <summary>Craft audit: an element built with its purpose check off (purpose = "off" / "quiet" / "report") that the built level still does not serve. A warning.</summary>
+    CraftPurpose,
+
+    /// <summary>Craft audit: rock that is flat-sided (stacked prisms) rather than organic. A warning.</summary>
+    CraftFlatRock,
+
+    /// <summary>Craft audit: an area dressed or lit far below the corpus norms ("basic"). A warning.</summary>
+    CraftSparse,
 }
 
 /// <summary>

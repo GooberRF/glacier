@@ -27,6 +27,70 @@ public sealed class SceneRenderer : IDisposable
         _gd = gd;
         _frameCb = gd.CreateConstantBuffer(160);
         _drawCb = gd.CreateConstantBuffer(96);
+        _terrainCb = gd.CreateConstantBuffer(176);
+    }
+
+    private readonly IGpuBuffer _terrainCb;
+
+    /// <summary>Draws the scene's terrain tops with the terrain program (the caller has set raster, depth and blend).</summary>
+    private void DrawTerrains(GpuScene scene, bool pick)
+    {
+        if (scene.Terrains.Count == 0)
+        {
+            return;
+        }
+
+        IRenderContext ctx = Ctx;
+        SetProgram(_gd.Programs.Terrain, pick);
+        ctx.SetConstantBuffer(2, _terrainCb);
+        ctx.SetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        foreach (GpuTerrain t in scene.Terrains)
+        {
+            UpdateDraw(Matrix4x4.Identity, Vector4.One, 0, hasLightmap: false);
+            ctx.UpdateConstantBuffer(_terrainCb, in t.Constants);
+            ctx.SetVertexBuffer(t.VertexBuffer, Scene.WorldVertex.SizeInBytes);
+            ctx.SetIndexBuffer(t.IndexBuffer);
+            if (!pick)
+            {
+                for (int i = 0; i < t.Textures.Length; i++)
+                {
+                    ctx.SetTexture(i, t.Textures[i]);
+                }
+            }
+
+            ctx.DrawIndexed(t.IndexCount);
+        }
+    }
+
+    /// <summary>
+    /// Draws a small overlay scene over the frame already rendered (no clear, depth-tested against it): its terrain tops
+    /// and opaque batches — a terrain being sculpted, drawn live without re-uploading the level — then its billboards.
+    /// </summary>
+    internal void DrawOverlayScene(Camera camera, RenderMode mode, GpuScene scene)
+    {
+        IRenderContext ctx = Ctx;
+        if (scene.Terrains.Count > 0 || scene.Batches.Count > 0)
+        {
+            UpdateFrame(camera, mode.GlobalAlpha(), mode.ShaderBranch(), Fog);
+            BindConstants();
+            BindSampler();
+            bool wire = mode.IsWireframe();
+            ctx.SetRasterizerState(wire ? _gd.RasterWireframe : !DisableBackfaceCulling ? _gd.RasterSolidCull : _gd.RasterSolid);
+            SetDepth(write: true);
+            SetBlend(mode == RenderMode.SeeThrough);
+            SetProgram(_gd.Programs.World, pick: false);
+            foreach (GpuBatch b in scene.Batches)
+            {
+                if (b.Pass == RenderPass.Opaque && !b.PickOnly)
+                {
+                    DrawBatch(b);
+                }
+            }
+
+            DrawTerrains(scene, pick: false);
+        }
+
+        DrawOverlayBillboards(camera, scene);
     }
 
     /// <summary>The background clear color (dark editor grey).</summary>
@@ -82,9 +146,10 @@ public sealed class SceneRenderer : IDisposable
             }
         }
 
+        DrawTerrains(scene, pick: false);
         DrawMeshes(scene, mode, pick: false, cull);
 
-        // Transparent passes (sky, liquid, alpha) with depth writes off — never back-face
+        // Transparent passes (sky, liquid, alpha) with depth writes off â€” never back-face
         // culled (blended surfaces are commonly authored to be seen from both sides).
         ctx.SetRasterizerState(wire ? _gd.RasterWireframe : _gd.RasterSolid);
         SetProgram(_gd.Programs.World, pick: false);
@@ -134,12 +199,12 @@ public sealed class SceneRenderer : IDisposable
         // Draw the pick-only brush faces FIRST. In Group / whole-brush-select modes the editor emits a
         // brush's faces PICK-ONLY (no colour fill) so the whole brush stays selectable, while the compiled
         // static world is ALSO drawn (IncludeStaticGeometry is on outside brush-edit modes) at the exact
-        // same depth — the pick-only faces ARE the surviving compiled fragments, so the two are coincident.
+        // same depth â€” the pick-only faces ARE the surviving compiled fragments, so the two are coincident.
         // The pick pass depth-tests with strict Less; whichever draws first wins a coincident-depth pixel.
         // The compiled world carries PickKind.Face (unselectable in every mode), so if IT wins, the brush
         // is unpickable (the Group-mode "can't click a brush" bug: the id-buffer returns Face, no route
         // selects it). Drawing the pick-only faces first makes the whole-brush id win coincident pixels,
-        // while a genuinely-nearer compiled wall drawn afterward still overwrites it (correct occlusion —
+        // while a genuinely-nearer compiled wall drawn afterward still overwrites it (correct occlusion â€”
         // a brush behind a wall stays unpickable).
         foreach (GpuBatch b in scene.Batches)
         {
@@ -159,9 +224,15 @@ public sealed class SceneRenderer : IDisposable
             }
         }
 
+        DrawTerrains(scene, pick: true);
+
         // DrawMeshes applies the per-mesh double-sided (V3M 0x20) exception itself, so
         // double-sided triangles stay pickable from both sides even when culling is on.
         DrawMeshes(scene, RenderMode.JustTextures, pick: true, cull);
+
+        // Billboards rasterize both windings, exactly as the colour pass draws them (Render sets RasterSolid
+        // before its billboards). Without this the pick pass inherited the world / last mesh's culled state.
+        ctx.SetRasterizerState(_gd.RasterSolid);
         DrawBillboards(scene, pick: true);
 
         return PickId.Decode(target.ReadPick(px, py));
@@ -282,8 +353,8 @@ public sealed class SceneRenderer : IDisposable
 
         // On-top atlas glyphs (mover keyframes) draw with the depth test disabled in BOTH the colour
         // and pick passes: drawn last with no depth test they are never occluded AND win the id-buffer
-        // at their own pixels, so a keyframe seeded at the mover's rest centre — sitting inside/behind
-        // its mover geometry — is still visible and pickable (RED draws editor icons as non-occluded
+        // at their own pixels, so a keyframe seeded at the mover's rest centre â€” sitting inside/behind
+        // its mover geometry â€” is still visible and pickable (RED draws editor icons as non-occluded
         // overlays). The on-top TEXTURED groups (transform-drag labels) stay colour-pass only.
         DrawBillboardSet(
             scene.BillboardOnTopIndexCount, scene.BillboardOnTopVertexBuffer, scene.BillboardOnTopIndexBuffer,
@@ -338,7 +409,7 @@ public sealed class SceneRenderer : IDisposable
 
     /// <summary>
     /// Draws an ad-hoc line list (selection highlight) over whatever is already
-    /// in the currently bound target — no clear. Call immediately after
+    /// in the currently bound target â€” no clear. Call immediately after
     /// <see cref="Render"/> and before Present.
     /// </summary>
     internal void DrawOverlayLines(Camera camera, IGpuBuffer? vertexBuffer, int vertexCount, bool onTop = false)
@@ -365,8 +436,8 @@ public sealed class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// Draws a small independent overlay scene's billboards over the already-rendered frame — the
-    /// transform-drag Δ/∠/% label, carried on its own tiny <see cref="GpuScene"/> so it updates every
+    /// Draws a small independent overlay scene's billboards over the already-rendered frame â€” the
+    /// transform-drag Î”/âˆ /% label, carried on its own tiny <see cref="GpuScene"/> so it updates every
     /// drag frame WITHOUT re-emitting/re-uploading the whole level scene. Call after
     /// <see cref="Render"/>, before Present. No-op for an empty overlay scene, so normal rendering
     /// (no drag) is byte-identical.
@@ -451,6 +522,7 @@ public sealed class SceneRenderer : IDisposable
 
     public void Dispose()
     {
+        _terrainCb.Dispose();
         _drawCb.Dispose();
         _frameCb.Dispose();
     }

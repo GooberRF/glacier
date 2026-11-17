@@ -15,6 +15,7 @@ public static class CommandIds
     public const string FilePlayMultiFromCamera = "file.playMultiFromCamera";
     public const string FileDialogueText = "file.dialogueText";
     public const string FilePackfile = "file.packfile";
+    public const string FilePackfileAs = "file.packfileAs";
     public const string FileImportMesh = "file.importMesh";
     public const string FileExportMesh = "file.exportMesh";
     public const string FileExportGltf = "file.exportGltf";
@@ -169,6 +170,7 @@ public static class CommandIds
     public const string ObjNavConnect = "object.navConnect";
     public const string ObjWaypoints = "object.waypoints";
     public const string ObjConvertToMesh = "object.convertToMesh";
+    public const string ObjTerrainToBrushes = "object.terrainToBrushes";
 
     public const string ToolRuler = "tool.ruler";
     public const string ToolSelect = "tool.select";
@@ -223,6 +225,7 @@ public static class CommandCatalog
         new(CommandIds.FilePlayMultiFromCamera, "Play in Multi from Camera", "File", CommandScope.Global, true, "F10", "F10"),
         new(CommandIds.FileDialogueText, "Open Dialogue Text", "File", CommandScope.Global, true, null, null),
         new(CommandIds.FilePackfile, "Create Level Packfile", "File", CommandScope.Global, true, null, null),
+        new(CommandIds.FilePackfileAs, "Create Level Packfile As…", "File", CommandScope.Global, true, null, null),
         new(CommandIds.FileImportMesh, "Import Mesh…", "File", CommandScope.Global, true, null, null),
         new(CommandIds.FileExportMesh, "Export Selection To Mesh…", "File", CommandScope.Global, true, null, null),
         new(CommandIds.FileExportGltf, "Export Level as glTF…", "File", CommandScope.Global, true, null, null),
@@ -419,6 +422,7 @@ public static class CommandCatalog
         new(CommandIds.ObjNavConnect, "Cycle Nav Connection", "Object", CommandScope.Object, true, "J", null),
         new(CommandIds.ObjWaypoints, "Waypoint List", "Object", CommandScope.Object, true, "Ctrl+W", null),
         new(CommandIds.ObjConvertToMesh, "Convert To Mesh Object", "Object", CommandScope.Object, true, null, null),
+        new(CommandIds.ObjTerrainToBrushes, "Convert Terrain To Brushes", "Object", CommandScope.Object, true, null, null),
 
         // ---- Measure / annotate (B7) ----
         new(CommandIds.ToolSelect, "Select Tool", "Tools", CommandScope.Global, true, null, null),

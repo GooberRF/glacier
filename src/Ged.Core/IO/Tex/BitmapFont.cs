@@ -1,14 +1,15 @@
 using System;
 
-namespace Ged.Automation.Rendering;
+namespace Ged.Core.IO.Tex;
 
 /// <summary>
 /// A tiny embedded 5x7 ASCII bitmap font (printable 0x20-0x7E) for the render overlays' labels,
 /// legend and scale bar — so overlay text needs no font file or third-party rasterizer. Each glyph is
 /// five column bytes, least-significant bit at the top row; the advance is six columns (one blank).
-/// Characters outside the printable range draw as '?'.
+/// Besides ASCII it has three arrows for the heights overlay's labels: '→' (U+2192), '↓' (U+2193) and '↑' (U+2191).
+/// Other characters outside the printable range draw as '?'. Shared by the automation render overlays and the reference-image tools.
 /// </summary>
-internal static class BitmapFont
+public static class BitmapFont
 {
     /// <summary>Glyph cell width in font pixels (without the one-column gap).</summary>
     public const int GlyphWidth = 5;
@@ -118,6 +119,14 @@ internal static class BitmapFont
         0x08, 0x04, 0x08, 0x10, 0x08, // '~'
     };
 
+    /// <summary>The arrows: '→', '↓', '↑' (five columns each).</summary>
+    private static readonly byte[] Arrows =
+    {
+        0x08, 0x08, 0x2A, 0x1C, 0x08, // '→'
+        0x10, 0x20, 0x7F, 0x20, 0x10, // '↓'
+        0x04, 0x02, 0x7F, 0x02, 0x04, // '↑'
+    };
+
     /// <summary>True when font pixel (<paramref name="x"/>, <paramref name="y"/>) of <paramref name="c"/> is set.</summary>
     public static bool IsSet(char c, int x, int y)
     {
@@ -126,8 +135,14 @@ internal static class BitmapFont
             return false;
         }
 
-        int index = c is >= ' ' and <= '~' ? c - ' ' : '?' - ' ';
-        return (Columns[(index * GlyphWidth) + x] & (1 << y)) != 0;
+        byte column = c switch
+        {
+            '→' => Arrows[x],
+            '↓' => Arrows[GlyphWidth + x],
+            '↑' => Arrows[(2 * GlyphWidth) + x],
+            _ => Columns[((c is >= ' ' and <= '~' ? c - ' ' : '?' - ' ') * GlyphWidth) + x],
+        };
+        return (column & (1 << y)) != 0;
     }
 
     /// <summary>The pixel width of <paramref name="text"/> at <paramref name="scale"/> (no trailing gap).</summary>

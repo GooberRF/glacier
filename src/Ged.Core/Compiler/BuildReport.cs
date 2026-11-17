@@ -41,6 +41,15 @@ public sealed class BuildReport
 
     public int Surfaces { get; set; }
 
+    /// <summary>
+    /// The lightmap surface budget of the build (surfaces made, surfaces the lit faces wanted, faces left without one
+    /// past Alpine RED's cap of 32,767); null when the build made no surfaces.
+    /// </summary>
+    public SurfaceBudgetState? SurfaceBudget { get; set; }
+
+    /// <summary>Lit faces that got no lightmap surface because the level reached the surface cap (0 normally).</summary>
+    public int UnlitFaces => SurfaceBudget?.UnlitFaces ?? 0;
+
     public int LightmapPages { get; set; }
 
     public int Uids { get; set; }

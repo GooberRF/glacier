@@ -19,7 +19,7 @@ public sealed class ScriptLint
     internal ScriptLint(ScriptContext ctx) => _ctx = ctx;
 
     /// <summary>Lua: <c>lint.run()</c> — runs the linter and returns a report (incl. contributed findings).</summary>
-    [ScriptDoc("Runs the level linter (plus findings this script added with lint.add) and returns a lint_report. Read-only.", Example = "local r = lint.run() log.info(r.error_count .. \" errors\")")]
+    [ScriptDoc("Runs the level linter (plus findings this script added with lint.add) and returns a lint_report; the craft audit is level.audit{}. Read-only.", Example = "local r = lint.run() log.info(r.error_count .. \" errors\")")]
     public ScriptLintReport Run()
     {
         // The out-of-norm check measures the compiled geometry the level holds now: run ops.build() first after edits.

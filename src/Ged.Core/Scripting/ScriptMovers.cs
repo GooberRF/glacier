@@ -189,6 +189,31 @@ public sealed class ScriptMoverHandle
         _ctx.Changes.Record("dissolved");
     }
 
+    [ScriptDoc("RED's Propagate Sounds: copies this mover's sounds and volumes to every mover with a keyframe named like keyframe (one of its keyframes, not named \"Keyframe\"). Returns the movers written.",
+        Example = "m:propagate_sounds(m.keyframes[1])", Since = 2)]
+    public int PropagateSounds(ScriptObjectHandle keyframe) =>
+        Propagate("mover:propagate_sounds", keyframe, Editing.MoverPropagation.PropagateSounds).Movers;
+
+    [ScriptDoc("RED's Propagate Properties: this mover's flags, type and start go to movers with a keyframe named like keyframe; its timing, UIDs and rotation to keyframes of that name. Returns keyframes written.",
+        Example = "m:propagate_properties(m.keyframes[1])", Since = 2)]
+    public int PropagateProperties(ScriptObjectHandle keyframe) =>
+        Propagate("mover:propagate_properties", keyframe, Editing.MoverPropagation.PropagateProperties).Keyframes;
+
+    private Editing.MoverPropagationResult Propagate(string api, ScriptObjectHandle keyframe, Func<Editing.MoverService, Keyframe, Editing.MoverPropagationResult> run)
+    {
+        ArgumentNullException.ThrowIfNull(keyframe);
+        Keyframe kf = Data.Keyframes.FirstOrDefault(k => k.Uid == keyframe.Uid)
+            ?? throw new ScriptApiException($"{api}: {keyframe.Kind} {keyframe.Uid} is not a keyframe of mover '{Group.Name}'.", "Use one of m.keyframes.");
+        Editing.MoverPropagationResult result = run(_ctx.Movers, kf);
+        if (result.Refusal is { } why)
+        {
+            throw new ScriptApiException($"{api}: {why}", "Give the keyframe a script name of its own first, e.g. kf:set(\"script_name\", \"door_a\").");
+        }
+
+        _ctx.Changes.Record("propagated");
+        return result;
+    }
+
     // ---- generic fields ----------------------------------------------------
 
     internal ScriptFieldSet FieldSet()

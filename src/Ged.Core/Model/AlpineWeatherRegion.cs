@@ -1,7 +1,7 @@
 namespace Ged.Core.Model;
 
 /// <summary>
-/// An Alpine weather region (0x0AFBAE06; layout editor_patch/weather_region.cpp:48-112): a box or cylinder
+/// An Alpine weather region (0x0AFBAE06; layout editor_patch/weather_region.cpp:48-112): a box or sphere
 /// volume that rains or snows. Values are kept as stored.
 /// </summary>
 public sealed class AlpineWeatherRegion
@@ -14,7 +14,7 @@ public sealed class AlpineWeatherRegion
 
     public string ScriptName { get; set; } = string.Empty;
 
-    /// <summary>0 = box, 1 = cylinder (Alpine WeatherRegionShape).</summary>
+    /// <summary>0 = box (centred, width/height/depth along right/up/forward), 1 = sphere (Alpine WeatherRegionShape, editor_patch/mfc_types.h:766-770).</summary>
     public int Shape { get; set; }
 
     /// <summary>0 = rain, 1 = snow (Alpine WeatherRegionType).</summary>

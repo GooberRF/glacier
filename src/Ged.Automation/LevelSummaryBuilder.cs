@@ -597,7 +597,7 @@ public static class LevelLint
     /// <paramref name="checkNorms"/> adds the out-of-norm Info hints (the <c>lint</c> command; skipped with a note on
     /// preview geometry).
     /// </summary>
-    public static (LintReport Report, List<string> Notes) Run(IAutomationHost host, bool checkNorms = false)
+    public static (LintReport Report, List<string> Notes) Run(IAutomationHost host, bool checkNorms = false, bool checkCraft = false)
     {
         EditorDocument doc = host.Document
             ?? throw new AutomationException(AutomationErrorCodes.NoDocument, "No level is open.");
@@ -621,6 +621,7 @@ public static class LevelLint
             MaxTextureDimension = 1024,
             CheckGeometryLeaks = !preview,
             CheckNorms = checkNorms,
+            CheckCraft = checkCraft,
             GeometryIsPreview = preview,
             FileName = doc.Path is { Length: > 0 } path ? System.IO.Path.GetFileName(path) : null,
         };

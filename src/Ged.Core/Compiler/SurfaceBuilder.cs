@@ -14,6 +14,24 @@ public sealed class SurfaceBuildResult
 
     /// <summary>Parallel to <see cref="Surfaces"/>: the source faces merged into each surface (for smooth normals).</summary>
     public List<List<CsgFace>> SurfaceFaces { get; } = new();
+
+    /// <summary>Lightmap surfaces the lit faces would make (merged clusters), before the level cap.</summary>
+    public int SurfacesWanted { get; init; }
+
+    /// <summary>
+    /// Lit faces left with surface −1 because the level already held <see cref="SurfaceBuilder.MaxLevelSurfaces"/>
+    /// surfaces (Alpine RED's cap): they get no lightmap.
+    /// </summary>
+    public List<CsgFace> Unlit { get; } = new();
+
+    /// <summary>Lightmap surfaces wanted counting the enclosed (unseen) detail faces too.</summary>
+    public int SurfacesWantedWithEnclosed { get; init; }
+
+    /// <summary>
+    /// Detail faces nobody can see (their front lies in solid) left without a surface because the level would
+    /// otherwise pass the cap; empty below the cap.
+    /// </summary>
+    public List<CsgFace> Enclosed { get; } = new();
 }
 
 /// <summary>
@@ -48,12 +66,13 @@ public sealed class SurfaceBuilder
     private static readonly float[] ResMultiplier = { 0.5f, 1f, 2f, 4f };
 
     /// <summary>Most lightmap surfaces a level can carry (Alpine RED's <c>red_max_level_surfaces</c>).</summary>
-    internal const int MaxLevelSurfaces = 32767;
+    public const int MaxLevelSurfaces = 32767;
 
     // Item 6 (amendment): High-Resolution Lightmaps widens pages + fragment cap + ppm (format-safe).
     private readonly int _pageSize;
     private readonly int _maxFragment;
     private readonly float _ppmScale;
+    private readonly int _cap;
 
     private readonly List<Lightmap> _pages = new();
     private RfColor? _levelAmbient;
@@ -62,15 +81,25 @@ public sealed class SurfaceBuilder
     private int _shelfHeight;
 
     /// <summary>Stock (128 pages, 64-texel fragments, ×1 ppm) unless <paramref name="highRes"/>.</summary>
-    public SurfaceBuilder(bool highRes = false)
+    public SurfaceBuilder(bool highRes = false, int highResFragmentMax = HighResMaxFragment, int cap = MaxLevelSurfaces)
     {
+        _cap = Math.Clamp(cap, 1, MaxLevelSurfaces);
         _pageSize = highRes ? HighResPageSize : StockPageSize;
-        _maxFragment = highRes ? HighResMaxFragment : StockMaxFragment;
+        _maxFragment = highRes ? Math.Clamp(highResFragmentMax, StockMaxFragment, HighResMaxFragment) : StockMaxFragment;
         _ppmScale = highRes ? HighResPpmScale : 1f;
     }
 
     public SurfaceBuildResult Build(
         List<CsgFace> faces, RoomBuildResult rooms, CompiledLevel result, bool group, RfColor? levelAmbient = null)
+        => Build(faces, rooms, result, group, levelAmbient, null);
+
+    /// <summary>
+    /// Builds the surfaces; <paramref name="enclosed"/> (asked only when the lit faces would need more than
+    /// <see cref="MaxLevelSurfaces"/> surfaces, which no stock level does) tells which detail faces nobody can see, so
+    /// they give up their surfaces before any visible face loses one.
+    /// </summary>
+    internal SurfaceBuildResult Build(
+        List<CsgFace> faces, RoomBuildResult rooms, CompiledLevel result, bool group, RfColor? levelAmbient, Func<Func<CsgFace, bool>>? enclosed)
     {
         _levelAmbient = levelAmbient;
         var eligible = new List<CsgFace>();
@@ -100,19 +129,53 @@ public sealed class SurfaceBuilder
                 continue;
             }
 
+            // Terrain chunk faces get no stock surface either: the terrain is lit by its own chart
+            // (editor_patch/terrain_build.cpp:770-780, the hook on RED's FUN_004abac0).
+            if (f.IsTerrain)
+            {
+                continue;
+            }
+
             eligible.Add(f);
         }
 
         List<List<CsgFace>> clusters = group ? Cluster(eligible) : SingletonClusters(eligible);
 
-        var outp = new SurfaceBuildResult();
+        // Over the cap: a cluster of detail faces whose fronts all lie in solid (the sides and backs of rock chunks
+        // inside their neighbours or the wall) is seen by no one, so it takes no surface (it keeps −1, as past the cap,
+        // but loses nothing). The visible faces keep their surfaces in RED's order.
+        var hidden = new List<CsgFace>();
+        int wantedAll = clusters.Count;
+        if (group && enclosed is not null && clusters.Count > _cap)
+        {
+            Func<CsgFace, bool> test = enclosed();
+            var seen = new List<List<CsgFace>>(clusters.Count);
+            foreach (List<CsgFace> cluster in clusters)
+            {
+                if (cluster.TrueForAll(f => (f.Flags & (ushort)FaceFlags.IsDetail) != 0 && test(f)))
+                {
+                    hidden.AddRange(cluster);
+                }
+                else
+                {
+                    seen.Add(cluster);
+                }
+            }
+
+            clusters = seen;
+        }
+
+        var outp = new SurfaceBuildResult { SurfacesWanted = clusters.Count, SurfacesWantedWithEnclosed = wantedAll };
+        outp.Enclosed.AddRange(hidden);
         foreach (List<CsgFace> cluster in clusters)
         {
             // RED numbers surfaces in a short (FUN_004aa610); Alpine RED stops starting new surfaces at 32767
             // and the remaining faces keep surface −1 (editor_patch/terrain_build.h:36, terrain_build.cpp:710-717).
-            if (outp.Surfaces.Count >= MaxLevelSurfaces)
+            // They are counted, so the build can say how many faces went without a lightmap and where.
+            if (outp.Surfaces.Count >= _cap)
             {
-                break;
+                outp.Unlit.AddRange(cluster);
+                continue;
             }
 
             if (BuildSurface(cluster, rooms, outp.Surfaces.Count) is Surface s)

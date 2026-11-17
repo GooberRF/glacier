@@ -25,6 +25,17 @@ public readonly struct SurfaceTexelMapper
     private readonly float _offset;  // plane offset (N·P + offset = 0)
 
     public SurfaceTexelMapper(Surface s, int pageWidth, int pageHeight)
+        : this(s, s.X, s.Y, pageWidth, pageHeight)
+    {
+    }
+
+    /// <summary>
+    /// A mapper for a texel view of the surface whose column 0 / row 0 sit at page texel
+    /// (<paramref name="originX"/>, <paramref name="originY"/>) of a <paramref name="pageWidth"/> ×
+    /// <paramref name="pageHeight"/> page. Alpine's chart bake shades a page scaled by k with the surface's own
+    /// uv_scale / uv_add (editor_patch/alpine_lightmaps.cpp:706-781), so the origin may lie anywhere in that page.
+    /// </summary>
+    public SurfaceTexelMapper(Surface s, long originX, long originY, long pageWidth, long pageHeight)
     {
         _uAxis = s.UCoefficient;
         _vAxis = s.VCoefficient;
@@ -35,8 +46,8 @@ public readonly struct SurfaceTexelMapper
         float invScaleV = s.UvScale.V != 0f ? 1f / s.UvScale.V : 0f;
         float du = 1f / pageWidth;
         float dv = 1f / pageHeight;
-        float a0u = (s.X + 0.5f) * du;
-        float a0v = (s.Y + 0.5f) * dv;
+        float a0u = (originX + 0.5f) * du;
+        float a0v = (originY + 0.5f) * dv;
         _baseU = (a0u - s.UvAdd.U) * invScaleU;
         _stepU = du * invScaleU;
         _baseV = (a0v - s.UvAdd.V) * invScaleV;

@@ -383,16 +383,16 @@ public sealed class ScriptObjectFieldTests
     private static void ExerciseAllFields(EditorDocument doc, int uid, string owner)
     {
         (ScriptRunResult keys, _) = ScriptTestFixture.Run(doc,
-            $"local t = {{}} for _, f in ipairs(level.find_uid({uid}):fields()) do t[#t + 1] = f.name .. '=' .. f.type .. '=' .. tostring(f.read_only) .. '=' .. table.concat(f.options, '|') end return table.concat(t, ';')");
+            $"local t = {{}} for _, f in ipairs(level.find_uid({uid}):fields()) do t[#t + 1] = f.name .. '=' .. f.type .. '=' .. tostring(f.read_only) .. '=' .. table.concat(f.options, '|') .. '=' .. tostring(f.min) .. '=' .. tostring(f.max) end return table.concat(t, ';')");
         Assert.True(keys.Success, $"{owner}: {keys.Error?.ToDisplayString()}");
         foreach (string row in keys.ReturnValue!.Split(';'))
         {
             string[] p = row.Split('=');
-            ExerciseField(doc, $"level.find_uid({uid})", p[0], p[1], p[2] == "true", p[3].Length == 0 ? Array.Empty<string>() : p[3].Split('|'), owner);
+            ExerciseField(doc, $"level.find_uid({uid})", p[0], p[1], p[2] == "true", p[3].Length == 0 ? Array.Empty<string>() : p[3].Split('|'), owner, p[4], p[5]);
         }
     }
 
-    private static void ExerciseField(EditorDocument doc, string handle, string key, string type, bool readOnly, string[] options, string owner)
+    private static void ExerciseField(EditorDocument doc, string handle, string key, string type, bool readOnly, string[] options, string owner, string min = "nil", string max = "nil")
     {
         string where = $"{owner}.{key} ({type})";
         byte[] before = doc.SaveToBytes(updateTimestamp: false);
@@ -428,6 +428,7 @@ public sealed class ScriptObjectFieldTests
         string lua =
             $"local h = {handle} local v = h:get('{key}') local p = {probe}\n" +
             $"local nv = {Next(type, options)}\n" +
+            $"local lo, hi = {min}, {max} if type(nv) == 'number' and hi and nv > hi then nv = (v or 0) - 1.5 end if type(nv) == 'number' and lo and nv < lo then nv = (lo + (hi or lo + 3)) / 2 end\n" +
             $"h:set('{key}', nv)\n" +
             $"local g = h:get('{key}')\n" +
             "local function same(a, b) if type(a) == 'table' and a.r then return a.r == b[1] and a.g == b[2] and a.b == b[3] end if type(a) == 'userdata' then return math.abs(a.x - b[1]) < 1e-4 and math.abs(a.y - b[2]) < 1e-4 and math.abs(a.z - b[3]) < 1e-4 end if type(a) == 'number' and type(b) == 'number' then return math.abs(a - b) < 1e-3 end if type(a) == 'string' and type(b) == 'string' then return a:lower() == b:lower() end return a == b end\n" +

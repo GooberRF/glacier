@@ -33,6 +33,7 @@ public static class ScriptApiReference
         ("geo", typeof(ScriptGeo), "Geometry tools: check, roughen and deform brushes (results stay convex and planar), extrude/bevel faces, weld/snap vertices, and builders for organic brush chains (tube, passage, rock_row, scatter, pit). Build convex shapes with level.brush_from_points{…}."),
         ("spatial", typeof(ScriptSpatial), "Spatial queries on the compiled geometry (build first): raycast, los, point_info and clearance (instant), and the measurements behind the design grader: walk (reachable floor, movement links), routes (k node-disjoint routes), graph (cell / space graphs with loops, chokepoints, pockets), sightlines and exposure, cover, cells (undressed / bare), area_report (vs the exemplar targets), spawn_report, item_report, locations, setpieces (bridge spans, landmark heights, atria), purpose (the function checks: bridges that serve no route, misplaced rocks, orphan cover, hidden landmarks). Every result carries geometry freshness; measurements are cached and budgeted (max_samples, timeout_s)."),
         ("design", typeof(ScriptDesign), "The self-review grader: design.grade{} returns PASS / REVIEW / FAIL with each failing check's values, fix hint and locations (the same code as glacier-cli grade and the grade_level tool); design.checks() lists the checks."),
+        ("ref", typeof(ScriptRef), "Recreating from an overhead reference picture (map, mockup, drawing): ref.open, ref.grid (a labelled pixel grid to read exact coordinates), ref.calibrate (pixels to world metres; to_world / to_px / world_points), ref.mask (trace the playable area by colour into polygons), ref.compare (the level's walkable floor against the mask: IoU, wall error in metres, the worst missing / extra regions, an overlay), ref.heights (a heights picture decoded into floor heights, flat regions, ramps, stairs and drop edges). Build what you traced with kit.trace{...}."),
     };
 
     /// <summary>Handle / query / result types returned into Lua.</summary>
@@ -49,6 +50,12 @@ public static class ScriptApiReference
         ("op_report", typeof(ScriptOpReport), "The outcome of a heavy operation."),
         ("hole_report", typeof(ScriptHoleReport), "The result of ops.holes(): leak count and world-space positions from a sealed build."),
         ("repair_report", typeof(ScriptRepairReport), "The hole-repair counters of a build (op_report.repair): Alpine RED's build-repair figures."),
+        ("lightmap_settings", typeof(ScriptLightmapSettings), DocSummary(typeof(ScriptLightmapSettings))),
+        ("lightmap_report", typeof(ScriptLightmapReport), DocSummary(typeof(ScriptLightmapReport))),
+        ("terrains", typeof(ScriptTerrains), DocSummary(typeof(ScriptTerrains))),
+        ("terrain", typeof(ScriptTerrainHandle), DocSummary(typeof(ScriptTerrainHandle))),
+        ("terrain_stroke", typeof(ScriptTerrainStroke), DocSummary(typeof(ScriptTerrainStroke))),
+        ("terrain_decoration", typeof(ScriptTerrainDecoration), DocSummary(typeof(ScriptTerrainDecoration))),
         ("rotation", typeof(ScriptRotation), DocSummary(typeof(ScriptRotation))),
         ("aabb", typeof(ScriptAabb), DocSummary(typeof(ScriptAabb))),
         ("uv", typeof(ScriptUv), DocSummary(typeof(ScriptUv))),
@@ -138,7 +145,7 @@ public static class ScriptApiReference
     public sealed record KitFunctionDoc(string Name, string Signature, string Description, IReadOnlyList<ScriptOption> Options);
 
     private static readonly System.Text.RegularExpressions.Regex KitOptLine =
-        new(@"^---@opt\s+(?<name>[a-z_]+):\s+(?<type>.+?)(?:\s+=\s+(?<def>.+?))?\s+—\s+(?<doc>.+)$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        new(@"^---@opt\s+(?<name>[a-z_][a-z0-9_]*):\s+(?<type>.+?)(?:\s+=\s+(?<def>.+?))?\s+—\s+(?<doc>.+)$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>
     /// Parses the design kit's doc comments: a <c>---@kit &lt;signature&gt; — &lt;description&gt;</c> line documents
@@ -274,6 +281,28 @@ public static class ScriptApiReference
                 sb.AppendLine(m.IsMethod
                     ? $"function {lua}:{m.Name}({string.Join(", ", m.Params.Select(p => p.Name))}) end  --- returns {m.ReturnType}"
                     : $"{lua}.{m.Name} = nil  --- {m.ReturnType}");
+            }
+
+            sb.AppendLine();
+        }
+
+        // The design kit: a shipped module (local kit = ged.import("kit")), listed with its functions and option keys so
+        // editors complete kit calls too.
+        if (ScriptKitSource.Combined() is { } kitSource)
+        {
+            sb.AppendLine("--- The design kit: local kit = ged.import(\"kit\") (a shipped module, not a global; listed here for completion). Each function takes one option table and rejects unknown keys.");
+            sb.AppendLine("kit = {}");
+            foreach (KitFunctionDoc doc in ParseKitDocs(kitSource))
+            {
+                sb.AppendLine($"--- {doc.Description}");
+                foreach (ScriptOption o in doc.Options)
+                {
+                    sb.AppendLine($"---   {FormatOption(o)}");
+                }
+
+                int arrow = doc.Signature.IndexOf('→', StringComparison.Ordinal);
+                string returns = arrow >= 0 ? doc.Signature[(arrow + 1)..].Trim() : "nil";
+                sb.AppendLine($"function kit.{doc.Name}(t) end  --- returns {returns}");
             }
 
             sb.AppendLine();

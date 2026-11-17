@@ -71,12 +71,24 @@ public sealed class CoreScriptOperations : IScriptOperations
         GeometryBuildService.Apply(Doc.Rfl, result);
         Doc.MarkDirty();
         int faces = result.Geometry?.Faces.Count ?? 0;
+        ScriptLightmapReport? lightmaps = bakeLighting && result.BakeStats is { } bake ? new ScriptLightmapReport(bake) : null;
         string msg = bakeLighting
-            ? $"Built + lit: {faces} faces, {result.Lightmaps?.Count ?? 0} lightmap pages."
+            ? $"Built + lit: {faces} faces, {result.Lightmaps?.Count ?? 0} lightmap pages" +
+              (lightmaps is { Charts: > 0 } l ? $", Alpine lightmaps: {l.Charts} charts on {l.Pages} pages at density {l.Density}." : ".")
             : $"Built: {faces} faces.";
         _ctx.Log.Info(msg);
+        if (result.Report.SurfaceBudget?.Message() is { } cap)
+        {
+            _ctx.Log.Warn(cap);
+        }
+
         ScriptRepairReport? repair = result.Report.Repair.Ran ? new ScriptRepairReport(result.Report.Repair) : null;
-        return new ScriptBuildOutcome(new ScriptOpReport(true, msg) { Count = faces, Repair = repair }, result);
+        return new ScriptBuildOutcome(new ScriptOpReport(true, msg)
+        {
+            Count = faces, Repair = repair, Lightmaps = lightmaps,
+            Surfaces = result.Report.Surfaces, SurfacesWanted = result.Report.SurfaceBudget?.Wanted ?? result.Report.Surfaces,
+            UnlitFaces = result.Report.UnlitFaces,
+        }, result);
     }
 
     /// <summary>
@@ -121,13 +133,23 @@ public sealed class CoreScriptOperations : IScriptOperations
             throw new ScriptApiException(blocked, "Levels newer than RFL 306 open read-only in Glacier.");
         }
 
+        SaveDocument(target, null);
+    }
+
+    /// <summary>Writes the document to <paramref name="target"/> and logs the save notes (the gates are the caller's).</summary>
+    private void SaveDocument(string target, string? why)
+    {
         Doc.Save(target);
-        _ctx.Log.Info($"Saved {Path.GetFileName(target)}.");
+        _ctx.Log.Info(why is null ? $"Saved {Path.GetFileName(target)}." : $"Saved {Path.GetFileName(target)} {why}.");
         foreach (string note in Doc.LastSaveNotes)
         {
-            _ctx.Log.Info(note); // the save log: upgrade notes, a dropped Alpine lightmap chunk
+            // The save log: upgrade notes, a dropped Alpine lightmap chunk, a stale packfile (not when packaging, which
+            // is about to rebuild that packfile).
+            if (why is null || !string.Equals(note, Doc.LastStalePackfileNote, StringComparison.Ordinal))
+            {
+                _ctx.Log.Info(note);
+            }
         }
-
     }
 
     public string CompatibilitySummary()
@@ -140,21 +162,32 @@ public sealed class CoreScriptOperations : IScriptOperations
     {
         AssetVfs vfs = _services.Assets
             ?? throw new ScriptApiException("Packaging needs a mounted asset library.", "Open a level with its game library mounted.");
-        string levelFile = Doc.Path is { Length: > 0 } p ? Path.GetFileName(p)
-            : throw new ScriptApiException("Save the level before packaging.");
+        string levelPath = Doc.Path is { Length: > 0 } p ? p
+            : throw new ScriptApiException("Save the level before packaging.", "The packfile is built from the saved level file and goes next to it: ops.save(\"path.rfl\") first.");
+        string levelFile = Path.GetFileName(levelPath);
+        _ = multiplayer; // accepted for scripts that pass it; the packfile always goes next to the level
 
-        string outPath = path ?? DefaultPackagePath(levelFile, multiplayer);
-        _ctx.RequireDestructive($"package to {Path.GetFileName(outPath)}");
+        string outPath = path ?? PackfileBuildPlan.LevelFolderOutputPath(levelPath);
+        bool saveFirst = Doc.IsDirty;
+        _ctx.RequireDestructive(saveFirst
+            ? $"save {levelFile} and package it to {Path.GetFileName(outPath)}"
+            : $"package to {Path.GetFileName(outPath)}");
+        if (saveFirst)
+        {
+            if (Doc.SaveBlockedReason is { } blocked)
+            {
+                throw new ScriptApiException(blocked, "Levels newer than RFL 306 open read-only in Glacier.");
+            }
+
+            SaveDocument(levelPath, "before packaging, so the packfile carries the level as it is now");
+        }
 
         DependencyScanOptions opts = _services.ScanOptionsFactory?.Invoke() ?? new DependencyScanOptions();
         Report("Scanning dependencies", 0, 0);
         DependencyScanResult scan = DependencyScanner.Scan(Doc.Rfl, new VfsDependencyResolver(vfs), opts);
-        foreach (string note in Doc.Rfl.ReconcileAlpineLightmaps())
-        {
-            _ctx.Log.Info(note); // a stale Alpine lightmap chunk is not packaged
-        }
 
-        byte[] rflBytes = Doc.SaveToBytes();
+        // The saved file itself: the packfile and the loose level are the same bytes.
+        byte[] rflBytes = File.ReadAllBytes(levelPath);
         Report("Writing package", 0, 0);
         PackfileBuildResult result = PackfileBuilder.Build(rflBytes, levelFile, scan.Included, outPath);
         string msg = $"Packaged {result.PackedFiles.Count} file(s), {result.TotalBytes / 1024} KiB → {Path.GetFileName(outPath)}.";
@@ -165,18 +198,6 @@ public sealed class CoreScriptOperations : IScriptOperations
     public void Playtest(bool multiplayer) =>
         throw new ScriptApiException("Playtest is only available in the interactive editor.",
             "Run the level from the editor's Play button.");
-
-    private string DefaultPackagePath(string levelFile, bool multiplayer)
-    {
-        if (_services.InstallDirectory is { Length: > 0 } dir)
-        {
-            return PackfileBuildPlan.DefaultOutputPath(dir, levelFile, multiplayer);
-        }
-
-        // Fall back to next to the level file.
-        string baseDir = Doc.Path is { Length: > 0 } p ? Path.GetDirectoryName(p)! : Directory.GetCurrentDirectory();
-        return Path.Combine(baseDir, Path.GetFileNameWithoutExtension(levelFile) + ".vpp");
-    }
 
     private void Report(string stage, int current, int total)
     {

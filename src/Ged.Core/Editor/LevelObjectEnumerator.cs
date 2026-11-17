@@ -244,10 +244,13 @@ internal static class LevelObjectEnumerator
                 case GroupsSection s:
                     // A moving group's keyframes are objects with their own UIDs: project each so
                     // it is selectable, resolvable by UID (links) and shown in the outliner. The
-                    // owning list is the group's keyframe list, so delete/copy round-trips there.
+                    // owning list is the group's keyframe list, so delete/copy round-trips there. The
+                    // editor groups section's movers are copies of moving_groups (MovingGroupMirror), so
+                    // their keyframes are projected once, from moving_groups.
+                    bool editorCopy = Editing.MovingGroupMirror.IsEditorCopy(file, section);
                     foreach (Group grp in s.Groups)
                     {
-                        if (grp.IsMoving == 0 || grp.MovingData is not { } data)
+                        if (grp.IsMoving == 0 || grp.MovingData is not { } data || editorCopy)
                         {
                             continue;
                         }
@@ -303,11 +306,16 @@ internal static class LevelObjectEnumerator
 
                     break;
 
+                // Alpine Faction 1.5 objects (editor_patch/weather_region.cpp, vehicle_factory.cpp, projection_camera.cpp,
+                // rope_emitter.cpp, dir_light.cpp, waypoint_helper.cpp): editable like the 1.4 objects above (session
+                // hidden state, as Alpine stores no hidden flag in these records). A chunk Glacier keeps raw
+                // (IRetainedChunk) lists its objects read-only so its bytes are written back unchanged.
                 case AlpineWeatherRegionsSection s:
                     foreach (AlpineWeatherRegion w in s.Records)
                     {
-                        result.Add(ReadOnly(LevelObjectKind.WeatherRegion, section, w, sessionHidden,
-                            w.Uid, () => w.ScriptName, () => w.Position, w.WeatherType == 1 ? "Snow" : "Rain"));
+                        result.Add(Alpine15(s, LevelObjectKind.WeatherRegion, section, w, s.Records, sessionHidden,
+                            () => w.Uid, u => w.Uid = u, () => w.ScriptName, v => w.ScriptName = v,
+                            () => w.Position, p => w.Position = p, () => w.WeatherType == 1 ? "Snow" : "Rain"));
                     }
 
                     break;
@@ -315,8 +323,9 @@ internal static class LevelObjectEnumerator
                 case AlpineVehicleFactoriesSection s:
                     foreach (AlpineVehicleFactory v in s.Records)
                     {
-                        result.Add(ReadOnly(LevelObjectKind.VehicleFactory, section, v, sessionHidden,
-                            v.Uid, () => v.ScriptName, () => v.Position, v.VehicleClass));
+                        result.Add(Alpine15(s, LevelObjectKind.VehicleFactory, section, v, s.Records, sessionHidden,
+                            () => v.Uid, u => v.Uid = u, () => v.ScriptName, n => v.ScriptName = n,
+                            () => v.Position, p => v.Position = p, () => v.VehicleClass));
                     }
 
                     break;
@@ -324,8 +333,9 @@ internal static class LevelObjectEnumerator
                 case AlpineProjectionCamerasSection s:
                     foreach (AlpineProjectionCamera c in s.Records)
                     {
-                        result.Add(ReadOnly(LevelObjectKind.ProjectionCamera, section, c, sessionHidden,
-                            c.Uid, () => c.ScriptName, () => c.Position, "Projection Camera"));
+                        result.Add(Alpine15(s, LevelObjectKind.ProjectionCamera, section, c, s.Records, sessionHidden,
+                            () => c.Uid, u => c.Uid = u, () => c.ScriptName, v => c.ScriptName = v,
+                            () => c.Position, p => c.Position = p, () => "Projection Camera"));
                     }
 
                     break;
@@ -333,8 +343,9 @@ internal static class LevelObjectEnumerator
                 case AlpineRopeEmittersSection s:
                     foreach (AlpineRopeEmitter rope in s.Records)
                     {
-                        result.Add(ReadOnly(LevelObjectKind.RopeEmitter, section, rope, sessionHidden,
-                            rope.Uid, () => rope.ScriptName, () => rope.Position, rope.IsZipline ? "Zipline" : "Rope"));
+                        result.Add(Alpine15(s, LevelObjectKind.RopeEmitter, section, rope, s.Records, sessionHidden,
+                            () => rope.Uid, u => rope.Uid = u, () => rope.ScriptName, v => rope.ScriptName = v,
+                            () => rope.Position, p => rope.Position = p, () => rope.IsZipline ? "Zipline" : "Rope"));
                     }
 
                     break;
@@ -342,26 +353,35 @@ internal static class LevelObjectEnumerator
                 case AlpineDirectionalLightsSection s:
                     foreach (AlpineDirectionalLight l in s.Records)
                     {
-                        result.Add(ReadOnly(LevelObjectKind.DirectionalLight, section, l, sessionHidden,
-                            l.Uid, () => l.ScriptName, () => l.Position, "Directional Light"));
+                        result.Add(Alpine15(s, LevelObjectKind.DirectionalLight, section, l, s.Records, sessionHidden,
+                            () => l.Uid, u => l.Uid = u, () => l.ScriptName, v => l.ScriptName = v,
+                            () => l.Position, p => l.Position = p, () => "Directional Light"));
                     }
 
                     break;
 
                 case AlpineWaypointHelpersSection s:
+                    // The record has no script name (alpine_waypoint_helper.h:44-56): the name setter does nothing.
                     foreach (AlpineWaypointHelper h in s.Records)
                     {
-                        result.Add(ReadOnly(LevelObjectKind.WaypointHelper, section, h, sessionHidden,
-                            h.Uid, () => string.Empty, () => h.Position, "Waypoint Helper"));
+                        result.Add(Alpine15(s, LevelObjectKind.WaypointHelper, section, h, s.Records, sessionHidden,
+                            () => h.Uid, u => h.Uid = u, () => string.Empty, _ => { },
+                            () => h.Position, p => h.Position = p, () => "Waypoint Helper"));
                     }
 
                     break;
 
+                // Alpine terrains (editor_patch/terrain.cpp): editable like the 1.5 objects; the position is the centre
+                // of the footprint at the origin's height (AlpineTerrainEdit.FootprintCentre) and moving one
+                // translates the whole heightfield (it is never rotated or scaled, mfc_types.h:997). A chunk Alpine
+                // would reject is kept raw and its terrains list read-only.
                 case AlpineTerrainSection s:
                     foreach (AlpineTerrain t in s.Terrains)
                     {
-                        result.Add(ReadOnly(LevelObjectKind.Terrain, section, t, sessionHidden,
-                            t.Uid, () => t.ScriptName, () => t.Origin, "Terrain"));
+                        result.Add(Alpine15(s, LevelObjectKind.Terrain, section, t, s.Terrains, sessionHidden,
+                            () => t.Uid, u => t.Uid = u, () => t.ScriptName, v => t.ScriptName = v,
+                            () => AlpineTerrainEdit.FootprintCentre(t), p => t.Origin = AlpineTerrainEdit.OriginForCentre(t, p),
+                            () => "Terrain"));
                     }
 
                     break;
@@ -381,9 +401,21 @@ internal static class LevelObjectEnumerator
     private static byte B(bool value) => value ? (byte)1 : (byte)0;
 
     /// <summary>
-    /// Wires an Alpine 1.5 object read-only: it lists, selects, hides (session) and inspects, but its UID, name and
-    /// position setters do nothing and it has no owning list (no delete / copy), so the chunk it came from is written
-    /// back exactly as loaded. Placement and editing are a later authoring step.
+    /// Wires an Alpine 1.5 object: editable (session hidden state) when its chunk parsed exactly, read-only when the
+    /// chunk is kept raw (<see cref="IRetainedChunk.IsReadOnly"/>).
+    /// </summary>
+    private static LevelObject Alpine15(
+        IRetainedChunk chunk, LevelObjectKind kind, RflSection section, object model, IList list, HashSet<int> sessionHidden,
+        Func<int> getUid, Action<int> setUid, Func<string> getScript, Action<string> setScript,
+        Func<Vec3> getPos, Action<Vec3> setPos, Func<string> getClass) =>
+        chunk.IsReadOnly
+            ? ReadOnly(kind, section, model, sessionHidden, getUid(), getScript, getPos, getClass())
+            : Session(kind, section, model, list, sessionHidden, getUid, setUid, getScript, setScript, getPos, setPos, getClass);
+
+    /// <summary>
+    /// Wires an object read-only: it lists, selects, hides (session) and inspects, but its UID, name and position
+    /// setters do nothing and it has no owning list (no delete / copy), so the chunk it came from is written back
+    /// exactly as loaded. Used for terrains and for the objects of an Alpine chunk Glacier keeps raw.
     /// </summary>
     private static LevelObject ReadOnly(
         LevelObjectKind kind, RflSection section, object model, HashSet<int> sessionHidden,

@@ -32,6 +32,16 @@ public sealed class AlpineRopeEmitter
     /// <summary>Stored packed red in the high byte (R&lt;&lt;24 | G&lt;&lt;16 | B&lt;&lt;8 | A).</summary>
     public uint PackedColor { get; set; } = 0xFFFFFFFFu;
 
+    /// <summary>
+    /// <see cref="PackedColor"/> as red, green, blue, alpha (Alpine packs red in the high byte so the game's
+    /// <c>Color::from_hex(v, true)</c> reads it back, editor_patch/rope_emitter.cpp:206-210).
+    /// </summary>
+    public RfColor Color
+    {
+        get => new((byte)(PackedColor >> 24), (byte)(PackedColor >> 16), (byte)(PackedColor >> 8), (byte)PackedColor);
+        set => PackedColor = ((uint)value.R << 24) | ((uint)value.G << 16) | ((uint)value.B << 8) | value.A;
+    }
+
     public string Bitmap { get; set; } = string.Empty;
 
     public float SwayAmplitude { get; set; }

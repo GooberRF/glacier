@@ -162,6 +162,12 @@ public interface IViewportSurface
     /// <summary>Whether Alt is currently held (temporary snap-invert during a drag).</summary>
     bool AltHeld { get; }
 
+    /// <summary>Whether Ctrl is currently held (read by press handlers such as the Terrain Tools' height sample).</summary>
+    bool CtrlHeld { get; }
+
+    /// <summary>Whether Shift is currently held.</summary>
+    bool ShiftHeld { get; }
+
     /// <summary>Whether the temporary snap-invert modifier is held during a drag.</summary>
     bool SnapInvertHeld { get; }
 

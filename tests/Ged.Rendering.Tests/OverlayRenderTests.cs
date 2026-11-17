@@ -12,37 +12,13 @@ using Xunit;
 namespace Ged.Rendering.Tests;
 
 /// <summary>
-/// Offscreen-render evidence for the editing overlays: a mover path spline with a
-/// time-scrubbed ghost, a group-mirrored room, and the shape overlays (nav disc,
+/// Offscreen-render evidence for the editing overlays: a group-mirrored room and the shape overlays (nav disc,
 /// decal box, cutscene camera cone). Each writes a PNG artifact and asserts the
 /// image is non-trivial. Skips gracefully when no D3D11 device is available.
 /// </summary>
 [Collection(GpuTestCollection.Name)]
 public sealed class OverlayRenderTests
 {
-    [Fact]
-    public void MoverPathAndGhost_RenderArtifact()
-    {
-        using GraphicsDevice? gd = RenderTestSupport.TryCreateDevice(out _);
-        if (gd is null)
-        {
-            return;
-        }
-
-        var scene = new RenderScene();
-        Brush mover = Box(1, new Vec3(0, 0, 0), 4f);
-        BrushEmitter.Append(scene, new[] { mover }, BrushPickGranularity.Brush, solidFill: true);
-
-        var keyframes = new List<Vec3> { new(0, 0, 0), new(5, 4, 1), new(9, 1, 4), new(12, 3, 2) };
-        scene.Lines.AddRange(OverlayBuilder.Path(keyframes, startIndex: 0));
-
-        // Ghost of the mover geometry halfway along the path.
-        Vec3 sampled = OverlayBuilder.SamplePath(keyframes, 0.5f);
-        scene.Lines.AddRange(OverlayBuilder.MoverGhost(new[] { mover }, keyframes[0], sampled));
-
-        RenderAndSave(gd, scene, new Vector3(6, 7, -7), new Vector3(6, 2, 2), "mover_path_ghost.png");
-    }
-
     [Fact]
     public void GroupMirroredRoom_RenderArtifact()
     {

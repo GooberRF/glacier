@@ -30,8 +30,13 @@ public sealed class GroupService
         _brushes = brushes;
     }
 
-    /// <summary>Every user-defined group, in file order.</summary>
-    public IReadOnlyList<Group> Groups => GroupsContent()?.Groups ?? (IReadOnlyList<Group>)Array.Empty<Group>();
+    /// <summary>
+    /// Every user-defined group, in file order. The groups section also lists every mover, as RED stores them
+    /// (<see cref="MovingGroupMirror"/>); those are moving groups, managed by <see cref="MoverService"/>, and are
+    /// left out here as RED's group tree files them apart (FUN_00440590).
+    /// </summary>
+    public IReadOnlyList<Group> Groups =>
+        GroupsContent()?.Groups.Where(g => g.IsMoving == 0).ToList() ?? (IReadOnlyList<Group>)Array.Empty<Group>();
 
     /// <summary>Groups temporarily dissolved this session (restorable via <see cref="Reconnect"/>).</summary>
     public IReadOnlyList<Group> Temporary => _temporary;

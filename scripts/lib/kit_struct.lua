@@ -3,8 +3,9 @@
 --
 -- kit.ground_at / kit.ground_region / kit.ground_provider: every placement rule reads the ground through
 -- this one provider. The built-in provider ("brush") finds floors from the level's brushes (CSG time
--- order, detail solids on top); another provider (Alpine terrain, say) plugs in with
--- kit.ground_provider{name =, at =, region =} without changing any generator.
+-- order, detail solids on top) and the tops of its Alpine terrains (outside their holes); another provider plugs in
+-- with kit.ground_provider{name =, at =, region =} without changing any generator. kit.ground (kit_ground.lua)
+-- chooses between a brush floor and a terrain for open ground.
 --
 -- kit.beam, kit.truss, kit.bridge, kit.landmark: built structure as DETAIL convex brushes (chords, posts,
 -- diagonals, decks), so they never seal or split rooms and cannot open a leak. kit.opening: windows,
@@ -113,6 +114,30 @@ local SPAN = 8192
 -- The brushes a probe reads, fetched once per query box: each brush's role, time index and world bounds are read
 -- once, so a probe tests only the brushes whose bounds reach its column and height (brush:contains is the costly
 -- call). recs = {list = {...}} in query order; rec = {b, portal, detail, solid, ti, x0, y0, z0, x1, y1, z1}.
+-- The level's Alpine terrains whose footprint reaches the rectangle (nil when none): a terrain's walkable top is ground
+-- like a brush floor (its holes are not), read with terrain:surface_at.
+local function terrains_near(x0, z0, x1, z1)
+  if level.terrain.count == 0 then return nil end
+  local out = {}
+  for _, t in ipairs(level.terrain.all()) do
+    local o = t.origin
+    if x1 >= o.x - 0.001 and x0 <= o.x + t.size_x + 0.001 and z1 >= o.z - 0.001 and z0 <= o.z + t.size_z + 0.001 then out[#out + 1] = t end
+  end
+  if #out == 0 then return nil end
+  return out
+end
+
+-- The highest terrain top at (x, z) at or below y (1 cm slack; any height when y is nil), or nil.
+local function terrain_top(list, x, z, y)
+  if list == nil then return nil end
+  local best = nil
+  for i = 1, #list do
+    local ty = list[i]:surface_at(x, z)
+    if ty ~= nil and (y == nil or ty <= y + 0.01) and (best == nil or ty > best) then best = ty end
+  end
+  return best
+end
+
 local function fetch(x0, z0, x1, z1)
   local q = level.brushes_in{ min = { x0 - 0.001, -SPAN, z0 - 0.001 }, max = { x1 + 0.001, SPAN, z1 + 0.001 } }
   local list = {}
@@ -126,7 +151,7 @@ local function fetch(x0, z0, x1, z1)
         x0 = mn.x, y0 = mn.y, z0 = mn.z, x1 = mx.x, y1 = mx.y, z1 = mx.z }
     end
   end
-  return { list = list }
+  return { list = list, terrains = terrains_near(x0, z0, x1, z1) }
 end
 
 -- A column's brushes from fetched records (all of them, or those whose bounds reach (x, z) as level.brushes_in
@@ -176,10 +201,7 @@ end
 -- The highest floor at or below y (default: the top of whatever stands in the column): march down to the
 -- first air, then to the first solid under it, then bisect the boundary to 1/512 m. recs: brushes fetched for
 -- a region holding (x, z) (one fetch serves many probes), else the column is fetched alone.
-local function brush_at(x, z, y, recs)
-  local structural, details, lo, hi = nil, nil, nil, nil
-  if recs then structural, details, lo, hi = column_of(recs, x, z, true) else structural, details, lo, hi = column(x, z) end
-  if lo == math.huge then return nil end
+local function brush_floor(structural, details, lo, hi, x, z, y)
   local step = 0.25
   local cur = y or (hi + 1)
   local bottom = lo - 1
@@ -211,8 +233,23 @@ local function brush_at(x, z, y, recs)
   return gy, hit_detail ~= nil
 end
 
+-- The highest ground at or below y: the brush floor of the column, or a terrain's top where it is higher (the terrain
+-- seam: a terrain lies over the brush floor it is lifted from). Returns y and its kind ("brush", "detail" or
+-- "terrain"), or nil over the void. recs: brushes (and terrains) fetched for a region holding (x, z), else the column
+-- is fetched alone.
+local function brush_at(x, z, y, recs)
+  local r = recs or fetch(x, z, x, z)
+  local structural, details, lo, hi = column_of(r, x, z, recs ~= nil)
+  local gy, detail = nil, false
+  if lo ~= math.huge then gy, detail = brush_floor(structural, details, lo, hi, x, z, y) end
+  local ty = terrain_top(r.terrains, x, z, y)
+  if ty ~= nil and (gy == nil or ty > gy) then return ty, "terrain" end
+  if gy == nil then return nil end
+  return gy, detail and "detail" or "brush"
+end
+
 local function brush_provider_at(x, z, y)
-  local gy, detail = brush_at(x, z, y)
+  local gy, kind = brush_at(x, z, y)
   if gy == nil then return { kind = "void" } end
   -- The normal from the floors half a metre either side (only those within 1 m of this one).
   local function near(px, pz)
@@ -224,7 +261,7 @@ local function brush_provider_at(x, z, y)
   local gx = (near(x + d, z) - near(x - d, z)) / (2 * d)
   local gz = (near(x, z + d) - near(x, z - d)) / (2 * d)
   local n = unit({ -gx, 1, -gz })
-  return { y = gy, normal = n, kind = detail and "detail" or "brush" }
+  return { y = gy, normal = n, kind = kind }
 end
 
 local provider = { name = "brush", at = brush_provider_at }
@@ -281,7 +318,15 @@ local function ceiling_point(x, z, y)
 end
 I.ceiling_point = ceiling_point
 
----@kit kit.ground_at{x, z, y?} → ground — The ground under a point through the kit's ground provider: {y, normal, slope, kind, pos, provider}; kind "brush" (a brush floor), "detail" (a detail top) or "void" (nothing below, no y). Every kit placement rule reads the ground this way.
+-- True when (x, y, z) is in air by the brushes (CSG time order, detail solids filling), the test kit.ground uses to see
+-- whether a terrain is enclosed in air.
+I.air_at = function(x, y, z)
+  local structural, details, lo = column(x, z)
+  if lo == math.huge then return false end
+  return not solid_at(structural, details, x, y, z)
+end
+
+---@kit kit.ground_at{x, z, y?} → ground — The ground under a point through the kit's ground provider: {y, normal, slope, kind, pos, provider}; kind "brush" (a brush floor), "detail" (a detail top), "terrain" (an Alpine terrain's top, where it lies over the brush floor) or "void" (nothing below, no y). Every kit placement rule reads the ground this way.
 ---@opt x: number — Required: world x, metres.
 ---@opt z: number — Required: world z, metres.
 ---@opt y: number = the top of the column — Look for the highest floor at or below this height (pick a storey).
@@ -356,11 +401,8 @@ function kit.ground_provider(t)
   return previous
 end
 
--- The spec's spelling: kit.ground.at(x, z [, y]) and kit.ground.region{min =, max =, step =}.
-kit.ground = {
-  at = function(x, z, y) return kit.ground_at{ x = x, z = z, y = y } end,
-  region = function(box) return kit.ground_region(box) end,
-}
+-- (DESIGN-QUALITY-SPEC's ground.at / ground.region are kit.ground_at / kit.ground_region; kit.ground itself is the
+-- brush-or-terrain choice, kit_ground.lua.)
 
 -- ---------------------------------------------------------------------------------------------
 -- Beams and trusses
@@ -546,11 +588,14 @@ local function tag_role(list, role, purpose)
 end
 I.tag_role = tag_role
 
--- Tags every brush of the element named name (its kit.name) in three calls, however many brushes it has.
-local function tag_named(name, role, purpose)
+-- Tags every brush of the element named name (its kit.name) in three calls, however many brushes it has. A purpose
+-- mode other than "require" is kept as kit.purpose_mode, so the craft audit (level.audit{}) can hold the built
+-- element to its purpose later.
+local function tag_named(name, role, purpose, mode)
   local q = level.brushes_tagged("kit.name", name)
   q:tag("kit.role", role)
   if purpose then q:tag("kit.purpose", clip(purpose)) end
+  if mode ~= nil and mode ~= "require" then q:tag("kit.purpose_mode", mode) end
 end
 I.tag_named = tag_named
 
@@ -966,7 +1011,7 @@ function kit.bridge(t)
   else
     serves = serves .. " (unchecked)"
   end
-  tag_named(name, "route", serves)
+  tag_named(name, "route", serves, mode)
   local lo = { math.huge, math.huge, math.huge }
   local hi = { -math.huge, -math.huge, -math.huge }
   for _, br in ipairs(brushes) do
@@ -1078,7 +1123,7 @@ function kit.landmark(t)
   local group = group_if_many(name, brushes, boolean(api, "group", t.group, true))
   local seen_text = view and view.checked and ("seen from " .. fmt(view.area) .. " m2 of floor in " .. view.spaces .. " space(s) within 80 m")
     or "a landmark (visibility unchecked)"
-  tag_named(name, "landmark", seen_text)
+  tag_named(name, "landmark", seen_text, mode)
   return {
     role = "landmark", purpose = view and { ok = not view.hidden, fault = view.fault, area = view.area, spaces = view.spaces, text = seen_text } or { text = seen_text },
     kind = "landmark", name = name, style = style, brushes = brushes, group = group, height = height, base = base,

@@ -287,6 +287,13 @@ internal sealed class WalkGraph
     public bool Standable { get; }
 
     /// <summary>
+    /// With <see cref="Standable"/>: the samples the walk from the spawns (and items) actually reached on foot — walking,
+    /// dropping and one-way links — before the unreached floor that is still kept as playable (floor reached by moves
+    /// the graph does not model) is added. Null when the walk had no start or playable floor is not the standable floor.
+    /// </summary>
+    public bool[]? Walked { get; private set; }
+
+    /// <summary>
     /// The standable floor reached from the spawns: a breadth-first walk from every spawn's sample (and, in a component no
     /// spawn snaps to, from its items' samples) along the walk edges in their direction — walking both ways, drops and
     /// one-way links only forward — through supported samples only (<see cref="Supported"/>). Of the supported floor it
@@ -361,6 +368,9 @@ internal sealed class WalkGraph
                 }
             }
         }
+
+        // The floor the walk itself reached, before the unreached floor below is kept (null when nothing seeded it).
+        Walked = sources.Count > 0 ? (bool[])reach.Clone() : null;
 
         // The walk graph does not model every way up (a jump, a crouch-jump, a ladder, a lift it cannot snap): only a
         // prop-sized top — RoofMinArea to RoofMaxArea, every way off it a drop of at least RoofMinDrop — counts as out of

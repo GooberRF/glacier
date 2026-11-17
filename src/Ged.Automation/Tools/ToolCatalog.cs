@@ -108,7 +108,7 @@ public static class ToolCatalog
     /// <summary>The largest size budget a call may ask for (<c>max_chars</c>).</summary>
     public const int MaxResultBudget = 60_000;
 
-    private static readonly string[] RenderModes = { "lit", "textured", "lightmaps", "rooms", "wireframe", "seethrough" };
+    private static readonly string[] RenderModes = { "lit", "textured", "lightmaps", "rooms", "wireframe", "seethrough", "heights" };
     private static readonly string[] FreshBuild = { "auto", "preview", "sealed", "none" };
     private static readonly string[] SpatialOps = Ged.Core.Spatial.SpatialQueries.Ops.Select(o => o.Op).ToArray();
 
@@ -131,10 +131,10 @@ public static class ToolCatalog
             ItemsType: "number", Items: 6, CliFlag: "--region");
         ToolArg Size() => new("size", "string", $"Image size WIDTHxHEIGHT in pixels (default {DefaultImageSide}x{DefaultImageSide}, at most {MaxImageSide} per side).",
             CommandArg: string.Empty, CliFlag: "--size");
-        ToolArg Mode() => new("mode", "string", "Shading: lit (lightmaps; falls back to textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough.",
+        ToolArg Mode() => new("mode", "string", "Shading: lit (lightmaps; else textured, then room colours), textured, lightmaps, rooms, wireframe, seethrough, heights.",
             Enum: RenderModes, Default: "lit", CliFlag: "--mode");
         ToolArg Overlays(string dflt, bool icons = false) => new("overlays", "string",
-            $"Comma list of grid, scale, objects, labels, links, holes (runs a sealed leak check), legend{(icons ? ", icons (editor object icons; off by default in iso/camera)" : string.Empty)}; or none. Default: {dflt}.", CliFlag: "--overlays");
+            $"Comma list of grid, scale, objects, labels, links, holes (leak check), legend, heights{(icons ? ", icons (editor object icons; off by default in iso/camera)" : string.Empty)}; or none. Default: {dflt}.", CliFlag: "--overlays");
         ToolArg Fresh() => new("fresh_build", "string",
             "Geometry for the image: auto (a quick preview build on a private copy when the level's geometry is missing or stale), preview, sealed, or none.",
             Enum: FreshBuild, Default: "auto", CommandArg: "build");
@@ -307,6 +307,8 @@ public static class ToolCatalog
                     new ToolArg("crop", "array", "image: x, y, w, h pixels.", ItemsType: "number", Items: 4, CliFlag: "--crop"),
                     new ToolArg("snap", "boolean", "image + crop: show the snapped crop.", CliFlag: "--snap"),
                     new ToolArg("size", "integer", "Longest side, px.", Min: 200, Max: 4096, CliFlag: "--side"),
+                    new ToolArg("step", "integer", "image: fine grid step, px.", Min: 1, Max: 5000, CliFlag: "--step"),
+                    new ToolArg("zoom", "number", "image: crop zoom.", Min: 0.25, Max: 32, CliFlag: "--zoom"),
                     RefsDir(),
                 },
                 "image/png + {op, kind, path, width, height, crop?, snapped?, reference?, read} | {op: list, count, references[]}",
@@ -371,14 +373,17 @@ public static class ToolCatalog
 
             new("build", "build", ToolSafety.Mutate,
                 "Compile the level's geometry (sealed by default), optionally bake lighting.",
-                "Compiles the level exactly like the editor's Build and applies the result (brushes are not changed). Sealed by default here, because holes must never be measured on a preview. light also bakes lightmaps (slower). Seconds to minutes; reports progress. Next: check_holes, then lint.",
+                "Compiles like the editor's Build and applies the result (brushes unchanged). Sealed by default: never measure holes on a preview. light also bakes lightmaps. Seconds to minutes; reports progress. Next: check_holes, then lint.",
                 new[]
                 {
                     new ToolArg("sealed", "boolean", "Full sealed build (default true); false = the fast unsealed preview.", Default: true, CliFlag: "--sealed"),
                     new ToolArg("light", "boolean", "Also bake lighting (always sealed).", Default: false, CliFlag: "--light"),
                     new ToolArg("shadows", "boolean", "Cast shadows while baking (default true).", Default: true, CliFlag: "--no-shadows"),
+                    new ToolArg("pipeline", "string", "Store the lightmap pipeline first: alpine (stock + Alpine D3D11 charts, default) or legacy (stock only). Omit to keep it.", Enum: new[] { "alpine", "legacy" }, CliFlag: "--pipeline"),
+                    new ToolArg("density", "integer", "Store the Alpine lightmap density first: 0 = default (8 px/m), 1-128, 255 = charts off. Omit to keep it.", Min: 0, Max: 255, CliFlag: "--density"),
+                    new ToolArg("codec", "string", "Alpine lightmap codec for this bake: bc7 (default, as Alpine ships) or raw (uncompressed RGB8). Not stored in the level.", Enum: new[] { "bc7", "raw" }, CliFlag: "--codec"),
                 },
-                "{sealed, lit, method, brushes, rooms, subrooms, portals, faces, vertices, surfaces, lightmapPages, elapsedMs, hasErrors, repair?{holesAfterRooms, portalPlanesUnified, portalCopiesMoved, splitRoomsJoined, verticesWelded, edgesSplit, collapsedFacesRemoved, portalStripsRemoved, portalGapsFilled, wallGapsFilled, unplacedPortalFacesRemoved}, messages[{severity, text, pos?, brushUid?}]}",
+                "{sealed, lit, method, brushes, rooms, subrooms, portals, faces, vertices, surfaces, lightmapPages, elapsedMs, hasErrors, repair?{holesAfterRooms, portalPlanesUnified, portalCopiesMoved, splitRoomsJoined, verticesWelded, edgesSplit, collapsedFacesRemoved, portalStripsRemoved, portalGapsFilled, wallGapsFilled, unplacedPortalFacesRemoved}, lightmaps?{pipeline, density, requestedDensity, halvings, pages, charts, tiles, directionalLights, skipped?, codec, compression, movers, moverCharts, liquidEmitters, sectionBytes}, messages[{severity, text, pos?, brushUid?}]}",
                 LongRunning: true,
                 CliVerb: "build"),
 
@@ -442,6 +447,28 @@ public static class ToolCatalog
                 {
                     new ToolArg("tag", "string", "Only brushes with this tag (key or key=value).", MaxLength: 128, CommandArg: string.Empty),
                     new ToolArg("report", "boolean", "Measure only; change nothing.", Default: false, CommandArg: string.Empty),
+                },
+                "{success, committed, returnValue}",
+                CliVerb: "run"),
+
+            new("terrain", "run", ToolSafety.Mutate,
+                "Create, generate, edit, sculpt, query or convert a terrain.",
+                "One undo step. create: grid at center. generate: seeded hills. edit: resize, layers, holes, heightmap. sculpt: points = stroke, layers = mode[:radius:strength:layer]. query: facts, lint, lighting, y at points. to_brushes (keep = false: destructive).",
+                new[]
+                {
+                    new ToolArg("op", "string", "Action.", Required: true, Enum: new[] { "create", "generate", "edit", "sculpt", "query", "to_brushes" }, CommandArg: string.Empty),
+                    new ToolArg("terrain", "string", "UID or name.", MaxLength: 64, CommandArg: string.Empty),
+                    new ToolArg("center", "array", "Centre (create).", ItemsType: "number", Items: 3, CommandArg: string.Empty),
+                    new ToolArg("nx", "integer", "Vertices X, 2-257.", CommandArg: string.Empty),
+                    new ToolArg("nz", "integer", "Vertices Z.", CommandArg: string.Empty),
+                    new ToolArg("layers", "string", "Textures, ';' list.", CommandArg: string.Empty),
+                    new ToolArg("seed", "integer", "Noise seed.", Min: 0, CommandArg: string.Empty),
+                    new ToolArg("type", "string", "Noise.", Enum: new[] { "fbm", "ridged", "billow", "hybrid" }, CommandArg: string.Empty),
+                    new ToolArg("height_range", "number", "Height span, m.", CommandArg: string.Empty),
+                    new ToolArg("holes", "array", "Hole cells x, z, ...", ItemsType: "number", CommandArg: string.Empty),
+                    new ToolArg("heightmap", "string", "PNG / RAW16 file.", CommandArg: string.Empty),
+                    new ToolArg("points", "array", "x, z, ...", ItemsType: "number", CommandArg: string.Empty),
+                    new ToolArg("keep", "boolean", "Keep it.", Default: false, CommandArg: string.Empty),
                 },
                 "{success, committed, returnValue}",
                 CliVerb: "run"),

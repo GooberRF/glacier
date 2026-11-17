@@ -251,7 +251,7 @@ internal static class Alpine306Synthetic
 
     /// <summary>
     /// An Alpine terrain chunk (alpine_terrain_reader.h:76-217 layout) with one terrain carrying overlays, a decoration and
-    /// a build mapping; <paramref name="flags"/> lets a test set an unknown bit. The blob is opaque bytes (Glacier keeps it raw).
+    /// a build mapping; <paramref name="flags"/> lets a test set an unknown bit. The blob is a real zlib stream of the grid arrays.
     /// </summary>
     public static byte[] TerrainSection(byte flags = 0x1B)
     {
@@ -297,12 +297,54 @@ internal static class Alpine306Synthetic
             w.Write(0x9E3779B97F4A7C15ul * (ulong)(i + 1));
         }
 
-        byte[] blob = Enumerable.Range(0, 40).Select(i => (byte)i).ToArray();
-        w.Write(123456u);
+        byte[] raw = TerrainBlob(flags);
+        byte[] blob = AlpineTerrainSection.Compress(raw);
+        w.Write((uint)raw.Length);
         w.Write((uint)blob.Length);
         w.Write(blob);
         w.Flush();
         return ms.ToArray();
+    }
+
+    /// <summary>
+    /// The decompressed blob of the synthetic terrain (65 x 65 vertices, weight resolution 2): a height ramp, layer 0
+    /// painted everywhere, one hole, alternating diagonals, and the overlay / decoration maps its flags call for.
+    /// </summary>
+    private static byte[] TerrainBlob(byte flags)
+    {
+        const int n = 65, mul = 2;
+        var raw = new List<byte>();
+        for (int i = 0; i < n * n; i++)
+        {
+            ushort h = (ushort)(i * 13 % 65536);
+            raw.Add((byte)h);
+            raw.Add((byte)(h >> 8));
+        }
+
+        int texels = 64 * mul * 64 * mul;
+        for (int map = 0; map < 2; map++)
+        {
+            for (int i = 0; i < texels; i++)
+            {
+                raw.AddRange(map == 0 ? new byte[] { 255, 0, 0, 0 } : new byte[4]);
+            }
+        }
+
+        var holes = new byte[64 * 64 / 8];
+        holes[100] = 0x04;
+        raw.AddRange(holes);
+        raw.AddRange(Enumerable.Repeat((byte)0x55, 64 * 64 / 8));
+        if ((flags & 0x08) != 0)
+        {
+            raw.AddRange(Enumerable.Range(0, texels * 4).Select(i => (byte)(i % 4 == 0 ? i / 4 % 256 : 0)));
+        }
+
+        if ((flags & 0x10) != 0)
+        {
+            raw.AddRange(Enumerable.Range(0, texels).Select(i => (byte)(i % 7 == 0 ? 255 : 0)));
+        }
+
+        return raw.ToArray();
     }
 
     /// <summary>The whole synthetic v306 level (deterministic bytes).</summary>

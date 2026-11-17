@@ -6,6 +6,7 @@ namespace Ged.Rendering.Graphics;
 internal sealed class ShaderPrograms : IDisposable
 {
     public IShaderProgram World = null!;
+    public IShaderProgram Terrain = null!;
     public IShaderProgram Mesh = null!;
     public IShaderProgram Billboard = null!;
     public IShaderProgram Line = null!;
@@ -17,6 +18,10 @@ internal sealed class ShaderPrograms : IDisposable
             World = device.CreateShaderProgram(new ShaderProgramDesc
             {
                 Name = "World", Source = Shaders.World, VertexLayout = WorldLayout,
+            }),
+            Terrain = device.CreateShaderProgram(new ShaderProgramDesc
+            {
+                Name = "Terrain", Source = Shaders.Terrain, VertexLayout = WorldLayout,
             }),
             Mesh = device.CreateShaderProgram(new ShaderProgramDesc
             {
@@ -73,6 +78,7 @@ internal sealed class ShaderPrograms : IDisposable
         Line.Dispose();
         Billboard.Dispose();
         Mesh.Dispose();
+        Terrain.Dispose();
         World.Dispose();
     }
 }

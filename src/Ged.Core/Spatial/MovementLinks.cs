@@ -4,6 +4,7 @@ using System.Linq;
 using Ged.Core.Analysis;
 using Ged.Core.Editing.Organic;
 using Ged.Core.Editor;
+using Ged.Core.IO.Rfl;
 using Ged.Core.IO.Rfl.Sections;
 using Ged.Core.Model;
 
@@ -62,8 +63,14 @@ internal static class MovementLinks
             brushes.TryAdd(b.Uid, b);
         }
 
-        foreach (GroupsSection gs in level.Sections<GroupsSection>())
+        // The editor groups section's movers are copies of moving_groups (MovingGroupMirror): each lift once.
+        foreach (RflSection section in level.Rfl.Sections)
         {
+            if (section.Content is not GroupsSection gs || Editing.MovingGroupMirror.IsEditorCopy(level.Rfl, section))
+            {
+                continue;
+            }
+
             foreach (Group g in gs.Groups)
             {
                 if (g.IsMoving == 0 || g.MovingData is not { } md || md.IsDoor != 0 || md.RotateInPlace != 0 || md.Keyframes.Count < 2)

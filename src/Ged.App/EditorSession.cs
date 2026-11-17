@@ -64,6 +64,12 @@ public sealed class EditorSession : IDisposable
     /// </summary>
     public bool InteractiveTransformActive { get; set; }
 
+    /// <summary>The terrain a Terrain Tools stroke is editing (0 = none): the level scene leaves it out while the stroke's overlay draws it.</summary>
+    public int LiveTerrainUid { get; set; }
+
+    /// <summary>Draw terrain decorations (the Terrain Tools panel's "Show decorations").</summary>
+    public bool ShowTerrainDecorations { get; set; } = true;
+
     /// <summary>
     /// Count of full <see cref="BuildScene"/> emissions since construction — the headless-measurable
     /// proxy for "scene rebuilds". A drag of N steps must add exactly ONE (the commit), not N (perf
@@ -492,8 +498,18 @@ public sealed class EditorSession : IDisposable
             // While editing brushes, render the source brushes instead of the
             // (stale) compiled geometry so there is no z-fighting.
             IncludeStaticGeometry = !editingBrushes,
+            TerrainDecorations = ShowTerrainDecorations,
         };
         RenderScene scene = SceneBuilder.Build(Document.Rfl, options);
+
+        // A terrain being stroked is drawn live from the Terrain Tools' overlay scene, not from here.
+        if (LiveTerrainUid != 0)
+        {
+            int live = LiveTerrainUid;
+            scene.Terrains.RemoveAll(t => t.Uid == live);
+            scene.Batches.RemoveAll(b => b.OwnerUid == live);
+            scene.Decorations.RemoveAll(d => d.PickId.Index == (live & 0x0FFFFFFF));
+        }
 
         // Live emitter / gas previews (particles as billboards, bolts as polylines).
         if (AnimateEmitters || ShowGasRegions)
@@ -514,6 +530,9 @@ public sealed class EditorSession : IDisposable
         {
             scene.Billboards.RemoveAll(b => IsHidden(b.PickId, hidden));
             scene.Meshes.RemoveAll(m => IsHidden(m.PickId, hidden));
+            scene.Batches.RemoveAll(b => b.OwnerUid != 0 && hidden.Contains(b.OwnerUid));
+            scene.Terrains.RemoveAll(t => hidden.Contains(t.Uid));
+            scene.Decorations.RemoveAll(d => IsHidden(d.PickId, hidden));
         }
 
         // Brushes render in every mode (wireframe edges + solid preview).
@@ -952,6 +971,27 @@ public sealed class EditorSession : IDisposable
                     AddRegionOutline(lines, climb.Header.Position, climb.Header.Rotation, null,
                         climb.Extents.X, climb.Extents.Y, climb.Extents.Z,
                         RegionColor ?? Palette.Rgba(120, 210, 180, 200));
+                    break;
+
+                // Alpine 1.5 volumes of selected objects, in Alpine RED's selected colour (the scene already draws
+                // the ones flagged Always Show Range).
+                case AlpineWeatherRegion weather when weather.AlwaysShowRange == 0:
+                    AlpineObjectGizmos.AddWeatherVolume(lines, weather, AlpineObjectGizmos.SelectedColor);
+                    break;
+                case AlpineDirectionalLight dirLight when dirLight.AlwaysShowRange == 0:
+                    AlpineObjectGizmos.AddDirectionalLightVolume(lines, dirLight, AlpineObjectGizmos.SelectedColor);
+                    break;
+                case Keyframe kf when Document is { } doc:
+                    // A selected keyframe shows its mover's curve handles (mover_path.cpp:420-424).
+                    foreach (RflSection s in doc.Rfl.Sections)
+                    {
+                        if (s.Content is GroupsSection { Type: SectionType.MovingGroups } gs
+                            && gs.Groups.FirstOrDefault(g => g.MovingData?.Keyframes.Contains(kf) == true) is { } group)
+                        {
+                            AlpineObjectGizmos.AddMoverPathHandles(lines, doc.Rfl, group);
+                        }
+                    }
+
                     break;
             }
         }

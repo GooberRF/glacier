@@ -394,18 +394,18 @@ public sealed class ScriptObjectHandle
     internal bool IsLive => (_ctx.Document.FindByUid(Object.Uid) is { } cur && ReferenceEquals(cur.Model, Object.Model))
         || _ctx.Document.Objects.Any(o => ReferenceEquals(o.Model, Object.Model));
 
-    /// <summary>Refuses to act on a deleted object (its handle would otherwise edit a detached model).</summary>
-    /// <summary>Refuses an edit of a read-only object (an Alpine Faction 1.5 object; see <see cref="LevelObject.IsReadOnly"/>).</summary>
+    /// <summary>Refuses an edit of a read-only object (a terrain, or an object of an Alpine chunk kept raw; see <see cref="LevelObject.IsReadOnly"/>).</summary>
     private void RequireEditable(string api)
     {
         if (Object.IsReadOnly)
         {
             throw new ScriptApiException(
-                $"{api}: {Object.Kind} {Object.Uid} is read-only — Glacier keeps Alpine Faction 1.5 objects exactly as loaded.",
+                $"{api}: {Object.Kind} {Object.Uid} is read-only — its chunk is in a layout Glacier keeps exactly as loaded.",
                 "Read it with get/props; edit it in Alpine RED.");
         }
     }
 
+    /// <summary>Refuses to act on a deleted object (its handle would otherwise edit a detached model).</summary>
     private void RequireLive(string api)
     {
         if (!IsLive)

@@ -421,6 +421,10 @@ public sealed class GlViewportSurface : OpenGlControlBase, IViewportInput, IView
 
     public bool AltHeld => (_input.Modifiers & GestureModifiers.Alt) != 0;
 
+    public bool CtrlHeld => (_input.Modifiers & GestureModifiers.Ctrl) != 0;
+
+    public bool ShiftHeld => (_input.Modifiers & GestureModifiers.Shift) != 0;
+
     public bool SnapInvertHeld => AltHeld;
 
     public float AnimationTime

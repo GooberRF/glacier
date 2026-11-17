@@ -37,7 +37,7 @@ internal sealed class CliArguments
         "--jobs", "--limit", "--root", "--snapshot", "--debug-render",
         "--since", "--max-changes", "--what", "--kind", "--class", "--name", "--tag", "--offset", "--filter",
         "--label", "--min-severity", "--metric", "--gametype", "--bucket",
-        "--allow-write", "--scratch", "--tools", "--deny-tools", "--max-image", "--log",
+        "--allow-write", "--scratch", "--tools", "--deny-tools", "--max-image", "--log", "--pipeline", "--density", "--codec",
     };
 
     /// <summary>The <c>render</c> command's switches (kept in <see cref="RenderOptions"/>).</summary>
@@ -76,11 +76,19 @@ internal sealed class CliArguments
     private static readonly HashSet<string> RefValued = new(StringComparer.Ordinal)
     {
         "--refs", "--id", "--image", "--crop", "--area", "--notes", "--heading", "--pitch", "--move", "--turn", "--horizon",
-        "--vp", "--vp-dir", "--object", "--measure", "--ignore", "--panel", "--side", "--count", "--unit",
+        "--vp", "--vp-dir", "--object", "--measure", "--ignore", "--panel", "--side", "--count", "--unit", "--step", "--zoom",
     };
 
     /// <summary>The ref options given (flag → value; switches map to an empty string).</summary>
     public Dictionary<string, string> RefOptions { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The <c>recreate-score</c> command's options (kept in <see cref="RecreateOptions"/>).</summary>
+    private static readonly HashSet<string> RecreateValued = new(StringComparer.Ordinal) { "--truth" };
+
+    private static readonly HashSet<string> RecreateSwitches = new(StringComparer.Ordinal) { "--allow-mirror" };
+
+    /// <summary>The recreate-score options given (flag → value; switches map to an empty string).</summary>
+    public Dictionary<string, string> RecreateOptions { get; } = new(StringComparer.Ordinal);
 
     /// <summary>The <c>modules</c> command's valued options (kept in <see cref="ModuleOptions"/>).</summary>
     private static readonly HashSet<string> ModuleValued = new(StringComparer.Ordinal)
@@ -113,6 +121,15 @@ internal sealed class CliArguments
     public bool Light { get; private set; }
 
     public bool NoShadows { get; private set; }
+
+    /// <summary><c>build/light --pipeline alpine|legacy</c>: the level's lightmap pipeline, stored before the bake.</summary>
+    public string? Pipeline { get; private set; }
+
+    /// <summary><c>build/light --density &lt;0-255&gt;</c>: the level's Alpine lightmap density, stored before the bake.</summary>
+    public int? Density { get; private set; }
+
+    /// <summary><c>build/light --codec bc7|raw</c>: the Alpine lightmap layer codec the bake writes (not stored).</summary>
+    public string? Codec { get; private set; }
 
     public bool FailOnHoles { get; private set; }
 
@@ -361,6 +378,23 @@ internal sealed class CliArguments
                 continue;
             }
 
+            if (RecreateSwitches.Contains(name))
+            {
+                if (inline is not null)
+                {
+                    throw new UsageException($"'{name}' does not take a value.");
+                }
+
+                a.RecreateOptions[name] = string.Empty;
+                continue;
+            }
+
+            if (RecreateValued.Contains(name))
+            {
+                a.RecreateOptions[name] = inline ?? (i + 1 < args.Count ? args[++i] : throw new UsageException($"'{name}' needs a value."));
+                continue;
+            }
+
             if (RefValued.Contains(name))
             {
                 a.RefOptions[name] = inline ?? (i + 1 < args.Count ? args[++i] : throw new UsageException($"'{name}' needs a value."));
@@ -467,6 +501,17 @@ internal sealed class CliArguments
             case "--tools": Tools = value; break;
             case "--deny-tools": DenyTools = value; break;
             case "--log": LogFile = value; break;
+            case "--codec":
+                Codec = value; // checked by the verb (bc7 | raw)
+                break;
+            case "--pipeline":
+                Pipeline = value; // checked by the verb (alpine | legacy)
+                break;
+            case "--density":
+                Density = int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int density) && density <= 255
+                    ? density
+                    : throw new UsageException($"--density needs a whole number from 0 to 255: 0 = default (8 texels per unit), 1-128, 255 = Alpine charts off (got '{value}').");
+                break;
             case "--max-changes":
             case "--max-image":
                 if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int positive) || positive < 1)

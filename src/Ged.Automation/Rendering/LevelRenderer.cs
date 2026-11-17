@@ -7,6 +7,7 @@ using Ged.Core.Editing;
 using Ged.Core.Editor;
 using Ged.Core.IO.Rfl.Sections;
 using Ged.Core.Model;
+using Ged.Core.Spatial;
 using Ged.Core.Tables;
 using Ged.Rendering;
 using Ged.Rendering.Graphics;
@@ -256,10 +257,30 @@ internal static class LevelRenderer
         }
 
         bool hasLightmaps = scene.Lightmaps.Count > 0 && LightmapsCarryLight(scene.Lightmaps);
-        (RenderMode mode, string modeUsed, string? modeNote) = ResolveMode(spec.Mode, hasLightmaps, vfs is not null);
+        bool pureHeights = spec.Mode == "heights";
+        (RenderMode mode, string modeUsed, string? modeNote) = ResolveMode(pureHeights ? "lit" : spec.Mode, hasLightmaps, vfs is not null);
         if (scene.Lightmaps.Count > 0 && !hasLightmaps && modeNote is not null)
         {
             modeNote = "The level's lightmaps carry no baked light (built without lighting). " + modeNote;
+        }
+
+        if (pureHeights)
+        {
+            (modeUsed, modeNote) = ("heights", null);
+        }
+
+        // The floor-heights reading (heights overlay or mode): measured on the CPU from the compiled geometry.
+        HeightsReading? heights = null;
+        if ((spec.HeightsOn || pureHeights) && geo is not null && index.HasGeometry)
+        {
+            try
+            {
+                heights = HeightsReading.Measure(SpatialLevel.FromDocument(doc, geo));
+            }
+            catch (SpatialException ex)
+            {
+                notes.Add($"Floor heights: {ex.Message}");
+            }
         }
         byte[] rgba = OffscreenRenderer.Render(gd, scene, vfs, cam, mode, w, h, fog: null, time: 0f,
             disableBackfaceCulling: false, clearColor: plan ? PlanSentinel : null);
@@ -267,6 +288,7 @@ internal static class LevelRenderer
 
         var canvas = new RgbaCanvas(w, h, rgba);
         int wallSegments = 0;
+        HeightsLayer? heightsLayer = null;
         if (plan)
         {
             // Second pass without the bottom clip: what lies below where the slice drew nothing.
@@ -274,17 +296,27 @@ internal static class LevelRenderer
             byte[] deep = OffscreenRenderer.Render(gd, scene, vfs, cam, mode, w, h, fog: null, time: 0f,
                 disableBackfaceCulling: false, clearColor: PlanSentinel);
             cam.OrthoDepthRange = (Camera.OrthoEyeDistance, Camera.OrthoEyeDistance + spec.Thickness + spec.Below);
-            (bool[] solid, int openPixels) = CompositePlan(canvas, deep, cam, index, cut);
+            (bool[] solid, bool[] openMask, int openPixels) = CompositePlan(canvas, deep, cam, index, cut);
             bool openBelow = openPixels > 0;
+            if (heights is not null)
+            {
+                heightsLayer = HeightsLayer.Paint(canvas, cam, heights, cut, solid, openMask, pureHeights);
+            }
+
             var painterPlan = new PlanSlice(planY, cut, bottom, index, solid);
             (var segs, var moverSegs) = index.CutSegments(cut);
             wallSegments = segs.Count + moverSegs.Count;
-            var painter = new OverlayPainter(canvas, cam, spec, ortho, painterPlan, doc, index, holes);
+            var painter = new OverlayPainter(canvas, cam, spec, ortho, painterPlan, doc, index, holes) { Heights = heightsLayer };
             painter.DrawCutEdges(segs, moverSegs, openBelow ? Hex(OpenBelowTint) : null);
             return Finish(painter);
         }
 
-        return Finish(new OverlayPainter(canvas, cam, spec, ortho, null, doc, index, holes));
+        if (heights is not null)
+        {
+            heightsLayer = HeightsLayer.Paint(canvas, cam, heights, index.Max.Y + 1f, null, null, pureHeights);
+        }
+
+        return Finish(new OverlayPainter(canvas, cam, spec, ortho, null, doc, index, holes) { Heights = heightsLayer });
 
         (byte[], RenderResult) Finish(OverlayPainter painter)
         {
@@ -372,6 +404,14 @@ internal static class LevelRenderer
                 Objects = painter.Objects.Count > 0 ? painter.Objects.Take(RenderResult.ObjectsLimit).ToList() : null,
                 ObjectsTruncated = painter.Objects.Count > RenderResult.ObjectsLimit ? true : null,
                 Holes = (spec.Overlays & RenderOverlays.Holes) != 0 ? holes?.Count ?? 0 : null,
+                Heights = painter.HeightsResult ?? (heightsLayer is null ? null : new RenderHeightsDto
+                {
+                    Range = new[] { heightsLayer.Min, heightsLayer.Max },
+                    Colormap = HeightsLayer.ColormapText,
+                    ContourStep = heightsLayer.ContourStep,
+                    Lowest = HeightsLayer.Point(heightsLayer.Reading.Lowest),
+                    Highest = HeightsLayer.Point(heightsLayer.Reading.Highest),
+                }),
                 Geometry = geometryState,
                 Device = deviceName,
                 Notes = notes.Count > 0 ? notes : null,
@@ -583,12 +623,13 @@ internal static class LevelRenderer
     /// Fills the plan's "nothing drawn in the slice" pixels: where a vertical probe from the cut plane
     /// starts in air (an opening — e.g. a ledge over a lower hall), the lower floor from the deep pass
     /// is shown dimmed; elsewhere (solid space, or outside the level) the dark solid hatch. Returns the
-    /// solid mask and how many pixels were open to below.
+    /// solid mask, the open-to-below mask and how many pixels were open to below.
     /// </summary>
-    private static (bool[] Solid, int Open) CompositePlan(RgbaCanvas canvas, byte[] deep, Camera cam, LevelGeometryIndex index, float cut)
+    private static (bool[] Solid, bool[] OpenMask, int Open) CompositePlan(RgbaCanvas canvas, byte[] deep, Camera cam, LevelGeometryIndex index, float cut)
     {
         int w = canvas.Width, h = canvas.Height;
         var solid = new bool[w * h];
+        var openMask = new bool[w * h];
         byte[] px = canvas.Pixels;
         int period = Math.Max(6, Math.Min(w, h) / 128);
         float wpp = cam.WorldPerPixel(Vector3.Zero, h);
@@ -618,6 +659,7 @@ internal static class LevelRenderer
                         px[i + 2] = (byte)(((deep[i + 2] * 45) + (tb * 55)) / 100);
                         px[i + 3] = 255;
                         open++;
+                        openMask[(y * w) + x] = true;
                         continue;
                     }
                 }
@@ -631,7 +673,7 @@ internal static class LevelRenderer
             }
         }
 
-        return (solid, open);
+        return (solid, openMask, open);
     }
 
     private static string Hex((byte R, byte G, byte B) c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
@@ -647,24 +689,26 @@ internal static class LevelRenderer
         _ => OrthoView.Top,
     };
 
-    /// <summary>The compiled rooms flagged as sky rooms (the level's skybox), or null when there are none.</summary>
-    private static HashSet<int>? SkyRooms(Geometry? geo)
-    {
-        if (geo is null)
-        {
-            return null;
-        }
+    /// <summary>
+    /// The compiled rooms of the level's skybox: the rooms flagged as sky rooms and the detail rooms only they hold
+    /// (see <see cref="SceneBuilder.SkyRoomIndices"/>), or null when there are none.
+    /// </summary>
+    private static HashSet<int>? SkyRooms(Geometry? geo) => geo is null ? null : SceneBuilder.SkyRoomIndices(geo);
 
-        var set = new HashSet<int>();
-        for (int i = 0; i < geo.Rooms.Count; i++)
+    /// <summary>The sky room drawn through show-sky faces (the first flagged one) and the detail rooms it holds.</summary>
+    private static (int Room, HashSet<int> Drawn) SkyRoomToDraw(Geometry geo, HashSet<int> skyRooms)
+    {
+        int room = skyRooms.Where(i => geo.Rooms[i].IsSkyroom != 0).DefaultIfEmpty(-1).Min();
+        var drawn = new HashSet<int> { room };
+        foreach (SubroomList list in geo.SubroomLists)
         {
-            if (geo.Rooms[i].IsSkyroom != 0)
+            if (list.RoomIndex == room)
             {
-                set.Add(i);
+                drawn.UnionWith(list.SubroomIndices.Where(skyRooms.Contains));
             }
         }
 
-        return set.Count > 0 ? set : null;
+        return (room, drawn);
     }
 
     /// <summary>Where the object glyphs (and their labels) of an orthographic view's overlays will sit: object positions, in the plan's band.</summary>
@@ -1024,12 +1068,13 @@ internal static class LevelRenderer
 
         byte[]? skyPx = null;
         string drawn = "fill";
-        int skyRoom = skyRooms is { Count: > 0 } ? skyRooms.Min() : -1;
+        (int skyRoom, HashSet<int>? skyDrawn) = geo is not null && skyRooms is { Count: > 0 } ? SkyRoomToDraw(geo, skyRooms) : (-1, null);
         if (geo is not null && skyRoom >= 0)
         {
+            // The sky room draws full-bright, unfogged, as the game draws it (SceneBuilder leaves its lightmaps out).
             var skyScene = SceneBuilder.Build(doc.Rfl, new SceneBuildOptions
             {
-                VisibleRooms = new HashSet<int> { skyRoom },
+                VisibleRooms = skyDrawn,
                 IncludeObjects = false,
                 IncludeMovers = false,
                 IncludeLinks = false,

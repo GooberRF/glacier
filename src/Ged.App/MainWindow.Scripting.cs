@@ -292,6 +292,8 @@ public sealed partial class MainWindow : IScriptEnvironment
             // (the same roots command-line runs get; explicit --allow-import files are headless-only).
             ImportFileAccess = path => ScriptFilePolicy.RequireScriptRead(path, "level.import_mesh"),
             MeshWriteAccess = path => ScriptFilePolicy.RequireScriptWrite(path, "level.import_mesh"),
+            FileReadAccess = (path, api) => ScriptFilePolicy.RequireScriptRead(path, api),
+            FileWriteAccess = (path, api) => ScriptFilePolicy.RequireScriptWrite(path, api),
             OperationsFactory = ctx => new AppScriptOperations(
                 ctx, _buildController, ShowScriptHoleMarkers, mode => _pendingScriptPlaytest = mode),
         };

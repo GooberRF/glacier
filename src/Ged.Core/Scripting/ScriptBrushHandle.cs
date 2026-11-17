@@ -91,7 +91,7 @@ public sealed partial class ScriptBrushHandle
     public Vec3 Size => BrushTransform.Dimensions(Model);
 
     [ScriptDoc("The world-space axis-aligned bounds of every vertex (aabb).", Example = "local top = b.bounds.max.y", Since = 2)]
-    public ScriptAabb Bounds => WorldBounds(Model);
+    public ScriptAabb Bounds => _ctx.BrushIndex.BoundsOf(Model);
 
     [ScriptDoc("0-based CSG time order (list position); later brushes win over earlier ones.", Since = 2)]
     public int TimeIndex => _ctx.Brushes.TimeIndex(Uid);
@@ -111,14 +111,8 @@ public sealed partial class ScriptBrushHandle
     [ScriptDoc("True when the world point (metres) lies inside the brush volume or on its surface (within the CSG epsilon, so a point on a face counts).", Example = "if b:contains(0, 1, 0) then log.info('inside') end", Since = 2)]
     public bool Contains(double x, double y, double z)
     {
-        Brush b = Model;
-        List<CsgFace> faces = BrushWorld.ToOutwardWorldFaces(b);
-        if (faces.Count == 0)
-        {
-            return false;
-        }
-
-        return BrushVolume.From(0, (b.Flags & (uint)BrushFlags.Air) != 0, faces).Contains(new Vec3((float)x, (float)y, (float)z));
+        BrushVolume? v = _ctx.BrushIndex.VolumeOf(Model);
+        return v is not null && v.Contains(new Vec3((float)x, (float)y, (float)z));
     }
 
     [ScriptDoc("Faces whose world outward normal points \"up\" (y >= 0.7), \"down\" (y <= -0.7) or \"side\" (otherwise). Returns face[].", Example = "for _, f in ipairs(b:faces_facing(\"up\")) do f:set_texture(\"floor01.tga\") end", Since = 2)]

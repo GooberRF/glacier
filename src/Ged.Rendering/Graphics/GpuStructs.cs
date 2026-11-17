@@ -29,6 +29,31 @@ internal struct FrameConstants
     public Vector4 FogParams;
 }
 
+/// <summary>An Alpine terrain draw's constants (HLSL cbuffer b2, 176 bytes; field order as Shaders.TerrainCb).</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 16, Size = 176)]
+internal struct TerrainConstants
+{
+    /// <summary>xyz origin (min-X / min-Z corner), w layer count.</summary>
+    public Vector4 Origin;
+
+    /// <summary>xy footprint along X and Z, zw weight map size in texels.</summary>
+    public Vector4 Extent;
+
+    public Vector4 Uv0;
+    public Vector4 Uv1;
+    public Vector4 Tri0;
+    public Vector4 Tri1;
+    public Vector4 OverlayUv;
+    public Vector4 OverlayTri;
+    public Vector4 OverlayOn;
+
+    /// <summary>xy chart origin (x, z), z texel size, w 1 when a chart applies.</summary>
+    public Vector4 Chart;
+
+    /// <summary>xy chart texels, z 1 = fullbright.</summary>
+    public Vector4 ChartSize;
+}
+
 /// <summary>Per-draw shader constants (HLSL cbuffer b1, 96 bytes).</summary>
 [StructLayout(LayoutKind.Sequential, Pack = 16, Size = 96)]
 internal struct DrawConstants

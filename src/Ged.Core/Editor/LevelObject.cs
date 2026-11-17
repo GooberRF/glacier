@@ -61,9 +61,9 @@ public sealed class LevelObject
     public LevelObjectKind Kind { get; }
 
     /// <summary>
-    /// True for an object Glacier lists and inspects but does not edit (the Alpine Faction 1.5 objects): its
-    /// UID, name and position setters do nothing and it cannot be deleted or copied, so its chunk is written
-    /// back exactly as loaded.
+    /// True for an object Glacier lists and inspects but does not edit (a terrain, or an object of an Alpine chunk
+    /// kept raw because Glacier cannot read its layout exactly): its UID, name and position setters do nothing and
+    /// it cannot be deleted or copied, so its chunk is written back exactly as loaded.
     /// </summary>
     public bool IsReadOnly { get; }
 

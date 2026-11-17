@@ -56,6 +56,12 @@ internal static class MoonSharpRegistry
             RegisterSnake<ScriptOpReport>();
             RegisterSnake<ScriptHoleReport>();
             RegisterSnake<ScriptRepairReport>();
+            RegisterSnake<ScriptLightmapSettings>();
+            RegisterSnake<ScriptLightmapReport>();
+            RegisterSnake<ScriptTerrains>();
+            RegisterSnake<ScriptTerrainHandle>();
+            RegisterSnake<ScriptTerrainStroke>();
+            RegisterSnake<ScriptTerrainDecoration>();
             RegisterSnake<ScriptRotation>();
             RegisterSnake<ScriptAabb>();
             RegisterSnake<ScriptUv>();
@@ -87,6 +93,7 @@ internal static class MoonSharpRegistry
             RegisterSnake<ScriptPit>();
             RegisterSnake<ScriptSpatial>();
             RegisterSnake<ScriptDesign>();
+            RegisterSnake<ScriptRef>();
             RegisterSnake<ScriptKitCore>();
             RegisterSnake<ScriptKitProbe>();
             RegisterSnake<ScriptKitLattice>();
@@ -172,6 +179,8 @@ internal static class MoonSharpRegistry
         Convert<ScriptBrushAction>(dv => { Closure c = dv.Function; return new ScriptBrushAction(b => MoonSharpSession.Invoke(c, UserData.Create(b))); });
         Convert<ScriptFacePredicate>(dv => { Closure c = dv.Function; return new ScriptFacePredicate(f => MoonSharpSession.Invoke(c, UserData.Create(f)).CastToBool()); });
         Convert<ScriptLintVisitor>(dv => { Closure c = dv.Function; return new ScriptLintVisitor(o => MoonSharpSession.Invoke(c, UserData.Create(o))); });
+        Convert<ScriptTerrainHeight>(dv => { Closure c = dv.Function; return new ScriptTerrainHeight((x, z, wx, wz) => MoonSharpSession.Invoke(c, DynValue.NewNumber(x), DynValue.NewNumber(z), DynValue.NewNumber(wx), DynValue.NewNumber(wz)).CastToNumber() ?? double.NaN); });
+        Convert<ScriptTerrainHole>(dv => { Closure c = dv.Function; return new ScriptTerrainHole((x, z, wx, wz) => MoonSharpSession.Invoke(c, DynValue.NewNumber(x), DynValue.NewNumber(z), DynValue.NewNumber(wx), DynValue.NewNumber(wz)).CastToBool()); });
     }
 
     private static void Convert<T>(Func<DynValue, object> converter) =>

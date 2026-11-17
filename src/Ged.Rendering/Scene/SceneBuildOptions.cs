@@ -69,8 +69,17 @@ public sealed class SceneBuildOptions
     /// </summary>
     public bool IncludeStaticGeometry { get; set; } = true;
 
+    /// <summary>
+    /// Draw the static geometry's Alpine surface charts (RFL chunk 0x0AFBAE09) where the level has charts the game
+    /// would use, as Alpine Faction does on Direct3D 11; off (or no usable charts) draws the stock lightmaps.
+    /// </summary>
+    public bool AlpineLightmaps { get; set; } = true;
+
     /// <summary>Render mover brushes at their keyframe-0 transform. On by default.</summary>
     public bool IncludeMovers { get; set; } = true;
+
+    /// <summary>Draw Alpine terrain decorations (the meshes scattered over a terrain), as Alpine RED's "Show decorations" does.</summary>
+    public bool TerrainDecorations { get; set; } = true;
 
     /// <summary>Emit object billboards / meshes. On by default.</summary>
     public bool IncludeObjects { get; set; } = true;

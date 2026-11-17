@@ -27,6 +27,12 @@ public sealed class GedObjectMetadataSection : IRflSectionContent
 
     public List<GedObjectMetadataRecord> Entries { get; set; } = new();
 
+    /// <summary>
+    /// Moves on every edit of <see cref="Entries"/> in place (not serialized): the metadata service's uid index is
+    /// valid while it, the list and its length hold.
+    /// </summary>
+    internal int Revision { get; set; }
+
     public static IRflSectionContent Parse(RfReader r, RflContext ctx)
     {
         var section = new GedObjectMetadataSection { Version = r.ReadU32() };

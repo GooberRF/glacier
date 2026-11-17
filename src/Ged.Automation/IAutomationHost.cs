@@ -50,6 +50,13 @@ public sealed class AutomationScriptRun
     /// <summary>An optional short description appended to the undo label ("AI: blockout.lua — add east wing").</summary>
     public string? Label { get; init; }
 
+    /// <summary>
+    /// Where the run's level will be saved (a resolved, already-authorised path), or null. When the level has no file
+    /// yet (a new level built with <c>--out</c>), that file's folder serves as the level's folder during the run: relative
+    /// script paths resolve against it and scripts may read and write there.
+    /// </summary>
+    public string? SaveTarget { get; init; }
+
     /// <summary>The undo entry label.</summary>
     public string UndoLabel => LabelPrefix + " " + Name + (string.IsNullOrEmpty(Label) ? string.Empty : " — " + Label);
 }

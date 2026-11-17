@@ -11,9 +11,9 @@ using Xunit;
 namespace Ged.Core.Tests.Alpine306;
 
 /// <summary>
-/// The Alpine 1.5 data reaches scripts and the generic object paths read-only (chunk C3): the new objects list as
-/// level objects with read-only inspector schemas, the 1.5 level properties read through <c>level.alpine</c>,
-/// edits are refused, and the linter / link rules know the 1.5 events (chunk C4).
+/// The Alpine 1.5 data reaches scripts and the generic object paths (chunks C3 / C5): the new objects list as level
+/// objects with their inspector schemas and are editable (terrains too, their grid size through terrain:resize), the 1.5 level properties read
+/// and write through <c>level.alpine</c>, and the linter / link rules know the 1.5 events (chunk C4).
 /// </summary>
 public sealed class Alpine306ExposureTests
 {
@@ -26,29 +26,48 @@ public sealed class Alpine306ExposureTests
     [InlineData(LevelObjectKind.RopeEmitter, 2)]
     [InlineData(LevelObjectKind.DirectionalLight, 2)]
     [InlineData(LevelObjectKind.WaypointHelper, 3)]
-    [InlineData(LevelObjectKind.Terrain, 1)]
-    public void New_Objects_List_Read_Only(LevelObjectKind kind, int count)
+    public void New_Objects_List_And_Are_Editable(LevelObjectKind kind, int count)
     {
         EditorDocument doc = SyntheticDoc();
         List<LevelObject> objects = doc.Objects.Where(o => o.Kind == kind).ToList();
         Assert.Equal(count, objects.Count);
         Assert.All(objects, o =>
         {
-            Assert.True(o.IsReadOnly);
-            Assert.False(o.CanRemove);
+            Assert.False(o.IsReadOnly);
+            Assert.True(o.CanRemove);
         });
         Assert.NotEmpty(ObjectInspectorCatalog.For(kind));
-        Assert.All(ObjectInspectorCatalog.For(kind), f => Assert.True(f.ReadOnly));
+        Assert.All(ObjectInspectorCatalog.For(kind), f => Assert.False(f.ReadOnly));
 
-        // A setter never changes the stored record: the chunk stays byte-identical.
         LevelObject first = objects[0];
-        Vec3 before = first.Position;
         first.Position = new Vec3(1000, 1000, 1000);
-        Assert.Equal(before, first.Position);
+        Assert.Equal(new Vec3(1000, 1000, 1000), first.Position);
     }
 
     [Fact]
-    public void Scripts_Read_The_New_Objects_And_Properties_And_Cannot_Edit_Them()
+    public void Terrains_List_And_Are_Editable()
+    {
+        EditorDocument doc = SyntheticDoc();
+        LevelObject terrain = Assert.Single(doc.Objects, o => o.Kind == LevelObjectKind.Terrain);
+        Assert.False(terrain.IsReadOnly);
+        Assert.True(terrain.CanRemove);
+
+        // The grid size and weight resolution resample the heightfield, so they change through terrain:resize.
+        Assert.Equal(new[] { "nx", "nz", "weight_resolution" },
+            ObjectInspectorCatalog.For(LevelObjectKind.Terrain).Where(f => f.ReadOnly).Select(f => f.EffectiveKey));
+
+        // The position is the footprint centre at the origin's height: moving the terrain translates the heightfield.
+        var model = (AlpineTerrain)terrain.Model;
+        float halfX = AlpineTerrainRules.Extent(model.Nx, model.CellSize) * 0.5f;
+        float halfZ = AlpineTerrainRules.Extent(model.Nz, model.CellSize) * 0.5f;
+        Assert.Equal(new Vec3(model.Origin.X + halfX, model.Origin.Y, model.Origin.Z + halfZ), terrain.Position);
+        terrain.Position = new Vec3(1000, 1000, 1000);
+        Assert.Equal(new Vec3(1000 - halfX, 1000, 1000 - halfZ), model.Origin);
+        Assert.Equal(new Vec3(1000, 1000, 1000), terrain.Position);
+    }
+
+    [Fact]
+    public void Scripts_Read_And_Edit_The_New_Objects_And_Properties()
     {
         EditorDocument doc = SyntheticDoc();
         byte[] before = doc.SaveToBytes(updateTimestamp: false);
@@ -61,11 +80,18 @@ public sealed class Alpine306ExposureTests
         Assert.True(r.Success, r.Error?.ToDisplayString());
         Assert.Equal("2,Snow,Cylinder,jeep,true,synthetic_minimap.tga,6", r.ReturnValue);
 
-        ScriptApiV2ContractTests.AssertApiError(doc, "level.objects_of('RopeEmitter')[1]:set_pos(0, 0, 0)", "is read-only", null);
-        ScriptApiV2ContractTests.AssertApiError(doc, "level.objects_of('Terrain')[1]:set_name('x')", "is read-only", null);
-        ScriptApiV2ContractTests.AssertApiError(doc, "level.objects_of('DirectionalLight')[1]:set('intensity', 2)", "read-only", null);
-        ScriptApiV2ContractTests.AssertApiError(doc, "level.alpine:set('legacy_lighting', true)", "read-only", null);
+        // Reading changed nothing.
         Assert.True(before.AsSpan().SequenceEqual(doc.SaveToBytes(updateTimestamp: false)));
+
+        ScriptApiV2ContractTests.AssertApiError(doc, "level.objects_of('Terrain')[1]:set('nx', 9)", "read-only", null);
+        (ScriptRunResult edit, _) = ScriptTestFixture.Run(doc,
+            "level.objects_of('RopeEmitter')[1]:set_pos(0, 0, 0) " +
+            "level.objects_of('DirectionalLight')[1]:set('intensity', 2) " +
+            "level.alpine:set('legacy_lighting', true) " +
+            "return level.objects_of('DirectionalLight')[1]:get('intensity')");
+        Assert.True(edit.Success, edit.Error?.ToDisplayString());
+        Assert.Equal("2", edit.ReturnValue);
+        Assert.False(before.AsSpan().SequenceEqual(doc.SaveToBytes(updateTimestamp: false)));
     }
 
     [Fact]

@@ -40,6 +40,13 @@ public sealed class CompileOptions
     public IReadOnlyCollection<int> IsolatedBrushUids { get; set; } = System.Array.Empty<int>();
 
     /// <summary>
+    /// [ALPINE] Uids of the temporary terrain chunk brushes in the brush list (<see cref="TerrainBuildMapping"/>). Their faces get
+    /// no stock lightmap surface and never carry the see-through or has-holes bits, as Alpine RED compiles terrain rooms
+    /// (editor_patch/terrain_build.cpp:770-780, level.cpp:1329-1338).
+    /// </summary>
+    public IReadOnlyCollection<int> TerrainBrushUids { get; set; } = System.Array.Empty<int>();
+
+    /// <summary>
     /// Use RED's SINGLE ACCUMULATED WORLD BSP (<see cref="WorldBsp"/>) for the CSG split instead of the
     /// per-brush accumulator: every boundary face is routed through ONE partition over all brush face
     /// planes, so coincident cuts are bit-identical and the residual seams the per-brush clip cannot
@@ -395,6 +402,12 @@ public sealed class CompileOptions
     public bool GroupSurfaces { get; set; } = true;
 
     /// <summary>
+    /// The level's lightmap surface cap (Alpine RED's 32,767); lowered only by tests, which cannot afford a level of
+    /// 33,000 surfaces to exercise what happens past it.
+    /// </summary>
+    internal int SurfaceCap { get; set; } = SurfaceBuilder.MaxLevelSurfaces;
+
+    /// <summary>
     /// Item 6 (amendment): "High-Resolution Lightmaps" — raise the lightmap texel density above
     /// RED's stock ceiling (8 px/m) so a projection cookie / gobo can actually resolve. Verified
     /// format-safe against RF.exe (FUN_004ed1c0 reads page w/h from the file and allocates
@@ -403,6 +416,13 @@ public sealed class CompileOptions
     /// so the parity gates stay byte-identical.
     /// </summary>
     public bool HighResLightmaps { get; set; }
+
+    /// <summary>
+    /// The largest high-resolution fragment edge: 255 for Glacier's own High-Resolution Lightmaps method option, 254
+    /// when the level's Alpine <c>highres_lightmaps</c> property asks for high resolution (Alpine RED's
+    /// <c>lm_highres_fragment_max</c>, editor_patch/lightmap.cpp:49, 3981-3993).
+    /// </summary>
+    public int HighResFragmentMax { get; set; } = 255;
 
     /// <summary>
     /// Bake real lighting into the atlas (Calculate Lighting). Opt-in so the

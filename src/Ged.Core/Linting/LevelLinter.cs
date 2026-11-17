@@ -70,6 +70,16 @@ public sealed class LintOptions
 
     /// <summary>The level's file name (gametype prefix for the norms bucket), or null.</summary>
     public string? FileName { get; set; }
+
+    /// <summary>
+    /// Run the craft audit (<see cref="CraftAudit"/>: sunk and random props, stairs and openings that lead nowhere, perches,
+    /// flat-sided rock, basic areas) as warnings. Off by default (the implicit save-time lint); explicit lint runs turn it
+    /// on. Needs sealed compiled geometry (skipped with a note on a preview build).
+    /// </summary>
+    public bool CheckCraft { get; set; }
+
+    /// <summary>The most craft-audit findings reported per check.</summary>
+    public int MaxCraftFindings { get; set; } = 20;
 }
 
 /// <summary>
@@ -93,8 +103,10 @@ public static class LevelLinter
         CheckPortalBrushes(rfl, findings);
         CheckAirBrushOrientation(rfl, findings);
         CheckPlayerStart(objects, findings);
+        SpawnHeightCheck.Run(rfl, objects, findings);
         CheckLinks(rfl, objects, findings);
         CheckAlpinePrerequisites(rfl, objects, findings);
+        AlpineObjectChecks.Run(rfl, objects, options, findings);
         CheckTriggersAndOrphans(objects, options, findings);
         CheckNavPoints(rfl, options, findings);
         CheckBudgets(rfl, options, findings);
@@ -108,7 +120,63 @@ public static class LevelLinter
             CheckNorms(rfl, options, findings, notes);
         }
 
+        if (options.CheckCraft)
+        {
+            CheckCraft(rfl, options, findings, notes);
+        }
+
         return new LintReport(findings) { Notes = notes };
+    }
+
+    // ---- Craft audit ------------------------------------------------------------------------------
+
+    private static void CheckCraft(RflFile rfl, LintOptions options, List<LintFinding> findings, List<string> notes)
+    {
+        if (options.GeometryIsPreview)
+        {
+            notes.Add("Geometry is an unsealed preview build: the craft audit was skipped. Build (sealed) to audit the level.");
+            return;
+        }
+
+        if (Spatial.SpatialLevel.StoredGeometry(rfl) is not { Faces.Count: > 0 } geo)
+        {
+            notes.Add("The level has no compiled geometry: the craft audit was skipped. Build it to audit the level.");
+            return;
+        }
+
+        CraftAuditReport report;
+        try
+        {
+            var doc = new EditorDocument(rfl);
+            Spatial.SpatialLevel level = Spatial.SpatialLevel.FromDocument(doc, geo, null, options.FileName);
+            report = CraftAudit.Run(level, new CraftAuditOptions
+            {
+                MaxPerCheck = options.MaxCraftFindings,
+                ObjectBounds = options.Vfs is { } vfs ? CraftAudit.MeshBoundsFrom(vfs) : null,
+                Budget = new Spatial.SpatialBudget { TimeLimit = TimeSpan.FromSeconds(60) },
+            });
+        }
+        catch (Exception ex) when (ex is Spatial.SpatialException or OperationCanceledException)
+        {
+            notes.Add($"The craft audit did not run: {ex.Message}");
+            return;
+        }
+
+        notes.AddRange(report.Notes);
+        foreach (CraftFinding f in report.Findings)
+        {
+            findings.Add(new LintFinding(f.Severity, CraftAudit.Category(f.Check), $"{f.Message} Fix: {f.Fix}", f.Uid,
+                Location: new Vec3((float)f.Pos.X, (float)f.Pos.Y, (float)f.Pos.Z)));
+        }
+
+        foreach ((string check, int count) in report.Counts)
+        {
+            int shown = report.Findings.Count(f => f.Check == check);
+            if (count > shown)
+            {
+                notes.Add($"Craft audit: {count - shown} more '{check}' finding(s) not listed (glacier-cli audit or level.audit{{}} lists them all).");
+            }
+        }
     }
 
     // ---- Out-of-norm metrics ----------------------------------------------------
@@ -719,6 +787,11 @@ public static class LevelLinter
         {
             findings.Add(new LintFinding(LintSeverity.Error, LintCategory.MissingGeometry,
                 "Level has no compiled geometry — build it before playing (the game crashes loading it)."));
+        }
+
+        if (Compiler.SurfaceBudgetState.FromGeometry(FirstContent<GeometrySection>(rfl)?.Geometry) is { Over: true } budget)
+        {
+            findings.Add(new LintFinding(LintSeverity.Error, LintCategory.LightmapSurfaceCap, budget.Message()!, Location: budget.Location));
         }
 
         if (!options.CheckGeometryLeaks)

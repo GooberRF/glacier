@@ -358,6 +358,7 @@ local function prism(fn, name, part, poly, y0, y1, o)
   return hull(fn, name, part, pts, o)
 end
 I.prism = prism
+I.convex_pieces, I.area2, I.cross2 = convex_pieces, area2, cross2 -- (kit_trace builds traced plans on these)
 
 local function bbox(poly)
   local x0, z0, x1, z1 = math.huge, math.huge, -math.huge, -math.huge

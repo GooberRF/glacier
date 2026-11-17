@@ -309,17 +309,22 @@ internal sealed class GlRenderDevice : IRenderDevice
             _gl.UniformBlockBinding(prog, draw, 1);
         }
 
-        _gl.UseProgram(prog);
-        int tex0 = _gl.GetUniformLocation(prog, "Tex0");
-        if (tex0 >= 0)
+        // The terrain program's own block (HLSL register b2).
+        uint terrain = _gl.GetUniformBlockIndex(prog, "TerrainConstants");
+        if (terrain != GlInvalidIndex)
         {
-            _gl.Uniform1(tex0, 0);
+            _gl.UniformBlockBinding(prog, terrain, 2);
         }
 
-        int tex1 = _gl.GetUniformLocation(prog, "Tex1");
-        if (tex1 >= 0)
+        // Sampler TexN reads texture unit N (HLSL register tN); the terrain program uses Tex0-Tex15.
+        _gl.UseProgram(prog);
+        for (int unit = 0; unit < 16; unit++)
         {
-            _gl.Uniform1(tex1, 1);
+            int loc = _gl.GetUniformLocation(prog, "Tex" + unit);
+            if (loc >= 0)
+            {
+                _gl.Uniform1(loc, unit);
+            }
         }
 
         _gl.UseProgram(0);

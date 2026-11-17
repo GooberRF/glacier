@@ -50,7 +50,10 @@ public sealed partial class MainWindow
     /// <summary>Builds (or rebuilds) the picker panel and shows it in a flyout anchored to <paramref name="anchor"/>.</summary>
     private void ShowLightmapMethodFlyout(Control anchor)
     {
-        _lightingMethodPanel = new LightmapMethodPanel(EffectiveLightingMethod(), CommitLightingMethod);
+        _lightingMethodPanel = Document is { } doc
+            ? new LightmapMethodPanel(EffectiveLightingMethod(), CommitLightingMethod,
+                Ged.Core.Lighting.Alpine.AlpineLightmapSettings.FromLevel(doc.Rfl), CommitLightmapPipeline)
+            : new LightmapMethodPanel(EffectiveLightingMethod(), CommitLightingMethod);
         var flyout = new Flyout
         {
             Content = _lightingMethodPanel,
@@ -77,6 +80,27 @@ public sealed partial class MainWindow
         SyncLightingMethodToController();
         SaveAnnotationSidecarAndLighting();
         _dispatcher.ShowMessage($"Lightmap method: {m.DisplayName()} (applies on the next full bake).");
+    }
+
+    /// <summary>
+    /// Stores the open level's lightmap pipeline (its Alpine level properties, one undoable edit); the next Calculate
+    /// Lighting bakes with it, as do script and command-line bakes of the level.
+    /// </summary>
+    private void CommitLightmapPipeline(Ged.Core.Lighting.Alpine.LightmapPipeline pipeline, int density)
+    {
+        if (Document is not { } doc)
+        {
+            return;
+        }
+
+        if (Ged.Core.Lighting.Alpine.AlpineLightmapSettings.Apply(doc, pipeline, density))
+        {
+            doc.MarkDirty();
+            string what = pipeline == Ged.Core.Lighting.Alpine.LightmapPipeline.Legacy
+                ? "Legacy (stock lightmaps only)"
+                : density == 255 ? "Alpine, surface charts off" : $"Alpine, density {(density == 0 ? "default (8)" : density.ToString(System.Globalization.CultureInfo.InvariantCulture))}";
+            _dispatcher.ShowMessage($"Lightmap pipeline: {what} (applies on the next Calculate Lighting).");
+        }
     }
 
     /// <summary>Pushes the effective method into the build controller so real bakes use it.</summary>

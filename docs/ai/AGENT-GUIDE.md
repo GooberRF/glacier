@@ -198,6 +198,7 @@ Each tool matches a `glacier-cli` verb:
 | `compare_to_norms` | `norms` | no | Compare the open level with the corpus norms (below / within / above). |
 | `spatial_query` | `spatial` | no | Spatial queries and design measurements. |
 | `align_textures` | `run` | yes | Line textures up like a mapper (level.uv_align), or report UV problems. |
+| `terrain` | `run` | yes | Create, generate, edit, sculpt, query or convert a terrain. |
 | `grade_level` | `grade` | no | Design grader: verdict, fixes and locations. |
 | `list_classes` | `catalog` | no | Class names of a placeable kind (items, entities, clutter, events). |
 | `describe_class` | `catalog` | no | Fields, links and description of a kind or class. |
@@ -338,6 +339,17 @@ whether things sit inside walls, spacing, symmetry. Use both before you hand bac
 - **What to look for:** rooms that should connect but are separated by hatching; glyphs on or inside
   dark areas (a light star on a dark pillar square is a light inside solid); spawns hugging walls;
   doors (a magenta line) not sitting in their doorway; missing lights (a dark room in `lit` mode).
+- **Floor heights** (`--overlays …,heights`, plan and `--view top`): every walkable floor is tinted by its
+  height over the texture (the legend's colour bar, in metres: blue lowest, then cyan, green, yellow, red
+  highest). Floor that climbs gradually (a ramp or slope) gets thin dark contour lines every 0.5 m (1 m when
+  the level spans more than 24 m), white chevrons pointing uphill and a `y0 → y1 m` label; stairs get light
+  tread lines, a white uphill arrow and the same label; an abrupt edge where walkable floor ends more than a
+  step (0.6 m) above a lower floor, with no ramp or stairs joining them, is a heavy violet line with ticks on
+  its LOW side and the drop (`↓ 3.5 m`); `+y` labels give each flat floor's height. Steps you can walk up are
+  never marked. `--mode heights` draws the same with the colour alone (other surfaces grey): the clean image
+  `ref.heights` reads back. `--json` lists what was marked under `heights`: `range` (the colour bar), `ramps`
+  and `stairs` (`low`, `high`, `foot`, `top`, `climb` = uphill `{dx, dz}`, `run`, `width`), `drops` (`points`
+  `{x, z}`, `high`, `low`, `drop`) and `flats` (`y`, `area`, `at`).
 
 **Pixels and world.** `render --json` gives `worldPerPixel`, `origin` (the world point at the image's
 top-left corner), `pixelAxes` and a `mapping` sentence. For a plan:
@@ -751,7 +763,8 @@ off the grid axes (exemplar off-axis wall share 0.08-0.35).
 | `kit.opening{a, b, shape}` | a window above a sill (a sight link), an arch, a rough mouth or a door between two spaces; warns when it is wider than 0.8x a space's clear width (the spaces would merge) |
 | `kit.beam`, `kit.truss`, `kit.bridge{from, to, style}`, `kit.landmark` | detail structure: beams, trusses, truss/arch/girder/plank bridges (landmark bridges span 12-27 m over 5-12 m drops; the bridge warns below that), 25-40 m outdoor landmarks |
 | `kit.road{path, width?, height?, tunnels?}` | a wide graded road (the payload cart route), 8 m deep by default, with level pads at turns; a leg's grade is its rise over its sloped stretch (the leg less the turn pads, half the road width each side of a turn point), and the warning names both lengths |
-| `kit.ground_at{x, z, y?}`, `kit.ground_region`, `kit.ground_provider` | the ground under a point, read through one provider (brush floors today; terrain later). Read floors this way instead of assuming a brush top is the floor |
+| `kit.ground_at{x, z, y?}`, `kit.ground_region`, `kit.ground_provider` | the ground under a point, read through one provider: brush floors and the tops of Alpine terrains (kind `"terrain"`). Read floors this way instead of assuming a brush top is the floor |
+| `kit.ground{area or min/max, mode?, explain?}` | brush or Alpine terrain ground for an open area (see "Ground: brush or terrain" below); `explain = true` only reports the choice and its inputs |
 
 Caves and canyons warn when a mouth is wider than its room, or when most of the floor slopes;
 `kit.organic_report{along = cave}` checks organic moderation (at least 30% level floor and one built element
@@ -770,6 +783,49 @@ kit.corridor{ name = "store_hall", a = store, b = hall.parts.room, offset = -6, 
 kit.pilasters{ name = "store_piers", room = store, sides = {"-z"} }
 local floor = kit.ground_at{ x = 0, z = -26 }                                          -- the store's floor
 return string.format("spaces: floor %.1f, holes = %d", floor.y, ops.holes().count)
+```
+
+### Ground: brush or terrain
+
+Alpine Faction terrain is an **option, not the outdoor default**. `kit.ground{…}` weighs it for one open area
+and records why (`choice`, `reason`, and the `inputs` it used); pass `explain = true` to see the decision without
+building anything.
+
+- **Choose terrain** for large, open, natural ground: at least 400 m² and 16 m across, open to the sky, no
+  overhang, on a level that already targets Direct3D 11 (`level.alpine:set("require_d3d11_setting", true)`, a
+  D3D11-only lightmap setting, a terrain already in the level, or `d3d11 = true`). It is smooth, cheap to shape,
+  blends painted layers on Direct3D 11 and, made geoable (`t:object():set("geoable", true)`), takes craters
+  without a thick world brush (the kit's terrains are not geoable).
+- **Keep brushes** for everything else: canyon walls, caves, passages and every built floor (decks, plazas,
+  rooms) stay brushes. A terrain cannot seal, form rooms or portals, overhang, rotate, or look blended on the
+  legacy renderers (they draw each cell's dominant layer, unlit by Alpine's terrain charts).
+- `mode = "auto"` (the default) applies those rules; `"terrain"` builds one unless the area cannot take it (an
+  error: roofed, a cave or canyon); `"brush"` keeps the brush floor.
+- A kit terrain rests 1/16 m above the brush floor it covers, gets mounds from `seed` and `relief`, stays level at
+  the edges, at `flat` places (doorways, landings, what stands on it) and around `holes` (openings cut through it),
+  paints `paths` with the path layer and the crests with rock, and is always **enclosed in air**: an area not
+  already inside an air volume gets a sky volume, so the level still seals. Air brushes do not cut terrain; cut
+  openings with `holes`.
+- In layouts, `kit.layout{…, ground = "terrain"}` (or `"auto"`) asks every open-air zone for terrain; only
+  natural-ground zones (isles, gardens) take it, the rest keep their slabs with the reason in
+  `report.zones[i].ground`. The graph is otherwise identical, so a seed keeps its layout.
+- After building, the terrain is floor to every check: `kit.ground_at` reports `kind = "terrain"`, spawns stand
+  1 m above its surface, the grader and `spatial.walk` sample its top, and the space under it is ground (a spawn
+  there is reported by the spawn-height lint, `spatial.point_info` says `under_terrain`).
+
+```lua
+-- sample: kit-ground
+local kit = ged.import("kit")
+local yard = kit.room{ name = "yard", pos = {0, 0, 0}, size = {40, 14, 32} }
+kit.sky_room{ open = {yard} }
+local why = kit.ground{ area = yard, explain = true }                 -- brush: no Direct3D 11 target yet
+level.alpine:set("require_d3d11_setting", true)
+local g = kit.ground{ area = yard, name = "yard_ground", seed = 2,   -- now terrain
+                      paths = {{{-20, 0}, {0, 0}, {20, 6}}}, flat = {{-20, 0, 3}} }
+local function stand(x, z) return {x, g.terrain:surface_at(x, z) + 1, z} end      -- 1 m above the terrain
+level.place{ kind = "respawn", pos = stand(8, 6) }
+level.player_start{ pos = stand(-8, 6), yaw = 0 }
+return why.reason .. " / " .. g.reason
 ```
 
 ### Placing with purpose (roles)
@@ -896,8 +952,8 @@ any Lua table, check it, look at it, and only then build it.
      `rot` (yaw in degrees, default 0: the zone's plan turned about `pos`; 0 faces +z, 90 turns +z
      toward +x; `"+x"`… sides, `params.heading` and `params.split` always mean the zone's own walls),
      `height`, `levels` (port floors above `pos.y`, e.g. `{0, 5}` for a zone with a gallery a storey
-     up), `palette` (`kit.palette` theme, variant, team), `ground` (`"brush"` today; `"terrain"`
-     later) for outdoor zones, and `dress` (theme and density for the population pass). A `poly`
+     up), `palette` (`kit.palette` theme, variant, team), `ground` (`"brush"`, `"terrain"` or `"auto"`;
+     `kit.layout{ground = …}` sets it on every outdoor zone) for outdoor zones, and `dress` (theme and density for the population pass). A `poly`
      zone has `outline = {{x, z}, …}` (3-64 world points, either winding) instead of `size`; its
      `pos` needs only the floor (`{nil, y, nil}`), `sky = true` opens it to the sky.
    - `g.links`: `type` (corridor, doorway, stair, ramp, drop, bridge, window, lift, road, join), `a`,
@@ -1177,6 +1233,361 @@ The graph and every function are Lua, so the MCP route is the same: send the scr
 (or `glacier-cli run layout.lua --out work/level.rfl`), print the preview and the violations, edit,
 and run again on a fresh level.
 
+### Recreating from a reference (maps, mockups, drawings)
+
+When the brief is "build THIS" from an overhead picture (a map, a mockup, a drawing, a top-down render),
+do not eyeball it and do not use the generative kit (`kit.layout` snaps, reshapes, links and dresses).
+Measure the picture, build the plan literally with `kit.trace`, and compare the build with the picture
+after every change. Everything below is Lua (`run_lua`, or `glacier-cli run` with the level); picture
+paths are relative to the level's folder, and the images it writes are PNGs you look at
+(`reference_view image=<png>` shows any of them, with `step` / `zoom` for a fine grid).
+
+1. **Open and grid.** `ref.open("map.png")`, then `ref.grid{out = "grid.png"}` for the whole picture and
+   `ref.grid{crop = {x, y, w, h}, zoom = 4, out = "grid_a.png"}` for each area: every line is labelled
+   in the picture's own pixels and crossings carry `x,y`, so you read a corner to a pixel or two. Read
+   corners off the grid; never guess them from the overview.
+2. **Calibrate.** Find a scale: a scale bar, or a length you know (a 2.5 m door, a 4.5 m corridor; see
+   `ref scale` below). `ref.calibrate{bar = {x1, y1, x2, y2, metres}, origin = {px, py}, at = {0, 0}}`
+   maps pixels to metres: the top of the picture is +Z (north up, like `render_plan`), picture down is
+   -Z, picture right +X (`up = "+x"` or `rotation = deg` for other headings). `ref.to_world(x, y)`,
+   `ref.to_px(x, z)` and `ref.world_points(list)` convert.
+3. **Trace the playable area** (optional, best on clean mockups): `ref.mask{samples = {{x, y}, ...},
+   tolerance = 45, connected = true, out = "mask.png"}` picks the floor colours under the sample pixels
+   (sample every floor colour: tiles, platforms, ramps), closes grout lines, drops specks, and returns
+   the outlines as `polygons[i].points` (world, simplified to 0.5 m) plus `px`. Look at `mask.png`:
+   it is also what `ref.compare` scores against. On painted or busy art use `mode = "hsv"` and fix the
+   mask with `ref.mask_edit` (see "Reading the picture" below); a mask PNG (white = playable, the
+   picture's size) can also be passed as `mask = "my_mask.png"`.
+4. **Build literally.** `kit.trace{units = "px", regions = {...}, openings = {...}, solids = {...}}`
+   (or `units = "m"`): each region is a polygon of any shape (concave, curved: up to 256 corners) with a
+   floor and a ceiling or the sky. `kind`: `room`, `corridor`, `yard` (sky), `pit` (a lower floor),
+   `ramp` / `stairs` (`floor = {low, high}`, `climb = {dx, dz}` uphill), `deck` (a slab over another
+   region's air) and `path` (a centre line plus a width; see below). Regions that share a wall line are
+   open to each other along it; leave a wall-thick gap where the picture shows a wall, and add
+   `openings = {{a, b, at, width}}` for doorways through it. `solids` are pillars and machine
+   footprints (`top = "ceiling"` for a pillar). Nothing is snapped beyond 1/16 m and the weld
+   `tolerance` (0.15 m), nothing is linked or dressed; it refuses, with the reason, two regions sharing
+   the same space, an opening that is not between its two regions, a ramp steeper than 45 degrees, a
+   wall wedge too thin to build and an outline that crosses itself. `build = false` validates only and
+   lists `connections` (which regions touch, the drop between them, and `ledge = true` where that drop
+   is more than a step: check those are meant), `stacked` storeys and each region's `hosts`.
+5. **Compare.** `ops.build()`, then `local c = ref.compare{out = "cmp.png"}`: the level's walkable
+   floor drawn on the picture (cyan), missing floor red, extra floor orange, the mask's edge yellow.
+   It returns `iou`, `iou_tol` (within 0.5 m), `walls_mean_m` (how far the floor's edges are from the
+   picture's, in metres), `missing_m2`, `extra_m2` and `worst`: the largest misses and extras with
+   `center` and `box_world` in metres. `y = {lo, hi}` compares one storey.
+6. **Fix the worst region, rebuild, compare again.** Re-read that area zoomed, correct the region's
+   corners (more points on a curve, a step in a wall, the missing pillar), and repeat until
+   `walls_mean_m` is under about 0.5 m and `worst` lists nothing larger than a few square metres. Then
+   heights: every region's floor from the picture's labels, sections or elevation chart, and
+   `render_view` (iso) to check ramps and ledges.
+
+The picture, calibration and last mask stay with the level for the session, but set them again at the
+top of each script (it is one line each) so the script can be rerun from scratch. A worked example
+(metres; the picture-pixel version is the same with `units = "px"` and pixel corners):
+
+```lua
+-- sample: trace-literal
+local kit = ged.import("kit")
+-- a quarter-circle corridor: corners generated on its two arcs (centre 0, -2.5; radii 27.5 and 21.5)
+local curve = {}
+for i = 0, 8 do local a = math.rad(90 - i * 11.25) curve[#curve + 1] = { 27.5 * math.cos(a), -2.5 + 27.5 * math.sin(a) } end
+for i = 8, 0, -1 do local a = math.rad(90 - i * 11.25) curve[#curve + 1] = { 21.5 * math.cos(a), -2.5 + 21.5 * math.sin(a) } end
+local tr = kit.trace{ name = "site", regions = {
+    { name = "hall", poly = {{-40, 30}, {0, 30}, {0, 15}, {-25, 15}, {-25, -5}, {-40, -5}}, floor = 0, height = 5 },
+    { name = "curve", kind = "corridor", poly = curve, floor = 0 },
+    { name = "yard", kind = "yard", floor = 0,
+      poly = {{17.5, -2.5}, {45, -2.5}, {45, -15}, {30, -15}, {30, -20}, {22.5, -20}, {22.5, -30}, {17.5, -30}} },
+    { name = "platform", kind = "yard", poly = {{30, -15}, {45, -15}, {45, -30}, {30, -30}}, floor = 2 },
+    { name = "ramp", kind = "ramp", poly = {{22.5, -20}, {30, -20}, {30, -30}, {22.5, -30}}, floor = {0, 2}, climb = {1, 0}, sky = true },
+  },
+  solids = { { poly = {{-34, 6.5}, {-31, 6.5}, {-31, 3.5}, {-34, 3.5}}, region = "hall", top = "ceiling" } } }
+level.player_start{ pos = {-32, 1, 22}, yaw = 90 }
+local open = {}
+for _, c in ipairs(tr.connections) do open[#open + 1] = c.a .. "-" .. c.b end
+return string.format("%.0f m2 traced, %d brushes, open: %s", tr.area, #tr.brushes, table.concat(open, ", "))
+```
+
+The reference loop around it, for a calibrated picture (not a sample: it needs your picture):
+
+```
+ref.open("map.png")
+ref.calibrate{bar = {40, 603, 120, 603, 10}, origin = {400, 320}}
+ref.mask{samples = {{300, 140}, {700, 520}}, tolerance = 45, connected = true, out = "mask.png"}
+local tr = kit.trace{units = "px", regions = {...}}   -- corners read off ref.grid
+ops.build()
+local c = ref.compare{out = "cmp.png"}
+print(c.iou, c.walls_mean_m, c.worst[1] and c.worst[1].kind, c.worst[1] and c.worst[1].center[1])
+```
+
+#### Reading the picture
+
+A new level works from the start: `glacier-cli run build.lua --out new.rfl` (or `glacier-cli new new.rfl`
+first) treats `new.rfl`'s folder as the level's folder, so `ref.open("map.png")` and every `out` PNG
+resolve there. Keep the picture, the scripts and the level in one folder.
+
+- **Check the trace on the picture, every loop.** `ref.grid{overlay = plan, out = "o.png"}` draws your
+  trace (the same table you give `kit.trace`, with its `units`) over the picture: each region outlined in
+  its own colour with its name and a dot on every corner; `solids` in white. Add `crop` + `zoom = 3..6`
+  per area and compare each dot with the art's corner. `overlay` also takes a list of regions
+  `{name, poly}`, `ref.mask` polygons or point lists (pixels; `overlay_units = "m"` for world points).
+  After `ops.build()`, `ref.grid{overlay = "level", out = "built.png"}` draws the floor you actually
+  built, one outline per height band named `y 0` / `y 0..3`: a quick check that each area got its height.
+- **Mask modes.** `mode = "rgb"` (default) matches by RGB distance (`tolerance`). On painted mockups and
+  rendered overheads, where saturated rock sits next to grey or yellow tiles, use `mode = "hsv"`: a sample
+  then matches by hue (`hue_tol`, degrees), saturation (`sat_tol`) and brightness (`val_tol`), and grey
+  references ignore hue. Or give boxes: `ranges = {{sat = {0, 0.18}, val = {0.3, 0.85}}, {hue = {35, 60},
+  sat = {0.4, 1}}}` (grey tiles, yellow tiles). Read `samples_report`: each sample's colour, `hsv`, the
+  `fraction` of the picture it matched and its `border_fraction`. `warnings` flags a sample matching over
+  half the picture or most of the border, and a mask covering almost everything; never use such a mask.
+- **Invert on a flat background.** When the area around the map is one flat colour (a rendered overhead's
+  backdrop), `ref.mask{colors = {{r, g, b}}, invert = true, tolerance = 10}` with that background colour
+  takes every drawn pixel as floor, dark floors included; a sample's `border_fraction` near 1 says which
+  colour is the background.
+- **Holes and pieces.** Outlines keep their holes (`holes_px`, `holes`, `hole_count`; a ring corridor's
+  island, a pillar). `kit.trace` regions have no holes, so pass `holes = "cut"`: every piece with a hole
+  is cut along pixel rows through the hole into hole-free pieces that share the cut edges exactly.
+  `split = "colors"` gives one set per colour class; `split = {{name = "hall", rect = {x, y, w, h},
+  floor = 0}, {name = "deck", poly = {...}, floor = 3}}` gives one per zone (a storey or height tile),
+  and `m.regions` is then ready for `kit.trace{units = "px", regions = m.regions}`: named pieces with
+  `poly` and your zone's fields, neighbours sharing their seams exactly. Add `kind`, ramps and openings.
+- **Edit the mask in Lua.** `ref.mask_edit{erase = {pit_poly}, fill = {gap_poly}, out = "mask_fixed.png",
+  overlay = "mask_fixed_overlay.png"}` erases rock rims and fills shadowed floor on the last mask (or on
+  `mask = "<png>"`); it becomes the compare mask. `ref.mask{polygons = plan, mask_out = "trace.png"}`
+  rasterises a trace or any polygons into a mask (that compare then measures build fidelity only).
+
+A painted mockup, end to end: sample the grey and yellow tiles with `mode = "hsv"` (the red rock differs
+in hue and saturation), check `samples_report` and `warnings`, erase what is not floor and fill what the
+art shades, then compare against the result.
+
+```
+ref.open("mockup.jpg")
+ref.calibrate{ppm = 9, origin = {900, 500}, at = {0, 0}}
+local m = ref.mask{mode = "hsv", samples = {{610, 420}, {700, 380}}, sat_tol = 0.15, val_tol = 0.3,
+  connected = true, holes = "cut", out = "mask.png"}
+for _, w in ipairs(m.warnings or {}) do print(w) end
+ref.mask_edit{erase = {{{1200, 80}, {1260, 80}, {1260, 140}, {1200, 140}}}, out = "mask_fixed.png"}
+ref.grid{overlay = m.polygons, crop = {500, 300, 400, 300}, zoom = 3, out = "check.png"}
+```
+
+**Multi-storey plans, ramps inside rooms, paths and seams.** Trace each floor once, as the picture
+shows it; do not cut rooms into tiles around ramps.
+
+- **Ramps, stairs and decks inside a room or yard**: draw them over it. Their fill (or slab) replaces
+  the room's floor there, and they take the room's ceiling and sky unless you give their own;
+  `tr.regions.<name>.hosts` names the room. A ramp whose top reaches an upper storey's floor is
+  hosted by both, and its air opens the hole in the upper floor.
+- **Stacked storeys**: two ordinary regions may overlap in plan only when one lies wholly above the
+  other with at least a 0.25 m slab between (lower ceiling <= upper floor - 0.25); anything else
+  that shares space is refused with the fix. `storeys = {{name, floor, ceiling | height}}` plus
+  `storey = "<name>"` on a region give its floor and ceiling. `tr.stacked` lists the stacked pairs.
+- **Paths** (`kind = "path"`): tunnels, roads, curved ramps. `path = {{x, z}, ...}` is the centre
+  line, `width` (or `widths`, one per point) its width, `floor` (or `floors`, one per point) its
+  height: a change of floor along it is a ramp, curved where the line bends. It becomes segment
+  regions `name.1`, `name.2`... joined by mitres; an opening may name the path (the segment nearest
+  `at` is used). A bend sharper than 120 degrees, a segment shorter than its mitres, or a slope
+  over 45 degrees is refused.
+- **Seams**: a corner within `tolerance` of another region's wall is moved onto it and inserted into
+  that wall, so tiles cut from one mask meet exactly even when an edge is a pixel off. A wedge of
+  wall thinner than 5 cm that no weld closes (two walls diverging at a shallow angle) is refused with
+  its place: give both regions the same corners there, or leave a real wall. `check = true` runs the
+  leak check after building (a sealed build, a few seconds): `tr.holes` counts the open edges near
+  the plan (positions in `tr.hole_positions`, logged as a warning).
+- **Materials**: `material = "concrete" | "metal" | "metal_floor" | "grate" | "rock"` (or any
+  `kit.palette` theme or alias, or a `kit.palette{...}` record) on the call or on a region gives its
+  floor, wall and ceiling textures; a region's own `material`, `texture` or `textures` wins. The plan
+  is UV-aligned as a whole at the kit's 64 px/m, so textures run on across a region's pieces.
+- **Dressing a trace**: every region is a kit zone. `tr.zone.<name>` (and the list `tr.zones`; a path
+  is one corridor zone) is a room record with `min`/`max`, `floor_y`, `ceiling`, `storey`, `outline`,
+  its air `brushes` and solid `fills`; pass it to `kit.light_room{room = tr.zone.hall}` or `kit.trim`,
+  and pass the name to `kit.dress`, `kit.detail` and `kit.items` (`room = "hall"`). Per region,
+  `tr.regions.<name>.walls` lists its solid wall spans `{a, b, length, floor, ceiling}`, `open_edges`
+  the spans open to a neighbour `{a, b, to, drop}`, and `air` / `fills` its brushes. Each opening has
+  `pos = {x, floor, z}`, `dir` (from `a` into `b`), `width` and `height` for a door frame. `tr.edges`
+  lists the railing edges: `kind = "deck"` (a deck edge not against its host's wall or running on into
+  a floor at its height; `below`, `drop`) and `kind = "ledge"` (a shared line between floors more than
+  a step apart), each `{a, b, length, y}`. `tr.connections` lists every link between regions:
+  `kind = "shared"` (open along a shared wall line) and `kind = "opening"` (a doorway from `openings`,
+  with `opening` = its index, `at`, `pos`, `dir`, `width` and `height`).
+
+```lua
+-- sample: trace-storeys
+local kit = ged.import("kit")
+local tr = kit.trace{ name = "keep", check = true,
+  storeys = { { name = "ground", floor = 0, ceiling = 4 }, { name = "first", floor = 4.5, height = 3.5 } },
+  regions = {
+    { name = "low", storey = "ground", poly = {{0, 0}, {16, 0}, {16, 10}, {0, 10}} },
+    -- the upper storey runs on past the stairs' top step (stairs that end against a slab serve no route)
+    { name = "high", storey = "first", poly = {{4, 0}, {16, 0}, {16, 10}, {0, 10}, {0, 6}, {4, 6}} },
+    { name = "stairs", kind = "stairs", poly = {{0, 0}, {4, 0}, {4, 6}, {0, 6}}, floor = {0, 4.5}, climb = {0, 1}, ceiling = 8 },
+    { name = "yard", kind = "yard", poly = {{16, 0}, {30, 0}, {30, 10}, {16, 10}}, floor = 0 },
+    { name = "bridge", kind = "deck", poly = {{20, 0}, {24, 0}, {24, 10}, {20, 10}}, floor = 4.5 },
+    -- a tunnel out of the yard that climbs 3 m round a bend
+    { name = "tube", kind = "path", path = {{30, 5}, {38, 5}, {44, 11}, {44, 20}}, width = 4, floors = {0, 0, 3, 3}, height = 3.5 },
+  } }
+level.player_start{ pos = {8, 1, 5}, yaw = 90 }
+return string.format("%d stacked, bridge in %s, stairs in %s, %d holes", #tr.stacked, tr.regions.bridge.hosts[1],
+  tr.regions.stairs.hosts[1], tr.holes)
+```
+
+### Heights on the overhead: ramps, stairs and drops
+
+A storey plan alone cannot tell a corridor that ramps up to the next storey from a flat floor that ends at a
+cliff. When the reference has heights (a Glacier render with `--overlays …,heights`, an `overhead_heights.png`
+made with `--mode heights`), read them before tracing:
+
+- **Colour = height.** Walkable floor is tinted from blue (lowest) through cyan, green and yellow to red
+  (highest); the legend's colour bar (or a strip under the plan) gives the range in metres. Floor far outside it
+  (a pit below the play) keeps its texture or is grey, with its height label.
+- **A ramp or slope** is a colour that changes gradually, with thin dark contour lines across it, white chevrons
+  (`^`) pointing uphill and a label `low → high m`. Trace it as ONE `kind = "ramp"` region with `floor = {low,
+  high}` and `climb` = the chevrons' direction, whatever its outline (it may widen as it climbs; see "Ramps of any
+  shape" below). Never trace it as a flat floor ending at a ledge.
+- **Stairs** are light tread lines across a flight with a white arrow uphill and the same label: a `kind =
+  "stairs"` region.
+- **A drop** is a heavy violet line with ticks on its LOW side and the drop (`↓ 3.5 m`): the two floors share a
+  wall line but you cannot walk up (trace both floors touching along that line; `kit.trace` reports it as a
+  `ledge` connection, and the detail pass rails it). No violet line between two floors of nearly the same colour
+  means a walkable step.
+- `+y` labels give each flat floor's height: use them for the regions' `floor`.
+
+**`ref.heights` reads the picture for you.** On a calibrated heights picture (calibrate it from its scale bar, or
+`mpp` = the render's `worldPerPixel`), `local h = ref.heights{legend = {min, max}, out = "heights_check.png"}`
+returns:
+
+- `grid`: the floor height of every cell (`values[row * cols + col + 1]`, `nodata` where no floor shows);
+- `flats` `{name, poly, floor, area_m2}`, `ramps` and `stairs` `{name, kind, poly, floor = {low, high}, climb,
+  rise, slope}` and `drops` `{points, high, low, drop}` (picture pixels);
+- `regions`: the flats, ramps and stairs as `kit.trace` regions that share their seams, so
+  `kit.trace{units = "px", regions = h.regions}` builds the floor plan with its heights straight away (add
+  ceilings, doorways and walls from the other references).
+
+Look at `heights_check.png` (every region outlined and named with its height, the drop edges) before you build.
+A plan with the overlay over textures decodes too, but its dark wall cut lines (a lintel over a doorway or a stair
+mouth included) separate regions like walls; `--mode heights` on the top view is the cleanest. Glyphs and labels over
+the floor are skipped; pass `ignore = {{x, y, w, h}}` for a caption or panel in the way, and `crop` for one area.
+
+**Hand-drawn mockups** have no decodable tint. Mark heights on them the same way so they read the same: draw an
+uphill arrow along every ramp or stair flight with the height at each end (`0` at the foot, `3.5` at the top),
+draw each drop as a line with short ticks on its low side and the drop beside it (`↓ 3`), and write `+y` on each
+flat floor. Read those marks off `ref.grid` and give the regions their `floor`, `kind` and `climb` by hand.
+
+#### Heights and storeys (from eye-level screenshots)
+
+An overhead gives the footprint, not the heights. The screenshots give the heights. An area is done when
+a render of it **looks like** its screenshot, so use this loop for every shot:
+
+1. **Build the footprint first** (kit.trace with your best guess at the floors), then `ops.build()`.
+2. **Find the camera.** `ref.shot_locate{shot = "s1.png", fov = 90, search = {box = {x0, z0, x1, z1}}}`
+   ray-casts the build from walkable floor positions (eye 1.7 m up) and matches its edges against the
+   shot's. It returns `best` and `poses` (`{x, y, z, yaw, pitch, fov, floor, score}`; yaw 0 = +Z,
+   90 = +X), and `out` writes shot | build | edges. **Always give `search.box`** (the area the shot shows,
+   read off the overhead, about 30 x 30 m) and, when you can tell, `search.yaw = {heading, 45}`. The
+   whole-level search can lock onto a look-alike corridor elsewhere. Check the result by eye in `out`:
+   the build panel must show the same space.
+3. **Concept art and painted mockups.** Edges are unreliable on these, so set the pose by hand. Use the
+   overhead to place the camera where the shot's vanishing lines meet the floor plan. A standing eye is
+   1.7 m, so the horizon row is at eye height. Take the yaw from the room's visible walls, and the
+   pitch from where the horizon sits (above the picture's centre = looking down). Then iterate
+   `ref.shot_compare` until the two panels agree.
+4. **Read heights.** `ref.shot_measure{pose = l.best, shot = "s1.png", px = {x, y}}` casts the ray
+   through a shot pixel. `hit`, `height` (above the camera's floor) and `surface` tell you what the
+   build has there. `distance = d` gives `at_distance`: how high that pixel row is at d metres
+   (horizontal). Use it for a balcony edge or a ceiling line you can place on the overhead
+   ("the gallery edge 8 m ahead is at row 160" gives its height). Change the trace's floors, ceilings
+   and storeys to match.
+5. **Compare.** `ref.shot_compare{shot = "s1.png", pose = l.best, out = "cmp_s1.png"}` renders the build
+   **lit and textured**, as the game shows it, at the shot's aspect beside the shot. `edges = true`
+   adds an edge-overlay panel (shot red, build cyan, both yellow).
+   - `score` is the edge correlation; above ~0.35 the shapes line up on game renders.
+   - `offset_px = {dx, dy}` is how far the build's edges sit from the shot's. Positive dy means the
+     build reads lower: raise that geometry, or check the eye height.
+   - Hosts without a GPU renderer fall back to a grey ray-cast panel (`render = "shaded"`).
+
+```text
+-- the height loop for one shot (Lua; needs your own screenshot, so it is not a runnable sample) (shot pixels read off ref.grid{path = "s1.png", ...})
+local l = ref.shot_locate{shot = "s1.png", fov = 90, search = {box = {-30, -10, 0, 20}}, out = "loc_s1.png"}
+local p = l.best
+local edge = ref.shot_measure{pose = p, shot = "s1.png", px = {412, 160}, distance = 8}
+print("gallery edge is", edge.at_distance, "m up; the build has", edge.height, edge.surface)
+local c = ref.shot_compare{shot = "s1.png", pose = p, out = "cmp_s1.png", edges = true}
+print(c.score, c.offset_px[1], c.offset_px[2])
+```
+
+### Organic rock and caves along a trace
+
+Where the reference shows rock, trace it as rock. Do not stack `kit.trace` prisms or boxes to fake it: they read as
+flat slabs. These options keep the footprint you traced and cover it with rough detail rock:
+
+- `kind = "canyon"`: an open-sky region. Its walls are eroded rock in tiers that lean in or out 10 to 30 degrees,
+  with buttresses and alcoves along them and scree on the ledges. They lean back above about a third of their
+  height (`lean`, metres; only where no other region is near) and may overhang at the top (`overhang`). Its
+  `height` / `ceiling` is the rim. Spurs and overhangs start above head height.
+- `kind = "cave"`: rock walls, a rock haunch along every wall, and one continuous hanging vault with stalactite drops, plus
+  `pillars = n` or a list of points.
+- `kind = "path"` with `organic = true`: a rough tunnel along the centre line, with the same cave treatment on every
+  segment.
+- `walls = "rock"`, or `rock_edges = {i, ...}` on any region: those walls become rock. Edge i runs from point i to
+  point i + 1 of the poly as given, so a yard can have one cliff side.
+- `ground = "organic"` adds gentle mounds (`relief`); `ground = "terrain"` uses `kit.ground`. Doorways, openings and
+  `keep_clear` routes stay level.
+- `boulders = n` or `{density = per 100 m², size = {min, max}}` rests boulders at the walls' feet. `rock_detail = true`
+  adds the kit's rock formations. Both keep clear of doorways, hosted ramps and stairs, and the trace's `keep_clear`
+  polylines (for example a cart route).
+- `kit.rock_mass{poly, y0, y1}` raises a mesa, outcrop or buttress from an outline: a talus apron (`talus`, metres),
+  rounded strata that step in with ledges, and a rim of varied height. Use it instead of stacked prisms.
+
+The rock is detail over the traced air, so the build stays sealed. The floor keeps the outline within 0.35 m (each
+region's `rock.foot` reports it). Rock regions default to `material = "rock"`. Every piece is tagged `kit.zone`,
+`kit.role` and `kit.purpose`.
+
+```lua
+-- sample: trace-organic
+local kit = ged.import("kit")
+local tr = kit.trace{ name = "gorge", seed = 2,
+  keep_clear = { { {-10, 22}, {10, 22} } },                -- the cart route
+  regions = {
+    { name = "gorge", kind = "canyon", floor = 0, height = 14, overhang = 1.5,
+      poly = {{-14, -12}, {6, -16}, {16, -6}, {14, 10}, {2, 14}, {-12, 8}} },
+    { name = "yard", kind = "yard", floor = 0, height = 10, poly = {{-16, 15}, {16, 15}, {16, 35}, {-16, 35}},
+      rock_edges = {3}, ground = "organic", boulders = 8 },
+    { name = "cave", kind = "cave", floor = 0, height = 6, poly = {{30, -10}, {48, -12}, {52, 4}, {40, 12}, {28, 6}}, pillars = 2 },
+    { name = "tun", kind = "path", organic = true, width = 4, floor = 0, height = 4, path = {{17, 0}, {22, 1}, {25, -3}, {27.5, -2}} },
+  },
+  openings = { { a = "gorge", b = "yard", at = {0, 14}, width = 4 }, { a = "gorge", b = "tun", at = {16, 0}, width = 3.5 },
+    { a = "tun", b = "cave", at = {28.4, -2}, width = 3.5 } },
+  check = true }
+kit.rock_mass{ name = "mesa", poly = {{8, 28}, {14, 27}, {15, 32}, {9, 33}}, y0 = 0, y1 = 7 }
+level.player_start{ pos = {0, 1, 0}, yaw = 0 }
+return string.format("%d holes, gorge skin %d pieces, foot %.2f m", tr.holes, tr.regions.gorge.rock.skin, tr.regions.gorge.rock.foot)
+```
+
+### Traced builds are layout builds
+
+A traced plan is built like a generated level; it just follows your design. `kit.trace` (default `via = "layout"`)
+turns the regions into a `kit.layout` graph of literal zones and builds it with `kit.build_layout`. The footprints and
+heights stay exactly as traced, and you get what a generated level gets:
+
+- `kit.check_layout` runs first. `trace.layout_check.ok` must be true. `layout_check.flow` lists dead ends, separate
+  parts and zones that are the only way on. Read it: a dead end you did not mean is a missing doorway.
+- Regions that share a wall are joined; each traced doorway is a link at its traced place, and the detail pass
+  frames it.
+- Ramps and stairs that are rectangles along `climb` are built by `kit.ramp` / `kit.stairs`, with stringers and
+  handrails. A flight that "serves no route" (it climbs into a wall, or its foot or top is blocked) is still built,
+  but `trace.warnings` names it. Fix the plan: move the stairs, or open the wall it ends in.
+- **Ramps of any shape.** A `kind = "ramp"` region may have any outline (a corridor that flares as it climbs, a
+  curved or wedge-shaped landing): its floor is one plane from `floor[1]` along `climb` to `floor[2]` across the
+  whole outline, its walls follow the outline, and when it stands on its own (not inside a room) its ceiling runs
+  parallel to the floor at its `height` (default 4 m; an absolute `ceiling` keeps it flat). It joins the floors at
+  its foot and top along the shared wall lines, stays sealed, and the layout check, the flight readings and
+  `level.audit` see it as a flight between them. Use it for every ramp the heights picture shows, whatever its
+  outline; `kind = "path"` is for ramps that bend along a centre line.
+- The room detail pass adds wall trims, door frames, ceiling beams, and railings where decks and ledges drop away
+  (`trace.detail` counts them). The layout lights each zone (`lights = false` when `kit.dress_trace` lights it).
+- `trace.literal_notes` lists every place where the literal build differs from a generated one.
+
+`via = "prism"` builds the bare plan only. Use it to debug a leak, never for a finished recreation.
+
 ### Match a reference screenshot
 
 When the brief comes with concept art (screenshots of areas, a top-down map), look at it **during** the
@@ -1240,6 +1651,49 @@ difference list has no massing, height or opening items left, only style. Painte
 matches a game render pixel for pixel; the cues are hints, not a score, so do not tune the level to
 move a number. Re-compare every area after a change that touches it, and keep the sheets: they are
 the evidence for the designer.
+
+### Theme and dress from the shots
+
+A traced shell with stock concrete everywhere is not a recreation: each area's shot has its own
+materials, light colours and props. Carry them into the build with three readers and one dresser:
+
+- `ref.match_textures{shot, crop = {x, y, w, h} | polygon = {{x, y}...}, n = 8, out}` ranks RED's stock
+  level textures (the texture browser's categories) against one surface of the shot by Lab colour (as
+  seen and white-balanced, so a lamp's colour cast matters less) and pattern (lightmap shading removed),
+  at 0.5, 1, 2 and 4 repeats across the crop. It returns `matches = {{name, score, repeats}}`, `best` and a
+  contact sheet. **Look at the sheet and pick by eye among the top 8**: the ranking is a shortlist, not an
+  answer (on a lit render it put the true texture first for a marble pillar, but only in the top 8 for few
+  other surfaces). Crop one flat surface, as square-on as the shot allows; `filter = "cem"` / `"mtl"` /
+  `"rck"` or `category =` narrows the library. `repeats` gives the UV scale: a crop spanning S metres
+  wants S / repeats metres per repeat.
+- `ref.shot_lighting{shot, crop?}` returns `light_color`, `accent_color` (e.g. red emergency lamps),
+  `intensity` (about 2.5 x the shot's mean brightness, 0.4-2), `ambient_color`, `fog_color` and a
+  `summary` ("warm overall, mean 0.39: bright pale orange key 0.78 ..., dark black ambient 0.07").
+- `kit.dress_trace{trace = tr, regions = {name = {...}}, ambient = L, fog = L}` dresses each traced region
+  without moving a wall or floor: `floor` / `wall` / `ceiling` / `trim` textures (the region's pillars and
+  deck edges take trim) with mapper UVs, `lighting = L` (kit.light_room in its colour and intensity plus
+  accent lights), `details = {pillars, beams, pipes, railings (deck edges), frames (openings), machinery}`,
+  `props = "industrial"` (a kit.dress theme) or `{{class = "Ultor Crate Small", count = 3}}`. `"*"` styles
+  every region not listed. Detail and objects only: the level stays sealed. Failed parts are warnings.
+  A region open to the sky is lit as one outdoor space along its traced outline (a few strong lights on its
+  edges), however many air pieces it is built from. Do not dim outdoor regions afterwards to fix a glare:
+  check `glacier-cli render --mode lightmaps` first, and lower `light.intensity` or drop `light.spacing`.
+- `ref.side_by_side{shot, render, out}` puts the shot and a render of the build (glacier-cli render with
+  the shot's camera) side by side with both lighting summaries; iterate until they read alike.
+
+```text
+-- theme and dress a trace from its shots (Lua; needs your own screenshots, so it is not a runnable sample)
+local kit = ged.import("kit")
+local tr = kit.trace{ name = "st", regions = {
+  { name = "hall", poly = {{4, -36}, {24, -36}, {24, 9}, {4, 9}}, floor = -10, ceiling = 6 },
+  { name = "bunker", poly = {{-12.5, -2}, {3.5, -2}, {3.5, 10}, {-12.5, 10}}, floor = -10, ceiling = -2 } },
+  openings = {{ a = "bunker", b = "hall", at = {3.75, 3}, width = 3 }} }
+local wall = ref.match_textures{ shot = "shot3.png", crop = {100, 270, 350, 90}, out = "wall.png" }
+local L = ref.shot_lighting{ shot = "shot3.png" }
+kit.dress_trace{ trace = tr, ambient = L, regions = {
+  bunker = { wall = wall.best, lighting = L, details = { pipes = true, frames = true }, props = "industrial" },
+  hall = { lighting = ref.shot_lighting{ shot = "shot2.png" }, details = { pillars = true } } } }
+```
 
 ## 7. Discover; never guess names
 
@@ -1390,7 +1844,7 @@ for n, k in ipairs({ 3, 4 }) do
   local spawns = {}
   for j = 1, 8 do
     local red = j <= 4
-    spawns[j] = level.place{ kind = "respawn", pos = { red and -4 or 16, 0, kf.pos.z - 10 + j },
+    spawns[j] = level.place{ kind = "respawn", pos = { red and -4 or 16, 1, kf.pos.z - 10 + j },  -- 1 m above the floor
                              yaw = red and 90 or -90, props = { red_team = red, blue_team = not red } }
   end
   cp:link_many(spawns)
@@ -1427,6 +1881,7 @@ tool is in brackets):
 - [ ] Doors: each has a trigger or buttons linked to its mover; say that in-game feel is untested.
 - [ ] `glacier-cli grade <rfl>` [`grade_level`]: **PASS**, or each remaining REVIEW item listed with its
       reason (see "Self-review" below).
+- [ ] `glacier-cli audit <rfl>` [`run_lua` with `return level.audit{}`]: **zero audit findings** (see "Craft audit" below). Never report done with findings left.
 - [ ] Everything you placed is named, multi-brush parts are grouped, and the level is saved where the
       designer wants it.
 
@@ -1446,6 +1901,59 @@ local report = lint.run()
 for _, f in ipairs(report.findings) do print(f.severity, f.category, f.message) end
 return string.format("holes %d, lint %d error(s) %d warning(s)", holes.count, report.error_count, report.warning_count)
 ```
+
+### Craft audit
+
+The craft audit is the gate for "done". It catches the mistakes a player notices at once, which a single matched
+camera view hides. **Rule: zero audit findings before you report done.** If a finding is truly intended, name it
+and give the reason in your report.
+
+- **CLI:** `glacier-cli audit <rfl> [--json] [--out report.json] [--sealed] [--rf-dir <dir>]`. It exits 0 when
+  clean and 1 when there are findings.
+- **Lua:** `level.audit{checks?, max?, build?, timeout_s?}` returns `{clean, total, counts, findings, rock_regions,
+  density_regions, notes, rules}`.
+- **MCP:** `run_lua` with `return level.audit{build = "sealed"}`. The editor's Lint panel also shows the findings, as
+  `Craft*` warnings (at most 20 per check). The automation `lint` request shows them only when you pass `craft = true`,
+  so `glacier-cli lint` and `lint.run()` stay as they were.
+- **Input:** the audit reads the compiled geometry (build sealed first) and the objects. It reads any level the same
+  way: traced, generated or hand-made, tagged or not. There is no leniency for traced builds.
+- **Output:** every finding has a `check`, a `kind`, a `pos`, a `uid` where there is one, and a `fix`.
+
+| check / kind | what it means | fix |
+|---|---|---|
+| `props/sunk`, `floating`, `in_wall` | A clutter object, item, mesh or prop-sized detail box (not rock) is one of these: <br>• sunk: the floor is over 0.15 m above its real mesh base. <br>• floating: its base is over 0.3 m above the floor (items 1.2 m). <br>• in_wall: it pushes into a wall. <br>Bounds include the mesh's stored offset, so a stock barrel whose origin is its centre, placed at floor height, is half sunk. | Move it by the amount given. |
+| `props/spawn_height` | A respawn or the Player Start is in solid or under 0.5 m above the floor (the `SpawnHeight` lint). | Stand it 1 m up. |
+| `props/random` | The intent layer reads the prop as one of these: <br>• a rock on a built floor <br>• scattered rubble <br>• cover that blocks no sightline | Set it against a wall or edge, or on a sightline. |
+| `props/in_doorway`, `on_stairs`, `lone` | A prop stands in a doorway or on a flight. Or a floor prop stands alone: no wall within 2.5 m and no other prop within 4 m. | Move or group it. |
+| `stairs/<fault>` | A flight, ramp or bridge has a fault. The audit reads these from the geometry like `spatial.purpose{}`, so tags are not needed. The faults: <br>• `into_obstacle`, `blocked`, `onto_nothing` <br>• `in_gap` <br>• `low_headroom`: under 2 m past an end <br>• `purposeless_bridge` <br>• `route_ledge` | Give the flight a landing that leads on, with 2 m of headroom. Or remove it. |
+| `perches/dead_end` | A flight leads to an empty perch or pit that only flights reach. | Join the perch to a route, give it a reason (an item, a sightline, a way down), or remove it. |
+| `openings/into_nothing` | A doorway fails on one side. 1 m out, that side has solid, a wall, a drop over 1.5 m, no floor, or under 2 m headroom. The doorways read: <br>• an air cut through a wall, at most 8 m wide, with walkable floor in it, a jamb on both sides, and a wider space (a room or yard) beyond it on at least one side <br>• a door frame, each frame on its own (its `kit.opening` tag, else its touching pieces), at most 10 m across, with walkable floor at its sill <br>• a door mesh <br>The air slices of a cave, canyon or passage, and a corridor's segments, are not doorways. | Carve walkable floor on both sides, or remove the opening. |
+| `purpose/purpose_failed`, `purpose_unread` | A piece built with `purpose = "off"`, `"quiet"` or `"report"` (tag `kit.purpose_mode`) still fails its purpose. Or the built level does not read it as a working route at all. | Rebuild it with `purpose = "require"`, or remove it. |
+| `rock/flat_sided` | In a 16 m region, over 55% of the visible rock surface lies in large vertical planes: stacked prisms (`rough_prism`, extruded traces). Only rock a player can see counts: a face needs open air in front of it. The flat structural wall behind a detail rock skin, and the faces between, inside or behind rock pieces, are left out. `rock_regions` gives each region's `rock_area` (visible) and `hidden_area`. | Use the organic builders along the trace (see "Organic spaces"). |
+| `density/basic` | In a 24 m region of playable floor, either: <br>• props and detail pieces number under 1 per 100 m² <br>• lights fall below the corpus p5 | Dress and light it (`kit.dress`, `kit.dress_trace`, `kit.light_room`). Vary floor and ceiling heights. |
+
+**Roles:** every placed element needs a role. These are the role tags the audit reads:
+
+| Tag | Values |
+|---|---|
+| `kit.role` | `route`, `cover`, `landmark` or `theme_detail` |
+| `kit.purpose` | What the element serves |
+| `kit.purpose_mode` | Written only when it is not `require` |
+
+A piece built with `purpose = "off"` is not exempt. Once the level is built, the audit checks it like any other
+piece.
+
+- Use `f.uid` / `f.uids` to find what a finding is about: `rock/flat_sided` lists the brushes behind the flat
+  sides (largest area first), `stairs/purposeless_bridge` lists the deck brushes. Inspect them with
+  `glacier-cli inspect <uid>` or `level.find_brush(uid)` (objects: `level.object(uid)`).
+- Check `a.complete` before trusting `a.clean`: if `a.skipped` is not empty, the walk-graph checks did not
+  finish (raise `timeout_s` in `level.audit{}`, or use `glacier-cli audit`, which has no time limit). Never
+  report "density 0" from an incomplete audit.
+- Stacking is fine: props on detail tops (crate on crate, lamp on a trim or post) are supported; wall fixtures
+  may hang flush on a wall or a curved silo. A crate-sized box (deeper than 0.6 m) in mid-air still floats. A
+  prop under a balcony is measured to the floor it stands on.
+- Ceiling lights count for the hall below them. Lintels, roofs, pipes and beams are not read as bridges: a
+  real deck must be at least 1 m level across and reachable on foot.
 
 ### Self-review: grade, fix by location, grade again
 
@@ -1534,7 +2042,7 @@ kit.corridor{ a = a, b = b, width = 4.5, offset = 4 }
 kit.light_room{ room = a }
 kit.light_room{ room = b }
 for i, x in ipairs({ -4, 4, 26, 34 }) do
-  level.place{ kind = "respawn", name = "spawn" .. i, pos = { x, 0, -5 } }
+  level.place{ kind = "respawn", name = "spawn" .. i, pos = { x, 1, -5 } }  -- spawns stand 1 m above the floor
 end
 ops.build()
 
@@ -1673,7 +2181,28 @@ return string.format("%d zones, %d holes, %d lint problems; %s (%d failing) -> %
   to the editor), after the modules shipped with Glacier and before the scripts folder's `lib/`.
   Fail on purpose with `ged.fail(message, hint)`; any error rolls the whole run back. To recover
   from an error instead, use `ged.try(fn, ...)` (section 6, "Retry a seed"): it undoes only what
-  `fn` changed.
+  `fn` changed. `pcall` is not there (calling it fails with "attempt to call a nil value"); `ged.try` is
+  the pcall of the sandbox: `local ok, r = ged.try(kit.rock_mass, {...})`, then read `r` as the error
+  message when `ok` is false.
+- **A `local` declared without a value starts as nil**, as in standard Lua (`local found` before a search
+  loop). Glacier rewrites such declarations before running a chunk, because the Lua engine it uses kept a
+  stale value there inside `for ... in` loops; a clustering loop that appended to "found" then walked its own
+  list forever (an hours-long build). Older Glacier builds need `local found = nil`.
+- **Lightmap surface cap.** A level holds at most 32,767 lightmap surfaces (Alpine RED's limit); every rock
+  facet a player sees takes one. `level.stats()` gives `faces`, `surfaces`, `surface_cap` and
+  `unlit_faces`; `ops.build()` / `ops.light()` reports carry `surfaces`, `surfaces_wanted` and
+  `unlit_faces`; the build, the save and `lint` warn with the count and where. Faces nobody can see
+  (inside neighbouring rock chunks or the wall) give up their surfaces first when a level would pass the cap.
+  The kit's organic rock spends from one level-wide budget (`kit.defaults.organic_budget`, 14,000 seen
+  facets; `organic_view` 5 m of full facets over the floor, `organic_far` 3x coarser above); railings,
+  silos and other round detail are not in it, so thin those out when `unlit_faces` is not 0.
+- **Stock clutter meshes have their origin at their centre:** `level.place{kind = "clutter", ...}` at a floor
+  point sinks half the mesh (an Ultor crate about 0.46 m). Pass `seat = true` to stand it on that point
+  (needs the RF install for the mesh bounds).
+- **`kit.dress_trace` lights only regions that ask:** a region given only textures, details or props gets no
+  lights or fixtures; one given `lighting =` (a `ref.shot_lighting` result) gets key lights unless it already
+  holds lights (yours, a plan's, an earlier `kit.light_room`); `light = {...}` always adds them. Indoor key
+  lights never hang lower than 3 m (or 60 % of the room height) over the floor.
 - **Time limit** (`--timeout`, default 30 s) counts Lua time only; builds, bakes and hole checks do not
   count. A long Lua loop over thousands of items is the usual cause of a timeout.
 - **Instruction budget** (`--budget`, default 200,000,000 Lua instructions; MCP `run_lua`: `budget`; 0 =
@@ -1681,7 +2210,21 @@ return string.format("%d zones, %d holes, %d lint problems; %s (%d failing) -> %
   `kit.spawn_points`, `kit.items`) run natively, so dressing, spawns and items for a whole level fit in
   one run; your own loops over every brush or object are what use the budget.
 - **Prefer bulk operations** (`brush_query:set_textures`, `object_query:set`, `level.brushes_in`) to
-  per-item loops on big levels; each handle call crosses into the editor.
+  per-item loops on big levels; each handle call crosses into the editor. `level.brushes_in`, `b.bounds`,
+  `b:contains`, `b:tags()` and uid lookups are indexed (cheap on levels of ten thousand rock brushes), but a
+  Lua loop that compares every piece with every other is still quadratic: cluster with `level.brushes_in`
+  around each piece instead.
+- **`light --no-shadows` (or `ops.light(false)`, MCP `build`/`light` with `shadows = false`) is RED's quick
+  no-shadow bake:** no occlusion at all, so every light reaches every surface in its range through walls.
+  Interiors next to a lit yard or under many lamps bake to full strength or brighter (white in
+  `--mode lightmaps`). Use it only to check light placement and coverage; run a full `light` before judging
+  brightness, dark areas or mood, or before `ref.shot_compare` and lighting matches (test_G1: 477 s full
+  against 86 s without shadows).
+- **The sky room renders full-bright in lit views,** as in RF and Alpine (the sky texture alone: no lightmap,
+  no fog). Do not put lights in the sky box or raise the ambient to brighten the sky; pick a brighter or
+  darker sky texture instead.
+- **`level.object(uid)`** returns the object an audit finding, a report or a log names (`level.find_brush`
+  for brushes).
 - **Look textures up** with `catalog.textures(filter)` before using a name; an unknown texture
   renders white. `catalog.textures(filter)` returns names (strings); `catalog.textures{...}` and
   `o:fields()` return records, which `table.concat` cannot join: use `ged.names(list)` for plain strings.

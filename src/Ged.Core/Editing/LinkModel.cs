@@ -29,10 +29,13 @@ public static class LinkModel
         RflEvent e => e.Links,
         Clutter c => c.Links,
         NavPoint n => n.Links,
+
+        // An Alpine waypoint helper's links are its routes to other helpers (alpine_waypoint_helper.h:44-56).
+        AlpineWaypointHelper h => h.Links,
         _ => null,
     };
 
-    /// <summary>RED rule: links originate only from Triggers, Events, Clutter, and Nav Points.</summary>
+    /// <summary>RED rule: links originate only from Triggers, Events, Clutter, and Nav Points (plus Alpine waypoint helpers).</summary>
     public static bool CanOriginate(LevelObject o) => LinksOf(o) is not null;
 
     /// <summary>Maps a level-object kind onto the coarse event-link-target enum for validation.</summary>

@@ -1,21 +1,20 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using Ged.Core.Editing;
 using Ged.Core.Model;
 
 namespace Ged.Rendering.Scene;
 
 /// <summary>
-/// Builds viewport overlay line sets for the editing systems: mover path
-/// splines + a time-scrubbed ghost of the mover geometry, cutscene path polylines
-/// + camera frustum cones, nav-point radius discs and decal boxes. All output is
+/// Builds viewport overlay line sets for the editing systems: the posed mover preview ghost,
+/// cutscene path polylines + camera frustum cones, nav-point radius discs and decal boxes. All output is
 /// world-space <see cref="LineSegment"/>s the viewport (and offscreen renderer)
 /// draws over the scene. Pure — no GPU dependency, fully testable.
 /// </summary>
 public static class OverlayBuilder
 {
     private static readonly uint PathColor = Palette.Rgba(80, 200, 255);
-    private static readonly uint GhostColor = Palette.Rgba(120, 255, 140);
     private static readonly uint StartColor = Palette.Rgba(255, 215, 0);
     private static readonly uint NodeColor = Palette.Rgba(230, 230, 230);
     private static readonly uint ConeColor = Palette.Rgba(255, 120, 200);
@@ -24,7 +23,7 @@ public static class OverlayBuilder
     private static readonly uint EventArrowColor = Palette.Rgba(255, 110, 40);
 
     /// <summary>
-    /// The Catmull-Rom spline through the keyframe/node positions plus a cross
+    /// The Catmull-Rom spline through cutscene path node positions plus a cross
     /// marker at each (gold at <paramref name="startIndex"/>). Two or fewer points
     /// degrade to a straight segment.
     /// </summary>
@@ -66,16 +65,33 @@ public static class OverlayBuilder
     }
 
     /// <summary>
-    /// A wireframe ghost of the mover brushes at a point along their travel: every
-    /// brush edge translated by <paramref name="sampled"/> − <paramref name="start"/>.
+    /// The mover preview ghost: every brush edge placed by a <see cref="Ged.Core.Editing.MoverPose"/> (translated
+    /// and, when the mover turns, rotated about the first keyframe — Alpine RED's preview, mover_path.cpp:1294-1320).
     /// </summary>
-    public static List<LineSegment> MoverGhost(IEnumerable<Brush> moverBrushes, Vec3 start, Vec3 sampled)
+    public static List<LineSegment> PosedMoverGhost(IEnumerable<Brush> brushes, Ged.Core.Editing.MoverPose pose, uint? color = null)
     {
         var lines = new List<LineSegment>();
-        Vector3 delta = V(sampled) - V(start);
-        foreach (Brush b in moverBrushes)
+        uint c = color ?? Palette.Rgba(255, 255, 0);
+        foreach (Brush b in brushes)
         {
-            AddBrushEdges(lines, b, delta, GhostColor);
+            (Vec3 pos, Mat3 rot) = pose.Place(b.Position, b.Rotation);
+            Geometry g = b.Geometry;
+            var seen = new HashSet<(int, int)>();
+            foreach (Face f in g.Faces)
+            {
+                int n = f.Vertices.Count;
+                for (int i = 0; i < n; i++)
+                {
+                    int a = f.Vertices[i].Index;
+                    int d = f.Vertices[(i + 1) % n].Index;
+                    if (a < 0 || d < 0 || a >= g.Vertices.Count || d >= g.Vertices.Count || !seen.Add(a < d ? (a, d) : (d, a)))
+                    {
+                        continue;
+                    }
+
+                    lines.Add(new LineSegment(V(pos.Add(rot.Transform(g.Vertices[a]))), V(pos.Add(rot.Transform(g.Vertices[d]))), c));
+                }
+            }
         }
 
         return lines;
@@ -241,35 +257,6 @@ public static class OverlayBuilder
         lines.Add(new LineSegment(from, to, c));
         AddArrowHead(lines, from, to, c);
         return lines;
-    }
-
-    private static void AddBrushEdges(List<LineSegment> lines, Brush b, Vector3 offset, uint color)
-    {
-        var seen = new HashSet<(int, int)>();
-        foreach (Face f in b.Geometry.Faces)
-        {
-            int n = f.Vertices.Count;
-            for (int i = 0; i < n; i++)
-            {
-                int a = f.Vertices[i].Index;
-                int c = f.Vertices[(i + 1) % n].Index;
-                var key = a < c ? (a, c) : (c, a);
-                if (!seen.Add(key))
-                {
-                    continue;
-                }
-
-                Vector3 pa = World(b, b.Geometry.Vertices[a]) + offset;
-                Vector3 pb = World(b, b.Geometry.Vertices[c]) + offset;
-                lines.Add(new LineSegment(pa, pb, color));
-            }
-        }
-    }
-
-    private static Vector3 World(Brush b, Vec3 local)
-    {
-        Vec3 w = b.Position.Add(b.Rotation.Transform(local));
-        return new Vector3(w.X, w.Y, w.Z);
     }
 
     /// <summary>

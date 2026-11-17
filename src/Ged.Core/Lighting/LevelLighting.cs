@@ -29,10 +29,18 @@ public static class LevelLighting
     {
         Func<int, LightCookie?>? cookies = options.CookieResolver;
         Func<int, float>? sharpness = options.CookieSharpnessResolver;
-        var el = new List<EngineLight>(lights.Count);
+        var el = new List<EngineLight>(lights.Count + options.DirectionalLights.Count);
         foreach (Light l in lights)
         {
             el.Add(EngineLight.FromModel(l, editorOnly: false, cookies?.Invoke(l.Uid), sharpness?.Invoke(l.Uid) ?? 1f));
+        }
+
+        el.AddRange(options.DirectionalLights);
+
+        // Alpine's charts refine every surface of the solid, so a chart bake relights the whole level.
+        if (options.AlpineCharts is not null)
+        {
+            onlyRegion = null;
         }
 
         // The occluder BVH is needed for shadows AND the AO modifier (feature 1).
@@ -64,10 +72,76 @@ public static class LevelLighting
                 continue; // incremental: skip surfaces the changed light can't reach
             }
 
-            input.Add(new SurfaceBake(s, i < fullBright.Length && fullBright[i], smooth[i]));
+            input.Add(new SurfaceBake(s, i < fullBright.Length && fullBright[i], smooth[i], surfaceIndex: i));
         }
 
-        return Lightmapper.Bake(input, pages, el, occluders, field, options);
+        DirectionalOccluders? extra = options.DirectionalLights.Count > 0 ? DirectionalOccludersOf(g) : null;
+        Alpine.AlpineChartBakeJob? job = options.AlpineCharts is { } settings ? new Alpine.AlpineChartBakeJob(g.Surfaces, settings, g) : null;
+        Alpine.AlpineShading? alpine = options.AlpineCharts is { FixedPipeline: true } fixedSettings ? AlpineShadingOf(g, options, fixedSettings) : null;
+        BakeStats stats = Lightmapper.Bake(input, pages, el, occluders, field, options, extra, job, alpine);
+        stats.AlpineLog.AddRange(alpine?.Log ?? new List<string>());
+        return stats;
+    }
+
+    /// <summary>
+    /// The Alpine fixed pipeline's shading state over an already-compiled level (a relight): its faces as occluders —
+    /// "No shadow cast" brushes resolved by face id and bounds — the mesh occluders, and the liquid emitters of its
+    /// liquid rooms (editor_patch/lightmap.cpp:151-236, 1100-1257, 2152-2225).
+    /// </summary>
+    internal static Alpine.AlpineShading AlpineShadingOf(Geometry g, LightingOptions options, Alpine.AlpineLightmapSettings settings)
+    {
+        Alpine.AlpineOccluders? tree = null;
+        if (options.CastShadows)
+        {
+            var faces = new List<Alpine.AlpineOccluderFace>();
+            foreach (Alpine.AlpineOccluderFace f in Alpine.AlpineShading.FacesOf(g, options.NoShadowCast))
+            {
+                if (!string.IsNullOrEmpty(f.Texture))
+                {
+                    faces.Add(f);
+                }
+            }
+
+            tree = Alpine.AlpineOccluders.Build(faces, settings.MeshesOcclude ? options.MeshOccluders : null, settings.AlphaTestedOcclusion, options.AlpineTextures);
+        }
+
+        var liquidFaces = new List<(int, IReadOnlyList<Vec3>, Vec3)>();
+        foreach (Face f in g.Faces)
+        {
+            if (((FaceFlags)f.Flags & FaceFlags.LiquidSurface) != 0 && f.RoomIndex >= 0 && f.Vertices.Count >= 3)
+            {
+                liquidFaces.Add((f.RoomIndex, f.Vertices.ConvertAll(v => g.Vertices[v.Index]), f.Plane.Normal));
+            }
+        }
+
+        var log = new List<string>();
+        List<Alpine.AlpineLiquidEmitter> liquid = Alpine.AlpineShading.LiquidEmitters(options.LiquidEmission, g.Rooms, liquidFaces, log);
+        var shading = new Alpine.AlpineShading(tree, settings, liquid);
+        shading.Log.AddRange(log);
+        return shading;
+    }
+
+    /// <summary>The liquid-surface and show-sky faces of <paramref name="g"/>, for the Alpine directional lights.</summary>
+    internal static DirectionalOccluders DirectionalOccludersOf(Geometry g)
+    {
+        var faces = new List<(ushort, IReadOnlyList<Vec3>)>();
+        foreach (Face f in g.Faces)
+        {
+            if (f.Vertices.Count < 3 || f.IsPortalFace)
+            {
+                continue;
+            }
+
+            var poly = new Vec3[f.Vertices.Count];
+            for (int i = 0; i < poly.Length; i++)
+            {
+                poly[i] = g.Vertices[f.Vertices[i].Index];
+            }
+
+            faces.Add((f.Flags, poly));
+        }
+
+        return DirectionalOccluders.Build(faces);
     }
 
     /// <summary>Fresh zeroed pages matching an existing atlas's dimensions.</summary>

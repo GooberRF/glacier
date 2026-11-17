@@ -14,8 +14,9 @@ using Xunit;
 namespace Ged.Core.Tests.Alpine306;
 
 /// <summary>
-/// The interim Alpine lightmap rule (ALPINE-COMPAT-SPEC §9; <c>AlpineLightmapSavePolicy</c>): once Glacier has
-/// rebuilt the geometry or relit the level, a save drops the Alpine lightmap chunk (0x0AFBAE09) — Alpine RED drops a
+/// The Alpine lightmap save rule (ALPINE-COMPAT-SPEC §9; <c>AlpineLightmapSavePolicy</c>): once Glacier has rebuilt the
+/// geometry or relit the level without baking fresh Alpine charts, a save drops the Alpine lightmap chunk (0x0AFBAE09)
+/// (a lit rebuild with the Alpine pipeline writes its own instead, <c>AlpineLightmapWriterTests</c>) — Alpine RED drops a
 /// retained chunk that no longer matches (editor_patch/alpine_lightmaps.cpp:1785-1849) — and makes the props bits
 /// consistent: <c>d3d11_only_lightmaps</c> bit0 cleared (the stock section is written), <c>require_d3d11</c> bit0
 /// recomputed; the mapper's setting bits are kept. An untouched level re-saves byte for byte.
@@ -48,7 +49,7 @@ public sealed class Alpine306StaleLightmapTests
         Assert.Equal(Setting | Needed, Props(saved).RequireD3D11); // still needed: the mapper's Require setting
         string note = Assert.Single(notes, n => n.StartsWith("Dropped the level's Alpine lightmaps", StringComparison.Ordinal));
         Assert.Contains("rebuilt the geometry", note, StringComparison.Ordinal);
-        Assert.Contains("re-bake the level in Alpine RED", note, StringComparison.Ordinal);
+        Assert.Contains("Run Calculate Lighting to bake the Alpine lightmaps again", note, StringComparison.Ordinal);
         Assert.Contains(notes, n => n.Contains("D3D11-only lightmaps", StringComparison.Ordinal));
 
         // The rule is idempotent: the next save has nothing left to drop or fix.
@@ -75,7 +76,7 @@ public sealed class Alpine306StaleLightmapTests
     }
 
     [Fact]
-    public void A_D3D11_Only_Level_Gets_Stock_Lightmaps_From_A_Rebuild_And_Stops_Claiming_It_Omits_Them()
+    public void A_Rebuilt_D3D11_Only_Level_Omits_Its_Stock_Lightmaps_Again_Behind_Fresh_Charts()
     {
         EditorDocument doc = Load(AlpineLitLevel(d3d11Only: true));
         Assert.DoesNotContain(doc.Rfl.Sections, s => s.TypeId == (uint)SectionType.Lightmaps);
@@ -85,21 +86,35 @@ public sealed class Alpine306StaleLightmapTests
         Assert.Null(GeometryBuildService.Relight(doc.Rfl, Array.Empty<Light>(), null, new LightingOptions()));
         GeometryBuildService.BuildAndApply(doc.Rfl, Options(doc, bake: true));
 
+        // The lit rebuild baked fresh Alpine charts (the level's pipeline is Alpine): they replace the old chunk, and with
+        // "D3D11-only lightmaps" set they stand in for the stock lightmaps again (ALPINE-COMPAT-SPEC C7;
+        // alpine_lightmaps.cpp:1849): no 0x1200, every surface record lightmap index -1, both "needed" bits set.
         RflFile saved = RflFile.Load(SaveAndRead(doc, out IReadOnlyList<string> notes));
         saved.ParseAllKnownSections();
-        Assert.DoesNotContain(saved.Sections, s => s.TypeId == (uint)SectionType.AlpineLightmaps);
-        List<uint> ids = saved.Sections.Select(s => s.TypeId).ToList();
-        int lightmaps = ids.IndexOf((uint)SectionType.Lightmaps);
-        Assert.True(lightmaps >= 0 && lightmaps < ids.IndexOf((uint)SectionType.StaticGeometry));
-        int pages = saved.Sections.Select(s => s.Content).OfType<LightmapsSection>().Single().Lightmaps.Count;
-        Geometry geometry = saved.Sections.Select(s => s.Content).OfType<GeometrySection>().Single().Geometry;
-        Assert.NotEmpty(geometry.Surfaces);
-        Assert.All(geometry.Surfaces, s => Assert.InRange(s.LightmapIndex, 0, pages - 1));
-        Assert.Equal(Setting, Props(saved).D3D11OnlyLightmaps);
-        Assert.Equal(0, Props(saved).RequireD3D11); // it was only needed for the omitted stock lightmaps
-        Assert.Contains(notes, n => n.Contains("stock lightmaps Glacier wrote", StringComparison.Ordinal));
-    }
+        RflSection chunk = Assert.Single(saved.Sections, s => s.TypeId == (uint)SectionType.AlpineLightmaps);
+        Geometry built = saved.Sections.Select(s => s.Content).OfType<GeometrySection>().Single().Geometry;
+        Ged.Core.Lighting.Alpine.AlpineLightmapReadResult read =
+            Ged.Core.Lighting.Alpine.AlpineLightmapValidator.Read(chunk.GetBodyBytes(saved.Context), built);
+        Assert.True(read.Ok && read.SurfacesOk, read.Reason + read.SurfaceReason);
+        Assert.DoesNotContain(saved.Sections, s => s.TypeId == (uint)SectionType.Lightmaps);
+        Assert.NotEmpty(built.Surfaces);
+        Assert.All(built.Surfaces, s => Assert.Equal(-1, s.LightmapIndex));
+        Assert.Equal(Setting | 1, Props(saved).D3D11OnlyLightmaps);
+        Assert.Equal(Needed, Props(saved).RequireD3D11 & Needed);
+        Assert.Contains(notes, n => n.StartsWith("Wrote the level's Alpine lightmaps", StringComparison.Ordinal));
+        Assert.Contains(notes, n => n.Contains("D3D11-only lightmaps: the stock lightmaps are not saved", StringComparison.Ordinal));
 
+        // In memory the level keeps its stock pages; switching the setting off writes them again.
+        Assert.Contains(doc.Rfl.Sections, s => s.TypeId == (uint)SectionType.Lightmaps);
+        Props(doc.Rfl).D3D11OnlyLightmaps = 0;
+        RflFile stock = RflFile.Load(SaveAndRead(doc, out _));
+        stock.ParseAllKnownSections();
+        int pages = stock.Sections.Select(s => s.Content).OfType<LightmapsSection>().Single().Lightmaps.Count;
+        Geometry geometry = stock.Sections.Select(s => s.Content).OfType<GeometrySection>().Single().Geometry;
+        Assert.All(geometry.Surfaces, s => Assert.InRange(s.LightmapIndex, 0, pages - 1));
+        Assert.Equal(0, Props(stock).D3D11OnlyLightmaps);
+        Assert.Equal(0, Props(stock).RequireD3D11);
+    }
     [Fact]
     public void Require_D3D11_Stays_Needed_For_A_Mesh_Draw_Scale()
     {

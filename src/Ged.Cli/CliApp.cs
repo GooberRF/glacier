@@ -142,6 +142,21 @@ internal static class CliApp
                 return await RefCli.RunAsync(a, stdout, stderr, env);
             }
 
+            if (a.Verb == RecreateCli.Verb)
+            {
+                return RecreateCli.Run(a, stdout);
+            }
+
+            if (a.Verb == AuditCli.Verb)
+            {
+                return AuditCli.Run(a, stdout);
+            }
+
+            if (a.RecreateOptions.Count > 0)
+            {
+                throw new UsageException($"{string.Join(", ", a.RecreateOptions.Keys)} only apply to '{RecreateCli.Verb}'.", a.Verb);
+            }
+
             AutomationRequest request = BuildRequest(a, out IReadOnlyList<string> explicitPaths, out bool needsAssets);
             AutomationResponse response = request.Command == RenderCommand.Name
                 ? await RenderAsync(a, request, explicitPaths, env, stderr)
@@ -340,15 +355,26 @@ internal static class CliApp
                 break;
 
             case "new":
-                Max(a, 0);
-                if (!a.Attach && a.Out is null)
+            {
+                // `new <path.rfl>` is the same as `new --out <path.rfl>`.
+                Max(a, 1);
+                string? target = a.Out;
+                if (a.Positionals.Count == 1)
                 {
-                    throw new UsageException("new needs --out <path.rfl> (where to write the new level).", verb);
+                    target = target is null || string.Equals(Full(target), Full(a.Positionals[0]), StringComparison.Ordinal)
+                        ? a.Positionals[0]
+                        : throw new UsageException("Give the new level's path once: new <path.rfl> or new --out <path.rfl>.", verb);
                 }
 
-                Out(a.Out);
+                if (!a.Attach && target is null)
+                {
+                    throw new UsageException("new needs a path: new <path.rfl> (or --out <path.rfl>), where to write the new level.", verb);
+                }
+
+                Out(target);
                 needsAssets = false;
                 break;
+            }
 
             case "run":
             {
@@ -470,6 +496,24 @@ internal static class CliApp
                 if (a.NoShadows)
                 {
                     args["shadows"] = false;
+                }
+
+                if (a.Pipeline is { } pipeline)
+                {
+                    args["pipeline"] = pipeline.ToLowerInvariant() is "alpine" or "legacy"
+                        ? pipeline.ToLowerInvariant()
+                        : throw new UsageException($"--pipeline needs alpine or legacy (got '{pipeline}').", verb);
+                }
+
+                if (a.Density is int density)
+                {
+                    args["density"] = density;
+                }
+                if (a.Codec is { } codec)
+                {
+                    args["codec"] = codec.ToLowerInvariant() is "bc7" or "raw"
+                        ? codec.ToLowerInvariant()
+                        : throw new UsageException($"--codec needs bc7 or raw (got '{codec}').", verb);
                 }
 
                 SaveArgs(a, args, SaveTarget(), Out);

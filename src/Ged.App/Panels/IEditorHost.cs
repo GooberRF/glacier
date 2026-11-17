@@ -138,9 +138,9 @@ internal interface IEditorHost
     /// <summary>Scans the open level's dependencies against the mounted VFS (null when no level / no VFS).</summary>
     System.Threading.Tasks.Task<Ged.Core.Packaging.DependencyScanResult?> ScanDependenciesAsync();
 
-    /// <summary>Builds a packfile plan from a scan (default output path + level name), or null.</summary>
+    /// <summary>Builds a packfile plan from a scan (output: the level's own .vpp beside it), or null.</summary>
     Ged.Core.Packaging.PackfileBuildPlan? CreatePackfilePlan(Ged.Core.Packaging.DependencyScanResult scan);
 
-    /// <summary>Opens the Create-Level-Packfile dialog pre-populated with the given plan.</summary>
+    /// <summary>Opens the Create-Level-Packfile dialog pre-populated with the given plan (unsaved changes are saved first).</summary>
     System.Threading.Tasks.Task OpenPackfileAsync(Ged.Core.Packaging.PackfileBuildPlan plan);
 }

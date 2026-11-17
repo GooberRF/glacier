@@ -58,7 +58,7 @@ public sealed class AnalysisDebugView
             return null;
         }
 
-        SpaceSampler sampler = SpaceSampler.Build(geo, ct, options.SamplerProbe);
+        SpaceSampler sampler = SpaceSampler.Build(geo, ct, options.SamplerProbe, Spatial.TerrainGround.Of(rfl));
         sampler.Measure(options.LatticePitch, options.MaxFloorSamples);
         var edges = new List<(Vec3d, Vec3d)>();
         foreach (SpaceSampler.SFace f in sampler.Faces.Where(f => f.Floor))

@@ -159,6 +159,39 @@ public sealed class KitOutdoorLightingTests
     }
 
     [Fact]
+    public void A_Traced_Open_Sky_Region_Of_Several_Pieces_Is_Lit_As_One_Outdoor_Space()
+    {
+        // An L-shaped traced canyon (1800 m², built from several air pieces) themed by kit.dress_trace: one outdoor plan
+        // along its outline, not one full plan per piece overlapping the others.
+        KitRun run = Run(Dump + "\n" + """
+            local tr = kit.trace{ name = "t", seed = 3, lights = false, regions = {
+              { name = "yard", kind = "canyon", floor = 0, height = 12, poly = {{0, 0}, {60, 0}, {60, 20}, {20, 20}, {20, 50}, {0, 50}} },
+            } }
+            level.player_start{ pos = {10, 1, 10}, yaw = 0 }
+            local dr = kit.dress_trace{ trace = tr, regions = { yard = { light = { color = {255, 168, 96}, fixture = false } } } }
+            local names = {}
+            for _, l in ipairs(dr.lights) do names[(l.name or ""):gsub("_light%d+$", "")] = true end
+            local n = 0
+            for _ in pairs(names) do n = n + 1 end
+            return n .. "|" .. dump("t_dress_yard", dr.lights)
+            """);
+        string[] parts = run.Result.ReturnValue!.Split('|');
+        (List<Lamp> lights, _) = Parse(parts[1]);
+        _out.WriteLine(string.Join("\n", lights));
+        Assert.Equal("1", parts[0]);
+        Assert.InRange(lights.Count, 4, 14);
+
+        // Inside the L only, and its floor lit without piling dozens of lights onto every spot.
+        Assert.All(lights, l => Assert.True(l.X > -1 && l.X < 61 && l.Z > -1 && l.Z < 51 && (l.X < 21 || l.Z < 21), $"light at ({l.X:0.0}, {l.Z:0.0}) is outside the region"));
+        (double south, double unlitSouth) = FloorLight(lights, 0, 0, 60, 20);
+        (double north, double unlitNorth) = FloorLight(lights, 0, 20, 20, 50);
+        _out.WriteLine($"{lights.Count} lights: floor light median {south:0.000} / {north:0.000}, unlit {unlitSouth:P0} / {unlitNorth:P0}");
+        Assert.True(unlitSouth < 0.05 && unlitNorth < 0.05, "the floor is lit");
+        Assert.InRange(south, 0.3, 2.0);
+        Assert.InRange(north, 0.3, 2.0);
+    }
+
+    [Fact]
     public void A_Wide_Plaza_Gets_Inner_Posts_Off_The_Way_Between_Its_Doorways()
     {
         KitRun run = Run(Dump + "\n" + """

@@ -80,6 +80,7 @@ internal sealed class PropertiesPanel : UserControl
     /// <summary>Rebuilds the grid for the current selection.</summary>
     public void Refresh()
     {
+        TerrainPanel = null;
         EditorDocument? doc = _host?.Document;
         if (doc is null)
         {
@@ -101,7 +102,18 @@ internal sealed class PropertiesPanel : UserControl
             if (brushes.Count > 0)
             {
                 int? uid = brushes.Count == 1 ? brushes[0].Uid : (int?)null;
-                SetContent(WrapWithInstanceBanner(uid, BuildBrushInspector(doc, be, brushes)));
+                Control inspector = WrapWithInstanceBanner(uid, BuildBrushInspector(doc, be, brushes));
+
+                // Member brushes of one mover also show the Keyframe panel (the mover's chain, its starting keyframe).
+                if (MoverOf(doc, brushes.Select(b => b.Uid)) is { } moverOfBrushes)
+                {
+                    var stack = new StackPanel { Spacing = 8 };
+                    stack.Children.Add(BuildMoverPanel(doc, moverOfBrushes, Array.Empty<Keyframe>()));
+                    stack.Children.Add(inspector);
+                    inspector = stack;
+                }
+
+                SetContent(inspector);
                 return;
             }
         }
@@ -117,6 +129,13 @@ internal sealed class PropertiesPanel : UserControl
         if (sel.Count == 0)
         {
             ShowEmpty("No selection");
+            return;
+        }
+
+        // Keyframes (one or several of one mover), a mover object, or a mover's member objects: the Keyframe panel.
+        if (TryBuildMoverPanel(doc, sel) is { } moverPanel)
+        {
+            SetContent(moverPanel);
             return;
         }
 
@@ -157,6 +176,14 @@ internal sealed class PropertiesPanel : UserControl
                     return;
             }
 
+            // An editable Alpine terrain: the Terrain Tools panel docks above its fields.
+            if (sel[0].Model is AlpineTerrain && !sel[0].IsReadOnly)
+            {
+                TerrainPanel = new TerrainToolsPanel(doc, sel[0], TerrainSettings, TerrainArmed?.Invoke() == true, TerrainServices, TerrainDecorationsShown?.Invoke() ?? true);
+                SetContent(new StackPanel { Spacing = 8, Children = { TerrainPanel, WrapWithInstanceBanner(uid, BuildObjectInspector(doc, sel[0])) } });
+                return;
+            }
+
             if (ObjectInspectorCatalog.For(sel[0].Kind).Count > 0)
             {
                 SetContent(WrapWithInstanceBanner(uid, BuildObjectInspector(doc, sel[0])));
@@ -164,7 +191,99 @@ internal sealed class PropertiesPanel : UserControl
             }
         }
 
+        // A multi-selection of one Alpine 1.5 kind edits through its schema (types, ranges, choices) like the single inspector.
+        if (sel.Count > 1 && sel.All(o => o.Kind == sel[0].Kind && !o.IsReadOnly) && IsAlpine15Model(sel[0].Model))
+        {
+            SetContent(BuildAlpineMultiInspector(doc, sel));
+            return;
+        }
+
         SetContent(WrapWithInstanceBanner(sel.Count == 1 ? sel[0].Uid : (int?)null, BuildGrid(doc, sel)));
+    }
+
+    // ---- Keyframe panel (movers) ------------------------------------------------
+
+    /// <summary>
+    /// What the Keyframe panel uses from the shell (selection, sound preview and picker, the viewport mover preview).
+    /// Left null in headless tests that do not need them.
+    /// </summary>
+    public MoverPanelServices? MoverServices { get; set; }
+
+    /// <summary>The Keyframe panel currently shown, or null.</summary>
+    internal MoverKeyframePanel? MoverPanel { get; private set; }
+
+    /// <summary>The Terrain Tools settings the panel edits (shared with the viewport tools).</summary>
+    public Ged.Core.Editing.TerrainBrushSettings TerrainSettings { get; set; } = new();
+
+    /// <summary>What the Terrain Tools panel uses from the shell; null in headless tests that do not need it.</summary>
+    public TerrainToolServices? TerrainServices { get; set; }
+
+    /// <summary>Whether the Terrain Tools are armed (the panel's toggle shows it).</summary>
+    public Func<bool>? TerrainArmed { get; set; }
+
+    /// <summary>Whether terrain decorations draw (the panel's Show decorations shows it).</summary>
+    public Func<bool>? TerrainDecorationsShown { get; set; }
+
+    /// <summary>The Terrain Tools panel currently shown, or null.</summary>
+    internal TerrainToolsPanel? TerrainPanel { get; private set; }
+
+    /// <summary>
+    /// The Keyframe panel for a selection that is one mover's: its keyframes (one or several), its movers-section
+    /// object, or its member objects. Null for anything else (a mixed selection keeps the generic inspectors).
+    /// </summary>
+    private Control? TryBuildMoverPanel(EditorDocument doc, List<LevelObject> sel)
+    {
+        MoverPanel = null;
+        var movers = new MoverService(doc);
+        if (sel.All(o => o.Model is Keyframe))
+        {
+            var keys = sel.Select(o => (Keyframe)o.Model).ToList();
+            Group? owner = movers.FindKeyframe(keys[0].Uid)?.Group;
+            if (owner is not null && keys.All(k => owner.MovingData!.Keyframes.Contains(k)))
+            {
+                return BuildMoverPanel(doc, owner, keys);
+            }
+
+            return null;
+        }
+
+        if (MoverOf(doc, sel.Select(o => o.Uid)) is { } group)
+        {
+            return BuildMoverPanel(doc, group, Array.Empty<Keyframe>());
+        }
+
+        return null;
+    }
+
+    /// <summary>The single mover every UID belongs to (as a member brush/object or its movers-section copy), or null.</summary>
+    private static Group? MoverOf(EditorDocument doc, IEnumerable<int> uids)
+    {
+        var movers = new MoverService(doc);
+        Group? found = null;
+        foreach (int uid in uids)
+        {
+            Group? g = movers.FindGroupForMember(uid);
+            if (g is null || (found is not null && !ReferenceEquals(found, g)))
+            {
+                return null;
+            }
+
+            found = g;
+        }
+
+        return found?.MovingData is null ? null : found;
+    }
+
+    private Control BuildMoverPanel(EditorDocument doc, Group group, IReadOnlyList<Keyframe> keys)
+    {
+        MoverPanel = new MoverKeyframePanel(doc, group, keys, MoverServices ?? new MoverPanelServices
+        {
+            SelectObject = o => _host?.Selection.SelectObject(o),
+            PlaySound = f => _host?.PlaySoundPreview(f) == true,
+            StopSound = () => _host?.StopSoundPreview(),
+            AfterEdit = () => { _host?.RequestSceneRebuild(); _host?.RefreshSelectionOverlay(); },
+        });
+        return MoverPanel;
     }
 
     // ---- Prefab-instance banner (item 1) --------------------------------------
@@ -340,10 +459,13 @@ internal sealed class PropertiesPanel : UserControl
         panel.Children.Add(ReadonlyRow("UID", lo.Uid.ToString(CultureInfo.InvariantCulture)));
         if (lo.IsReadOnly)
         {
-            // Alpine Faction 1.5 objects are kept exactly as loaded and saved back unchanged; they cannot be edited here.
+            // An object of an Alpine chunk Glacier keeps raw: saved back exactly as loaded, not editable here.
+            string why = lo.Section.Content is IRetainedChunk { ReadOnlyReason: { } reason }
+                ? $"Its chunk is in a layout Glacier does not fully read ({reason}), so it is saved back exactly as loaded."
+                : "It is saved back exactly as loaded.";
             panel.Children.Add(new TextBlock
             {
-                Text = "Alpine Faction 1.5 object: read-only in Glacier. It is saved back exactly as loaded; edit it in Alpine RED.",
+                Text = $"Read-only in Glacier. {why} Edit it in Alpine RED.",
                 FontSize = 11,
                 Opacity = 0.75,
                 TextWrapping = TextWrapping.Wrap,
@@ -915,6 +1037,14 @@ internal sealed class PropertiesPanel : UserControl
                 lp.TextureScrollRate.U, v => lp.TextureScrollRate = new Uv(v, lp.TextureScrollRate.V)));
             panel.Children.Add(FloatRow(doc, lo.Section, "Scroll Rate V",
                 lp.TextureScrollRate.V, v => lp.TextureScrollRate = new Uv(lp.TextureScrollRate.U, v)));
+
+            // Alpine liquid emission: the light the surface bakes (editor_patch/liquid_emission.cpp:198-350, which
+            // offers it for Liquid Room effects only). Stored in its own chunk, keyed by this effect's UID.
+            panel.Children.Add(Header("Liquid Emission [Alpine]"));
+            foreach (InspectorField f in ObjectInspectorCatalog.For(LevelObjectKind.RoomEffect).Where(f => f.Virtual))
+            {
+                panel.Children.Add(AccessRow(doc, new[] { lo }, f));
+            }
         }
 
         return panel;
@@ -1041,6 +1171,21 @@ internal sealed class PropertiesPanel : UserControl
         }
 
         object? current = field.Get(model);
+
+        // A display-only field, or an object Glacier keeps exactly as loaded: shown, never written.
+        if (field.ReadOnly || lo.IsReadOnly)
+        {
+            string shown = current switch
+            {
+                null => string.Empty,
+                RfColor c => string.Create(CultureInfo.InvariantCulture, $"{c.R}, {c.G}, {c.B}, {c.A}"),
+                Vec3 v => string.Create(CultureInfo.InvariantCulture, $"{v.X:0.###}, {v.Y:0.###}, {v.Z:0.###}"),
+                int i when field.Options is { } opts && i >= 0 && i < opts.Count => opts[i],
+                float f => F(f),
+                _ => Convert.ToString(current, CultureInfo.InvariantCulture) ?? string.Empty,
+            };
+            return ReadonlyRow(field.Label, shown);
+        }
         switch (field.Editor)
         {
             case InspectorEditor.Bool:
@@ -1103,6 +1248,12 @@ internal sealed class PropertiesPanel : UserControl
             return LabeledRow(field.Label, check);
         }
 
+        // Alpine 1.5 data that is not a plain model property (rope decorations, liquid emission): the shared accessor.
+        if (lo.Model is AlpineRopeEmitter or RoomEffect && !field.ReadOnly && !lo.IsReadOnly)
+        {
+            return AccessRow(doc, new[] { lo }, field);
+        }
+
         // Other virtual fields (editor-only light section membership) are display-only.
         return LabeledRow(field.Label, new TextBlock
         {
@@ -1126,9 +1277,188 @@ internal sealed class PropertiesPanel : UserControl
     private void CommitRegistry(EditorDocument doc, LevelObject lo, InspectorField field, object? value)
     {
         object model = lo.Model;
+        value = ClampToField(field, value);
         object? old = field.Get(model);
         doc.EditValue(lo.Section, "Edit " + field.Label, old, value, v => field.Set(model, v));
         _host?.RefreshSelectionOverlay();
+        if (IsAlpine15Model(model))
+        {
+            _host?.RequestSceneRebuild(); // their viewport glyphs (rope, arrows, volumes) are part of the scene
+        }
+    }
+
+    /// <summary>A numeric value clamped to the field's range, as Alpine RED's dialogs clamp (null bounds = open).</summary>
+    private static object? ClampToField(InspectorField field, object? value)
+    {
+        switch (value)
+        {
+            case float f when field.Min is not null || field.Max is not null:
+                return (float)Math.Clamp(f, (float)(field.Min ?? float.MinValue), (float)(field.Max ?? float.MaxValue));
+            case int i when field.Editor == InspectorEditor.Int && (field.Min is not null || field.Max is not null):
+                return (int)Math.Clamp(i, field.Min ?? int.MinValue, field.Max ?? int.MaxValue);
+            default:
+                return value;
+        }
+    }
+
+    /// <summary>The Alpine Faction 1.5 object models (their glyphs are scene geometry, rebuilt after an edit).</summary>
+    private static bool IsAlpine15Model(object model) => model is AlpineWeatherRegion or AlpineVehicleFactory
+        or AlpineProjectionCamera or AlpineRopeEmitter or AlpineDirectionalLight or AlpineWaypointHelper;
+
+    /// <summary>
+    /// One undoable write of a field through the shared Core accessor (virtual fields, multi-selection), reporting a
+    /// refused write (a chunk kept raw, a setting that needs another first) in the status bar.
+    /// </summary>
+    private void CommitAccess(EditorDocument doc, IReadOnlyList<LevelObject> targets, InspectorField field, object? value)
+    {
+        value = ClampToField(field, value);
+        try
+        {
+            using (doc.Undo.BeginTransaction("Edit " + field.Label))
+            {
+                foreach (LevelObject o in targets)
+                {
+                    InspectorAccess.Set(doc, o, field, value);
+                }
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            _host?.Dispatcher.ShowMessage(ex.Message);
+        }
+
+        _host?.RefreshSelectionOverlay();
+
+        if (targets.Any(o => IsAlpine15Model(o.Model) || o.Model is RoomEffect or Keyframe))
+        {
+            _host?.RequestSceneRebuild();
+        }
+
+        Refresh();
+    }
+
+    /// <summary>A control for any field read and written through <see cref="InspectorAccess"/> (one or many objects).</summary>
+    private Control AccessRow(EditorDocument doc, IReadOnlyList<LevelObject> targets, InspectorField field)
+    {
+        object?[] values = targets.Select(o => InspectorAccess.Get(doc, o, field)).ToArray();
+        bool mixed = values.Select(v => v?.ToString()).Distinct().Count() > 1;
+        object? current = values[0];
+        string label = field.Label;
+        Control editor;
+        switch (field.Editor)
+        {
+            case InspectorEditor.Bool:
+            {
+                var check = new CheckBox { IsChecked = mixed ? null : current is true, IsThreeState = mixed };
+                check.IsCheckedChanged += (_, _) =>
+                {
+                    check.IsThreeState = false;
+                    CommitAccess(doc, targets, field, check.IsChecked == true);
+                };
+                editor = check;
+                break;
+            }
+
+            case InspectorEditor.Enum when field.Options is { Count: > 0 }:
+            {
+                var combo = new ComboBox { ItemsSource = field.Options, FontSize = 12, MinWidth = 150 };
+                if (!mixed && current is int i && i >= 0 && i < field.Options.Count)
+                {
+                    combo.SelectedIndex = i;
+                }
+
+                combo.SelectionChanged += (_, _) =>
+                {
+                    if (combo.SelectedIndex >= 0)
+                    {
+                        CommitAccess(doc, targets, field, combo.SelectedIndex);
+                    }
+                };
+                editor = combo;
+                break;
+            }
+
+            case InspectorEditor.Color:
+            {
+                RfColor c = current is RfColor rc ? rc : new RfColor(255, 255, 255, 255);
+                TextBox[] boxes = new[] { c.R, c.G, c.B, c.A }.Select(v => NumBox(mixed ? string.Empty : v.ToString(CultureInfo.InvariantCulture))).ToArray();
+                void CommitColor()
+                {
+                    if (boxes.All(b => byte.TryParse(b.Text, out _)))
+                    {
+                        byte[] v = boxes.Select(b => byte.Parse(b.Text!, CultureInfo.InvariantCulture)).ToArray();
+                        CommitAccess(doc, targets, field, new RfColor(v[0], v[1], v[2], v[3]));
+                    }
+                }
+
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
+                foreach (TextBox t in boxes)
+                {
+                    t.Width = 42;
+                    t.LostFocus += (_, _) => CommitColor();
+                    row.Children.Add(t);
+                }
+
+                editor = row;
+                break;
+            }
+
+            case InspectorEditor.Vector:
+                return Vec3Editor(label, current is Vec3 v3 ? v3 : default, mixed, nv => CommitAccess(doc, targets, field, nv));
+
+            default:
+            {
+                var box = new TextBox
+                {
+                    Text = mixed || current is null ? string.Empty : Convert.ToString(current, CultureInfo.InvariantCulture),
+                    Watermark = mixed ? Mixed : current is null ? "(does not apply)" : null,
+                    FontSize = 12,
+                };
+                box.LostFocus += (_, _) =>
+                {
+                    object? parsed = ParseRegistry(field, box.Text);
+                    if (!Equals(parsed, current) || mixed)
+                    {
+                        CommitAccess(doc, targets, field, parsed);
+                    }
+                };
+                editor = box;
+                break;
+            }
+        }
+
+        if (field.Note is not null)
+        {
+            ToolTip.SetTip(editor, field.Note);
+        }
+
+        return LabeledRow(label, editor);
+    }
+
+    /// <summary>
+    /// The multi-selection inspector for one Alpine 1.5 object kind: every schema field, a mixed value shown blank, and a
+    /// commit writing every selected object in one undo step (Alpine RED's dialogs bulk-apply every field but the script
+    /// name, e.g. editor_patch/weather_region.cpp:553-591).
+    /// </summary>
+    private Control BuildAlpineMultiInspector(EditorDocument doc, List<LevelObject> sel)
+    {
+        var panel = new StackPanel { Spacing = 2 };
+        panel.Children.Add(Header($"{sel.Count} objects ({sel[0].Kind})"));
+        panel.Children.Add(Vec3Row("Position", sel, o => o.Position,
+            (o, v) => doc.EditValue(o.Section, "Move object", o.Position, v, nv => o.Position = nv, $"pos-{o.Uid}"), doc));
+        panel.Children.Add(BoolRow("Hidden", sel, o => o.Hidden,
+            (o, v) => { doc.EditValue(o.Section, "Toggle hidden", o.Hidden, v, nv => o.Hidden = nv); _host?.RequestSceneRebuild(); }, doc));
+        foreach (InspectorField field in ObjectInspectorCatalog.For(sel[0].Kind))
+        {
+            if (field.Path == "ScriptName")
+            {
+                continue; // a name is an object's identity: never written over a whole selection
+            }
+
+            panel.Children.Add(AccessRow(doc, sel, field));
+        }
+
+        return panel;
     }
 
     // ---- Brush inspector (BrushInspectorCatalog over the brush selection) ------
@@ -1329,6 +1659,30 @@ internal sealed class PropertiesPanel : UserControl
                         foreach (Brush b in brushes)
                         {
                             BrushBreakableProps.SetNoDebris(doc, b.Uid, val);
+                        }
+                    });
+                };
+                return LabeledRow(field.Label, check);
+            }
+
+            case "No Shadow Cast":
+            {
+                bool mixed = brushes.Select(b => BrushShadowProps.GetNoShadowCast(doc, b.Uid)).Distinct().Count() > 1;
+                var check = new CheckBox { IsChecked = mixed ? null : BrushShadowProps.GetNoShadowCast(doc, brushes[0].Uid), IsThreeState = mixed };
+                if (field.Note is not null)
+                {
+                    ToolTip.SetTip(check, field.Note);
+                }
+
+                check.IsCheckedChanged += (_, _) =>
+                {
+                    bool val = check.IsChecked ?? false;
+                    check.IsThreeState = false;
+                    Commit(doc, () =>
+                    {
+                        foreach (Brush b in brushes)
+                        {
+                            BrushShadowProps.SetNoShadowCast(doc, b.Uid, val);
                         }
                     });
                 };

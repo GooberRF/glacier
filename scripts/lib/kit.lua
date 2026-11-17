@@ -110,6 +110,14 @@ kit.defaults = {
   rock_texture = nil,
   rock_textures = { floor = "rck_cavernflr01.tga", wall = "rck_canyon_rock03.tga", ceiling = "rck_coal01.tga" },
   rock_tile_metres = nil,
+  -- The organic rock budget (kit_rock.lua): a level holds at most 32,767 lightmap surfaces (Alpine RED's limit) and
+  -- every rock facet a player sees takes one, so the organic builders (kit.trace's rock, kit.rock_mass) share one
+  -- level-wide budget of seen facets. Rock keeps full facets in the view band (the foot zone plus organic_view metres
+  -- over its floor) and is cut organic_far times coarser above it (1.5 x that from 8 m higher); a call whose rock
+  -- would not fit its share of what is left coarsens its far rock further. nil or false = no budget (full facets).
+  organic_budget = 14000,
+  organic_view = 5,
+  organic_far = 3,
 }
 
 -- Hard limits the kit enforces (not tunables).
@@ -711,7 +719,7 @@ function kit.stairs(t)
 
   uv.stairs(brushes, t.dir)
   local group = group_if_many(name, brushes, boolean(api, "group", t.group, true))
-  internals_purpose.tag_named(name, "route", "a flight " .. fmt(rise) .. " m up from (" .. fmt(x) .. ", " .. fmt(y) .. ", " .. fmt(z) .. ") toward " .. t.dir)
+  internals_purpose.tag_named(name, "route", "a flight " .. fmt(rise) .. " m up from (" .. fmt(x) .. ", " .. fmt(y) .. ", " .. fmt(z) .. ") toward " .. t.dir, mode)
   if route ~= nil then
     route.text = route.ok and (route.pending or "serves a route") or ("serves no route: " .. route.fault)
   end
@@ -792,7 +800,7 @@ function kit.ramp(t)
   uv.ramp(ramp)
   brushes[#brushes + 1] = ramp
   local group = group_if_many(name, brushes, boolean(api, "group", t.group, true))
-  internals_purpose.tag_named(name, "route", "a ramp " .. fmt(rise) .. " m up from (" .. fmt(x) .. ", " .. fmt(y) .. ", " .. fmt(z) .. ") toward " .. t.dir)
+  internals_purpose.tag_named(name, "route", "a ramp " .. fmt(rise) .. " m up from (" .. fmt(x) .. ", " .. fmt(y) .. ", " .. fmt(z) .. ") toward " .. t.dir, mode)
   return {
     kind = "ramp", name = name, brush = ramp, brushes = brushes, envelope = env, group = group,
     top = vec(x + dx * run, y + rise, z + dz * run), run = run, role = "route", purpose = route,
@@ -1163,10 +1171,20 @@ end
 -- ---------------------------------------------------------------------------------------------
 
 -- Textures and tile of an organic function: its own texture/textures, else the rock defaults, else
--- the kit defaults (then the editor's).
+-- the kit defaults (then the editor's). Given both, textures sets the roles it names and texture fills
+-- the roles it leaves out.
 local function rock_textures_of(api, t)
   if t.texture ~= nil and t.textures ~= nil then
-    fail(api, "give either 'texture' (every face) or 'textures' (by role), not both.")
+    if type(t.texture) ~= "string" then fail(api, "'texture' must be a texture name (got " .. type(t.texture) .. ").") end
+    if type(t.textures) ~= "table" then
+      fail(api, "'textures' must be a table {floor =, wall =, ceiling =} (got " .. type(t.textures) .. ").")
+    end
+    local merged = {}
+    for k, v in pairs(t.textures) do merged[k] = v end
+    for _, role in ipairs({ "floor", "wall", "ceiling" }) do
+      if merged[role] == nil then merged[role] = t.texture end
+    end
+    return nil, merged
   end
   if t.texture ~= nil then return t.texture, nil end
   if t.textures ~= nil then return nil, t.textures end
@@ -1276,7 +1294,7 @@ local function tube_record(kind, name, tube, extra)
   return r
 end
 
----@kit kit.cave{name?, path, radius?|radii?, height?|heights?, roughness?, floor_flatness?, segments?|spacing?, sides?, seed?, allow_tight?, group?, texture?|textures?, tile?} → cave — A rough cave along a floor path on any heading (geo.tube): structural air segments meeting on identical faces, a floor that is level or a smooth slope (at most 45°) on each leg, and a 1.8 m wide, 2 m high walkway along the path.
+---@kit kit.cave{name?, path, radius?|radii?, height?|heights?, roughness?, floor_flatness?, segments?|spacing?, sides?, seed?, allow_tight?, group?, texture?, textures?, tile?} → cave — A rough cave along a floor path on any heading (geo.tube): structural air segments meeting on identical faces, a floor that is level or a smooth slope (at most 45°) on each leg, and a 1.8 m wide, 2 m high walkway along the path.
 ---@opt name: string = cave<n> — Names the cave (tags, group).
 ---@opt path: vec[] — Required: 2 to 256 floor points; legs at least 2 m apart, at most 90° of turn per point and 45° of climb per leg (a climbing leg that turns keeps a level landing at the turn). Start or end it at least 1 m inside a room it joins, at the room's floor height, with the room at least height × (1 + roughness) + 0.1 m high; end it on its start point for a closed loop.
 ---@opt radius: number = kit.defaults.cave_radius (3) — Half-width in metres.
@@ -1291,8 +1309,8 @@ end
 ---@opt seed: integer = 1 — The random stream; the same options and seed give the same cave.
 ---@opt allow_tight: boolean = false — Skip the walkway width and headroom guarantee.
 ---@opt group: boolean = true — Group every brush the call made under the cave's name.
----@opt texture: string = kit.defaults.rock_texture — One texture for every face.
----@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role.
+---@opt texture: string = kit.defaults.rock_texture — One texture for every face (with textures: for the roles textures leaves out).
+---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role (with texture: these win for the roles they name).
 ---@opt tile: number = kit.defaults.rock_tile_metres (tile_metres) — Metres per texture repeat.
 function kit.cave(t)
   local api = "kit.cave"
@@ -1327,7 +1345,7 @@ function kit.cave(t)
   return rec
 end
 
----@kit kit.canyon{name?, path, width?|widths?, height?, roughness?, lean?, sky?, segments?|spacing?, seed?, group?, texture?|textures?, tile?} → canyon — An open canyon along a floor path on any heading (geo.tube): structural air segments meeting on identical faces, a floor that is level or a smooth slope on each leg, leaning rough walls and one common rim height, open to the sky (show_sky tops plus a kit.sky_room when the level has none).
+---@kit kit.canyon{name?, path, width?|widths?, height?, roughness?, lean?, sky?, segments?|spacing?, seed?, group?, texture?, textures?, tile?} → canyon — An open canyon along a floor path on any heading (geo.tube): structural air segments meeting on identical faces, a floor that is level or a smooth slope on each leg, leaning rough walls and one common rim height, open to the sky (show_sky tops plus a kit.sky_room when the level has none).
 ---@opt name: string = canyon<n> — Names the canyon (tags, group; its sky room is <name>_sky).
 ---@opt path: vec[] — Required: 2 to 256 floor points; legs at least 2 m apart, at most 90° of turn per point and 45° of climb per leg. A canyon that runs into a room needs the room's ceiling at least 0.1 m above the canyon's rim.
 ---@opt width: number = kit.defaults.canyon_width (12) — Floor width in metres.
@@ -1340,8 +1358,8 @@ end
 ---@opt spacing: number = width / 2 — Target distance between stations, metres.
 ---@opt seed: integer = 1 — The random stream; the same options and seed give the same canyon.
 ---@opt group: boolean = true — Group the canyon's segments under its name.
----@opt texture: string = kit.defaults.rock_texture — One texture for every face.
----@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role.
+---@opt texture: string = kit.defaults.rock_texture — One texture for every face (with textures: for the roles textures leaves out).
+---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role (with texture: these win for the roles they name).
 ---@opt tile: number = kit.defaults.rock_tile_metres (tile_metres) — Metres per texture repeat.
 function kit.canyon(t)
   local api = "kit.canyon"
@@ -1384,7 +1402,7 @@ function kit.canyon(t)
   return rec
 end
 
----@kit kit.passage{name?, path, width?, height?, allow_tight?, detail?, group?, texture?|textures?, tile?} → passage — A clean level corridor along a floor path on any heading (geo.passage): one exact air prism per leg, mitred so neighbours meet on identical faces.
+---@kit kit.passage{name?, path, width?, height?, allow_tight?, detail?, group?, texture?, textures?, tile?} → passage — A clean level corridor along a floor path on any heading (geo.passage): one exact air prism per leg, mitred so neighbours meet on identical faces.
 ---@opt name: string = passage<n> — Names the passage (tags, group).
 ---@opt path: vec[] — Required: 2 to 256 floor points at one height, turning at most 120° per point. An end may stop exactly on an axis-aligned room wall when its last leg is axis-aligned.
 ---@opt width: number = kit.defaults.corridor_width (4.5) — Clear width in metres (at least 1.8 unless allow_tight).
@@ -1392,8 +1410,8 @@ end
 ---@opt allow_tight: boolean = false — Allow a width or height below the player's size.
 ---@opt detail: boolean = false — Make the air brushes detail.
 ---@opt group: boolean = true — Group the prisms under the passage's name.
----@opt texture: string = kit.defaults.rock_texture — One texture for every face.
----@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role.
+---@opt texture: string = kit.defaults.rock_texture — One texture for every face (with textures: for the roles textures leaves out).
+---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role (with texture: these win for the roles they name).
 ---@opt tile: number = kit.defaults.rock_tile_metres (tile_metres) — Metres per texture repeat.
 function kit.passage(t)
   local api = "kit.passage"
@@ -1422,7 +1440,7 @@ local function rocks_record(name, rocks, group_wanted)
   }
 end
 
----@kit kit.rock_wall{name?, from, to, height, depth?, roughness?, flat_top?, structural?, spacing?, seed?, group?, texture?|textures?, tile?} → rocks — A row of overlapping rough detail rocks along the floor line from → to (geo.rock_row), or with structural = true one rough structural ridge standing exactly on the floor. Build it after the air it stands in.
+---@kit kit.rock_wall{name?, from, to, height, depth?, roughness?, flat_top?, structural?, spacing?, seed?, group?, texture?, textures?, tile?} → rocks — A row of overlapping rough detail rocks along the floor line from → to (geo.rock_row), or with structural = true one rough structural ridge standing exactly on the floor. Build it after the air it stands in.
 ---@opt name: string = rock_wall<n> — Names the rocks (tags, group).
 ---@opt from: vec — Required: the floor point the wall starts at.
 ---@opt to: vec — Required: the floor point the wall ends at.
@@ -1434,8 +1452,8 @@ end
 ---@opt spacing: number = 0.8 × depth — Distance between rock centres, metres (neighbours overlap).
 ---@opt seed: integer = 1 — The random stream.
 ---@opt group: boolean = true — Group the rocks under the wall's name.
----@opt texture: string = kit.defaults.rock_texture — One texture for every face.
----@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role.
+---@opt texture: string = kit.defaults.rock_texture — One texture for every face (with textures: for the roles textures leaves out).
+---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role (with texture: these win for the roles they name).
 ---@opt tile: number = kit.defaults.rock_tile_metres (tile_metres) — Metres per texture repeat.
 function kit.rock_wall(t)
   local api = "kit.rock_wall"
@@ -1457,7 +1475,7 @@ function kit.rock_wall(t)
   return rec
 end
 
----@kit kit.boulders{name?, area?|room?|along?, count, size?, margin?, seed?, group?, texture?|textures?, tile?, purpose?} → rocks — count detail boulders on a rectangle, a kit room's floor, or a cave/canyon/passage floor clear of its walkway (geo.scatter). Rocks belong in organic spaces and against walls and edges: on a rectangle or room the space must be open to the sky or rock-walled (a built interior or walled yard is refused), and the boulders are scattered only in the bands along its sides (a cave, canyon or passage scatter keeps its walkway clear), never over the open middle; the record's count says how many fit. Every boulder is tagged kit.role = "theme_detail" and kit.purpose. Build them after the air they stand in.
+---@kit kit.boulders{name?, area?|room?|along?, count, size?, margin?, seed?, group?, texture?, textures?, tile?, purpose?} → rocks — count detail boulders on a rectangle, a kit room's floor, or a cave/canyon/passage floor clear of its walkway (geo.scatter). Rocks belong in organic spaces and against walls and edges: on a rectangle or room the space must be open to the sky or rock-walled (a built interior or walled yard is refused), and the boulders are scattered only in the bands along its sides (a cave, canyon or passage scatter keeps its walkway clear), never over the open middle; the record's count says how many fit. Every boulder is tagged kit.role = "theme_detail" and kit.purpose. Build them after the air they stand in.
 ---@opt name: string = boulders<n> — Names the boulders (tags, group).
 ---@opt area: {min=, max=} — A floor rectangle (its floor is min.y); give one of area, room or along.
 ---@opt room: record — A kit room (or other min/max record): its floor rectangle.
@@ -1467,8 +1485,8 @@ end
 ---@opt margin: number = kit.defaults.spawn_margin (room), 0.5 (area), 0.25 (along) — Inset from the edges, metres; along a tube, how far a boulder's centre stays inside the floor's edge (boulders may lean into the wall foot).
 ---@opt seed: integer = 1 — The random stream.
 ---@opt group: boolean = true — Group the boulders under their name.
----@opt texture: string = kit.defaults.rock_texture — One texture for every face.
----@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role.
+---@opt texture: string = kit.defaults.rock_texture — One texture for every face (with textures: for the roles textures leaves out).
+---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role (with texture: these win for the roles they name).
 ---@opt tile: number = kit.defaults.rock_tile_metres (tile_metres) — Metres per texture repeat.
 ---@opt purpose: string = "require" — Theme fit: "require" refuses a built rectangle or room (an interior or a walled yard: walls not natural rock) and scatters only in the bands along the rectangle's sides; "report" warns and scatters over the whole rectangle; "off" skips both.
 function kit.boulders(t)
@@ -1575,14 +1593,14 @@ function kit.boulders(t)
   end
   rec.group = group_if_many(name, rec.brushes, boolean(api, "group", t.group, true))
   local where = t.along ~= nil and "rubble along the walls of " .. tostring(t.along.name or "the passage") or ("rubble against the walls and edges" .. (context and (" (" .. context .. ")") or ""))
-  internals_purpose.tag_named(name, "theme_detail", where)
+  internals_purpose.tag_named(name, "theme_detail", where, mode)
   rec.role = "theme_detail"
   rec.context = context
   uv.rock(t, name)
   return rec
 end
 
----@kit kit.pit{name?, pos, radius, depth, roughness?, taper?, seed?, group?, texture?|textures?, tile?} → pit — A rough pit dug down from a point on a level floor (geo.pit): a stack of structural air segments meeting on identical faces, narrowing toward a flat floor depth metres down; its top ring stands a little above the floor, so the mouth opens through the floor at any height.
+---@kit kit.pit{name?, pos, radius, depth, roughness?, taper?, seed?, group?, texture?, textures?, tile?} → pit — A rough pit dug down from a point on a level floor (geo.pit): a stack of structural air segments meeting on identical faces, narrowing toward a flat floor depth metres down; its top ring stands a little above the floor, so the mouth opens through the floor at any height.
 ---@opt name: string = pit<n> — Names the pit (tags, group).
 ---@opt pos: vec — Required: the centre of the pit's mouth, on a level floor (a room, or a level stretch of cave or canyon).
 ---@opt radius: number — Required: radius of the mouth, metres.
@@ -1591,8 +1609,8 @@ end
 ---@opt taper: number = 0.7 — Floor radius as a fraction of the mouth radius (0.2 to 2).
 ---@opt seed: integer = 1 — The random stream.
 ---@opt group: boolean = true — Group the segments under the pit's name.
----@opt texture: string = kit.defaults.rock_texture — One texture for every face.
----@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role.
+---@opt texture: string = kit.defaults.rock_texture — One texture for every face (with textures: for the roles textures leaves out).
+---@opt textures: {floor=, wall=, ceiling=} = kit.defaults.rock_textures — Textures by player-relative role (with texture: these win for the roles they name).
 ---@opt tile: number = kit.defaults.rock_tile_metres (tile_metres) — Metres per texture repeat.
 function kit.pit(t)
   local api = "kit.pit"
@@ -1727,7 +1745,9 @@ end
 
 -- Extension modules, each returning install(kit, internals) and adding its functions to this table:
 -- kit_struct.lua (ground provider, beams, trusses, bridges, landmarks, openings); kit_space.lua (proportions,
--- shaped rooms, alcoves, pilasters, floor sections, roads and the kit.space archetypes); kit_dress.lua and
+-- shaped rooms, alcoves, pilasters, floor sections, roads and the kit.space archetypes); kit_trace.lua (kit.trace: the literal
+-- plan builder for recreating from a reference picture); kit_ground.lua (kit.ground:
+-- brush or Alpine terrain ground for open areas, ALPINE-COMPAT-SPEC §4.4); kit_dress.lua and
 -- kit_items.lua (population: generative fill kit.dress, light fixtures kit.light_room, protected spawns
 -- kit.spawn_points and the item economy kit.items, with the kit_probe.lua space probe); kit_layout.lua
 -- (layout graphs, their constraint checker, plan preview and builder); kit_compose.lua (the layout composer:
@@ -1743,6 +1763,9 @@ do
   ged.import("kit_struct")(kit, internals)
   internals_purpose = { purpose_mode = internals.purpose_mode, tag_role = internals.tag_role, tag_named = internals.tag_named, stair_route = internals.stair_route }
   ged.import("kit_space")(kit, internals)
+  ged.import("kit_rock")(kit, internals) -- organic rock that follows a plan (kit.rock_mass; kit.trace's canyon/cave/rock options)
+  ged.import("kit_trace")(kit, internals)
+  ged.import("kit_ground")(kit, internals)
   ged.import("kit_layout")(kit, internals)
   ged.import("kit_compose")(kit, internals)
   ged.import("kit_compose_payload")(kit, internals)
@@ -1751,6 +1774,7 @@ do
   internals_light_fixture = internals.light_fixture
   ged.import("kit_items")(kit, internals)
   ged.import("kit_modules")(kit, internals)
+  ged.import("kit_trace_dress")(kit, internals) -- kit.dress_trace: theme a kit.trace build from its reference shots
   -- The composite builders: the flights inside them default to purpose = "quiet" (see kit.stairs).
   for _, fname in ipairs({ "space", "build_layout" }) do
     local inner = kit[fname]

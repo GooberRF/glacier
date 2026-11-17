@@ -284,6 +284,10 @@ public sealed class ScriptCatalog
             "corona" => LevelObjectKind.CoronaObject,
             "mesh" => LevelObjectKind.MeshObject,
             "note" => LevelObjectKind.NoteObject,
+            "weather" => LevelObjectKind.WeatherRegion,
+            "rope" => LevelObjectKind.RopeEmitter,
+            "vehicle" => LevelObjectKind.VehicleFactory,
+            "projector" => LevelObjectKind.ProjectionCamera,
             _ => null,
         };
         if (alias is { } a)
@@ -300,7 +304,7 @@ public sealed class ScriptCatalog
         }
 
         IEnumerable<string> names = anyKind
-            ? Enum.GetNames<LevelObjectKind>().Concat(new[] { "respawn", "spawn", "corona", "mesh", "note" })
+            ? Enum.GetNames<LevelObjectKind>().Concat(new[] { "respawn", "spawn", "corona", "mesh", "note", "weather", "rope", "vehicle", "projector" })
             : PlaceableKinds().Select(k => k.ToString());
         throw new ScriptApiException($"{api}: unknown kind '{raw}'.", ScriptSuggest.Hint(raw, names, "kind"));
     }

@@ -150,6 +150,7 @@ public sealed class McpServerTests
         ("spatial_query", _ => new { op = "walk" }),
         ("grade_level", _ => null),
         ("align_textures", _ => null),
+        ("terrain", _ => new { op = "create", center = new[] { 0.0, 0, 0 }, nx = 17, nz = 17, layers = "rck_default.tga" }),
         ("render_plan", _ => new { size = "128x128" }),
         ("render_view", _ => new { view = "iso", size = "128x96" }),
         ("reference_view", s => new { image = ReferenceImage(s) }),

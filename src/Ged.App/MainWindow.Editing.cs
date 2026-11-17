@@ -519,11 +519,11 @@ public sealed partial class MainWindow
         int readOnly = Document.Selection.Count(o => o.IsReadOnly);
         if (readOnly > 0)
         {
-            // Alpine Faction 1.5 objects are loaded and saved exactly but cannot be moved, renamed, or deleted
-            // here; say so instead of letting edits do nothing.
+            // Objects of an Alpine chunk Glacier keeps unchanged are loaded and saved exactly but cannot
+            // be moved, renamed, or deleted here; say so instead of letting edits do nothing.
             readout += readOnly == Document.Selection.Count
-                ? "  — read-only (Alpine Faction 1.5 object: inspect only)"
-                : $"  — {readOnly} read-only Alpine Faction 1.5 object(s) are not edited";
+                ? "  — read-only (inspect only)"
+                : $"  — {readOnly} read-only object(s) are not edited";
         }
 
         return readout;

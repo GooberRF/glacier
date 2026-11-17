@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Rendering.Composition;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Ged.App;
@@ -45,8 +47,35 @@ public sealed class GlViewportMultiPaneTests
 
         var window = new Window { Width = 400, Height = 400, Content = grid };
         window.Show();
-        Dispatcher.UIThread.RunJobs();
+        SettleComposition(window);
         return (window, grid, dispatcher);
+    }
+
+    /// <summary>
+    /// Pumps the headless compositor until everything laid out so far has reached the
+    /// composition server. Avalonia hit-tests (<c>InputHitTest</c> and the pointer-over
+    /// refresh after a layout change) read the visual transforms the server last rendered,
+    /// NOT the live layout. Headlessly the server only renders on the 60 Hz render timer,
+    /// which <c>Dispatcher.UIThread.RunJobs()</c> fires only when wall-clock-due, and a new
+    /// batch also waits behind any still-unprocessed batch left by an earlier test (the
+    /// MediaContext commit throttle). Without this pump a freshly shown or re-laid-out grid
+    /// hit-tests against stale or missing transforms whenever the timer is not yet due, which
+    /// made these tests pass or fail on timing alone.
+    /// </summary>
+    private static void SettleComposition(TopLevel topLevel)
+    {
+        Compositor compositor = ElementComposition.GetElementVisual(topLevel)!.Compositor;
+        Dispatcher.UIThread.RunJobs();
+        Task applied = compositor.RequestCommitAsync();
+        for (int tick = 0; !applied.IsCompleted; tick++)
+        {
+            Assert.True(tick < 16, "the headless compositor never applied the pending layout batch");
+            AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+            Dispatcher.UIThread.RunJobs();
+        }
+
+        // Run the pointer-over refresh the processed batch posted (at Input priority).
+        Dispatcher.UIThread.RunJobs();
     }
 
     /// <summary>Window-space points inside each pane's GL surface (quadrant centres are
@@ -165,29 +194,32 @@ public sealed class GlViewportMultiPaneTests
 
         // Hover the TOP-LEFT pane so it is active and focused (the bug's repro posture).
         window.MouseMove(SurfaceCenter(window, grid.Panes[0]));
-        Dispatcher.UIThread.RunJobs();
+        SettleComposition(window);
         Assert.Same(grid.Panes[0].Surface, grid.ActiveSurface);
+        Assert.Same(grid.Panes[0].Surface, FocusedElement(grid));
 
         // TAB #1: 4-pane -> maximized, exactly one toggle, and the maximized pane is the
-        // hovered one (top-left), not the bottom-right.
+        // hovered one (top-left), not the bottom-right. The re-parent must not drop keyboard
+        // focus: the pointer never left the pane, so no hover re-focus would ever restore it
+        // and the pane's camera/transform keys would go dead.
         window.KeyPress(Key.Tab, RawInputModifiers.None, PhysicalKey.Tab, "\t");
-        Dispatcher.UIThread.RunJobs();
+        SettleComposition(window);
         Assert.Equal(1, toggles);
         Assert.True(grid.IsMaximized);
         Assert.Same(grid.Panes[0].Surface, grid.ActiveSurface);
+        Assert.Same(grid.Panes[0].Surface, FocusedElement(grid));
 
         // TAB #2: back to the 4-pane grid — still one toggle per press, and keyboard focus
-        // never traversed to a DIFFERENT pane's surface (no cycling).
+        // stays on the same pane (never traversed to a DIFFERENT pane's surface: no cycling).
         window.KeyPress(Key.Tab, RawInputModifiers.None, PhysicalKey.Tab, "\t");
-        Dispatcher.UIThread.RunJobs();
+        SettleComposition(window);
         Assert.Equal(2, toggles);
         Assert.False(grid.IsMaximized);
-        object? focused = TopLevel.GetTopLevel(grid)?.FocusManager?.GetFocusedElement();
-        for (int i = 1; i < 4; i++)
-        {
-            Assert.NotSame(grid.Panes[i].Surface, focused);
-        }
+        Assert.Same(grid.Panes[0].Surface, FocusedElement(grid));
     }
+
+    private static object? FocusedElement(Visual visual) =>
+        TopLevel.GetTopLevel(visual)?.FocusManager?.GetFocusedElement();
 
     [AvaloniaFact]
     public void Hover_Activation_Outcomes_Match_The_D3D11_Grid()

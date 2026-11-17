@@ -62,6 +62,9 @@ internal static class MoverLighting
                 lights.Add(EngineLight.FromModel(l, editorOnly: false, cookies?.Invoke(l.Uid), sharpness?.Invoke(l.Uid) ?? 1f));
             }
 
+            // Alpine's sun / Directional Light objects light movers as well (they are scene lights in RED's bake).
+            lights.AddRange(options.Lighting.DirectionalLights);
+
             // Shadow the movers against the SAME occluder set the static world was baked against — RED
             // bakes the static solid and every mover group from one global world face list (RED.exe 1.20na
             // FUN_004aabf0 → FUN_004ae360 reads the shared BSP faces; docs/research/red-lighting-model.md).
@@ -145,7 +148,7 @@ internal static class MoverLighting
         // Build the mover's LOCAL surfaces into its own atlas pages (seeded ambient/grey), and — since
         // RED reuses one surface per coplanar co-planar group — group like the static build does.
         var scratch = new CompiledLevel();
-        SurfaceBuildResult msr = new SurfaceBuilder(options.HighResLightmaps)
+        SurfaceBuildResult msr = new SurfaceBuilder(options.HighResLightmaps, options.HighResFragmentMax)
             .Build(eligible, emptyRooms, scratch, options.GroupSurfaces, options.LevelAmbient);
         if (msr.Surfaces.Count == 0)
         {
@@ -158,10 +161,25 @@ internal static class MoverLighting
             var bakeInput = new List<SurfaceBake>(msr.Surfaces.Count);
             for (int i = 0; i < msr.Surfaces.Count; i++)
             {
-                bakeInput.Add(new SurfaceBake(msr.Surfaces[i], msr.FullBright[i], smoothFaces: null, lightMultiplier: 1f, transform));
+                bakeInput.Add(new SurfaceBake(msr.Surfaces[i], msr.FullBright[i], smoothFaces: null, lightMultiplier: 1f, transform, surfaceIndex: i));
             }
 
-            Lightmapper.Bake(bakeInput, scratch.Lightmaps, lights!, occluders!, ambient!, options.Lighting);
+            // The Alpine fixed pipeline answers rays cast onto a mover with that mover's own tree only, built in its space
+            // (editor_patch/lightmap.cpp:1206-1210, 1766-1795); the level's liquid emitters light it too.
+            Lighting.Alpine.AlpineShading? alpine = null;
+            if (result.AlpineShading is { } st)
+            {
+                var nsc = new HashSet<int>(st.Settings.NoShadowCastBrushUids);
+                Lighting.Alpine.AlpineOccluders? own = options.Lighting.CastShadows
+                    ? Lighting.Alpine.AlpineOccluders.Build(MoverOccluderFaces(mover, nsc, perFace), null, st.Settings.AlphaTestedOcclusion, options.Lighting.AlpineTextures)
+                    : null;
+                alpine = new Lighting.Alpine.AlpineShading(own, st.Settings, st.Liquid);
+            }
+
+            // With the Alpine pipeline the mover's surfaces also get charts, in the bake's mover table
+            // (alpine_lightmaps.cpp:2156-2200).
+            Lightmapper.Bake(bakeInput, scratch.Lightmaps, lights!, occluders!, ambient!, options.Lighting,
+                result.DirectionalOccluders, charts: result.AlpineChartJob?.ForMover(mover.Uid), alpine: alpine);
         }
 
         // Splice the mover pages onto the shared atlas and re-index the surfaces to them.
@@ -248,6 +266,70 @@ internal static class MoverLighting
         }
 
         return tris;
+    }
+
+    /// <summary>
+    /// A mover's faces at its rest pose, in world space, as Alpine occluder input; surface ids are the mover's own
+    /// surface indices when <paramref name="surfaceIds"/> is set (its own tree), else −1 (folded into the static tree).
+    /// </summary>
+    internal static IEnumerable<Lighting.Alpine.AlpineOccluderFace> MoverOccluderFaces(Brush mover, HashSet<int> noShadowCast, bool surfaceIds)
+    {
+        Geometry g = mover.Geometry;
+        var mt = new MoverTransform(mover.Position, mover.Rotation);
+        foreach (Face f in g.Faces)
+        {
+            if (f.Vertices.Count < 3 || f.Texture < 0)
+            {
+                continue;
+            }
+
+            var poly = new Vec3[f.Vertices.Count];
+            var uvs = new Uv[f.Vertices.Count];
+            bool ok = true;
+            for (int i = 0; i < poly.Length && ok; i++)
+            {
+                int vi = f.Vertices[i].Index;
+                ok = (uint)vi < (uint)g.Vertices.Count;
+                if (ok)
+                {
+                    poly[i] = mt.Position.Add(mt.Rotation.Transform(g.Vertices[vi]));
+                    uvs[i] = f.Vertices[i].TextureCoords;
+                }
+            }
+
+            if (!ok)
+            {
+                continue;
+            }
+
+            string tex = f.Texture < g.Textures.Count ? g.Textures[f.Texture] : string.Empty;
+            yield return new Lighting.Alpine.AlpineOccluderFace(poly, uvs, f.Flags, tex, surfaceIds ? f.SurfaceIndex : -1,
+                mt.Rotation.Transform(f.Plane.Normal).Normalized(), f.IsPortalFace, noShadowCast.Contains(mover.Uid) ? mover.Uid : -1);
+        }
+    }
+
+    /// <summary>A mover's freshly surfaced faces (local <see cref="CsgFace"/>s) at its rest pose, with their surface ids.</summary>
+    private static IEnumerable<Lighting.Alpine.AlpineOccluderFace> MoverOccluderFaces(Brush mover, HashSet<int> noShadowCast, CsgFace?[] perFace)
+    {
+        var mt = new MoverTransform(mover.Position, mover.Rotation);
+        foreach (CsgFace? cf in perFace)
+        {
+            if (cf is null || cf.Vertices.Count < 3 || string.IsNullOrEmpty(cf.Texture))
+            {
+                continue;
+            }
+
+            var poly = new Vec3[cf.Vertices.Count];
+            var uvs = new Uv[cf.Vertices.Count];
+            for (int i = 0; i < poly.Length; i++)
+            {
+                poly[i] = mt.Position.Add(mt.Rotation.Transform(cf.Vertices[i].Position));
+                uvs[i] = cf.Vertices[i].Uv;
+            }
+
+            yield return new Lighting.Alpine.AlpineOccluderFace(poly, uvs, cf.Flags, cf.Texture, cf.SurfaceIndex,
+                mt.Rotation.Transform(cf.Plane.Normal).Normalized(), cf.IsPortal, noShadowCast.Contains(mover.Uid) ? mover.Uid : -1);
+        }
     }
 
     /// <summary>EXPERIMENTAL (flagship 30): world-space triangles of a mover's own geometry at its rest

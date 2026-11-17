@@ -119,7 +119,7 @@ public static class SpatialQueries
             {
                 "raycast" => w.Raycast(Point(args, "from", true)!.Value, Point(args, "dir", true)!.Value, Number(args, "max") ?? 200),
                 "los" => LosResult(w, Point(args, "a", true)!.Value, Point(args, "b", true)!.Value),
-                "point_info" => w.PointInfo(Point(args, "pos", true)!.Value),
+                "point_info" => w.PointInfo(Point(args, "pos", true)!.Value, TerrainGround.Of(level.Rfl)),
                 _ => w.Clearance(Point(args, "pos", true)!.Value, Str(args, "profile") ?? "player"),
             };
             r["geometry"] = level.Freshness.ToJson();

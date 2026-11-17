@@ -314,8 +314,44 @@ public sealed partial class MainWindow
         _dispatcher.Bind(CommandIds.ObjConvertToMesh, ConvertSelectionToMesh,
             () => Document?.Selection.Any(ObjectToMeshConverter.CanConvert) == true);
         _dispatcher.Bind(CommandIds.FileDialogueText, () => _ = OpenDialogueTextAsync(), () => Document is not null);
+        _dispatcher.Bind(CommandIds.ObjTerrainToBrushes, ConvertSelectedTerrainToBrushes,
+            () => Document?.Selection.Any(o => o.Model is Ged.Core.Model.AlpineTerrain && !o.IsReadOnly) == true);
     }
 
+    // ---- Convert terrain to brushes (Alpine RED's Terrain Properties ▸ Convert to Brushes) ----------------------
+
+    /// <summary>
+    /// Converts every selected terrain into permanent detail brushes, one per chunk, exactly as Build Geometry compiles it,
+    /// and deletes the terrain (editor_patch/terrain.cpp:2902-2964). One undo step for the whole selection.
+    /// </summary>
+    private void ConvertSelectedTerrainToBrushes()
+    {
+        if (Document is null || BrushEditor is not { } brushes)
+        {
+            return;
+        }
+
+        var terrains = Document.Selection.Where(o => o.Model is Ged.Core.Model.AlpineTerrain && !o.IsReadOnly).ToList();
+        if (terrains.Count == 0)
+        {
+            _dispatcher.ShowMessage("Select a terrain to convert to brushes.");
+            return;
+        }
+
+        var made = new List<int>();
+        using (Ged.Core.Editor.UndoStack.Transaction tx = Document.Undo.BeginTransaction("Convert terrain to brushes"))
+        {
+            foreach (Ged.Core.Editor.LevelObject terrain in terrains)
+            {
+                made.AddRange(Ged.Core.Editing.TerrainOps.ConvertToBrushes(Document, brushes, terrain, keep: false));
+            }
+
+            tx.Commit();
+        }
+
+        AfterMutation();
+        _dispatcher.ShowMessage($"Converted {terrains.Count} terrain(s) into {made.Count} detail brush(es). They lose the terrain blend and get stock lightmaps.");
+    }
     // ---- Convert clutter/entity → Mesh object (Alpine "To Mesh Object") -------
 
     /// <summary>
@@ -715,9 +751,31 @@ public sealed partial class MainWindow
             return;
         }
 
-        Vec3 point = _session.TryFaceHit(_lastPick, out Vec3 hit, out _) ? hit : PlacementPoint;
-        OnObjectPlaced(Document.PlaceObject(kind, SnapPlacement(point), _lastPlacedClass));
+        Vec3 point = PlaceAtCursorPoint(kind);
+        try
+        {
+            OnObjectPlaced(Document.PlaceObject(kind, point, _lastPlacedClass));
+        }
+        catch (InvalidOperationException ex)
+        {
+            // An Alpine chunk Glacier keeps unchanged refuses new objects (EditorDocument.PlaceBlueprint).
+            _dispatcher.ShowMessage($"Place failed: {ex.Message}");
+        }
     }
+
+    /// <summary>
+    /// Where Place at Cursor drops <paramref name="kind"/>: the snapped face hit under the last pick, lifted
+    /// <see cref="SpawnClearance.StandHeight"/> along the floor normal for respawn points, the Player Start and
+    /// waypoint helpers (<see cref="SpawnClearance"/>); the in-front-of-camera point when nothing was hit.
+    /// </summary>
+    private Vec3 PlaceAtCursorPoint(LevelObjectKind kind) =>
+        _session.TryFaceHit(_lastPick, out Vec3 hit, out Vec3 normal)
+            ? PlaceAtCursorPoint(kind, SnapPlacement(hit), normal)
+            : SnapPlacement(PlacementPoint);
+
+    /// <summary>The placement for a (snapped) face hit: lifted along a floor normal for the floor-standing kinds.</summary>
+    internal static Vec3 PlaceAtCursorPoint(LevelObjectKind kind, Vec3 snappedHit, Vec3 normal) =>
+        SpawnClearance.StandsOnFloor(kind) ? SpawnClearance.Lift(snappedHit, normal) : snappedHit;
 
     private async Task OpenDialogueTextAsync()
     {

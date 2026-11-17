@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using Ged.Core.IO.Tex;
 
 namespace Ged.Automation.Rendering;
 

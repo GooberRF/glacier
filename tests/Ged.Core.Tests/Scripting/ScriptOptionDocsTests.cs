@@ -15,12 +15,13 @@ namespace Ged.Core.Tests.Scripting;
 /// </summary>
 public sealed class ScriptOptionDocsTests
 {
-    /// <summary>Table arguments that are not option tables: field maps, member lists, link lists, UV lists.</summary>
+    /// <summary>Table arguments that are not option tables: field maps, member lists, link lists, UV lists, layer lists, hole lists, point lists.</summary>
     private static readonly HashSet<string> NotOptionTables = new(StringComparer.Ordinal)
     {
         "ScriptObjectHandle.SetMany", "ScriptBrushHandle.SetMany", "ScriptMoverHandle.SetMany", "ScriptPropertyBag.SetMany",
         "ScriptObjectHandle.LinkMany", "ScriptObjectHandle.BackLink", "ScriptGroupHandle.Remove", "ScriptFaceHandle.SetUvs",
-        "ScriptGed.Names",
+        "ScriptGed.Names", "ScriptTerrainHandle.SetLayers", "ScriptTerrainHandle.SetOverlays", "ScriptTerrainHandle.SetHoles",
+        "ScriptRef.WorldPoints",
     };
 
     private static IEnumerable<MethodInfo> TableArgMethods() =>

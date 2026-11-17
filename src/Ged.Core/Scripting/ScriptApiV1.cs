@@ -34,6 +34,7 @@ public static class ScriptApiV1
         "geo",        // geometry tools: shape checks and edits (API v2)
         "spatial",    // spatial queries and design measurements (API v2)
         "design",     // the self-review grader (API v2)
+        "ref",        // overhead reference pictures: grid, calibrate, mask, compare (API v2)
         "print",      // Lua print → script log output
     };
 }

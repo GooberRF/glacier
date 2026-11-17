@@ -193,6 +193,8 @@ public sealed partial class MainWindow : Window, IEditorHost
         _outliner.Bind(this);
         _properties.Bind(this);
         _properties.PickMeshFile = PickMeshFileAsync;
+        InitMoverPanel();
+        InitTerrainTools();
         _history.Bind(this);
         _layers.Bind(this);
         _palette.Bind(this);
@@ -573,6 +575,7 @@ public sealed partial class MainWindow : Window, IEditorHost
         file.Items.Add(new Separator());
         file.Items.Add(Cmd("Open Dialogue Text", CommandIds.FileDialogueText));
         file.Items.Add(Cmd("Create Level Packfile", CommandIds.FilePackfile));
+        file.Items.Add(Cmd("Create Level Packfile As…", CommandIds.FilePackfileAs));
         file.Items.Add(new Separator());
         file.Items.Add(Cmd("Play Level (F7)", CommandIds.FilePlayLevel));
         file.Items.Add(Cmd("Play Level from Camera (F8)", CommandIds.FilePlayFromCamera));
@@ -1093,8 +1096,9 @@ public sealed partial class MainWindow : Window, IEditorHost
         // Hotkey stepping walks the shared preset ladders (item 4) — same values as the
         // status-bar popovers and the pane toolbar pickers.
         _dispatcher.Bind(CommandIds.GridBrightness, CycleGridBrightness);
-        _dispatcher.Bind(CommandIds.GridSizeUp, () => _gridIncrement.StepUp());
-        _dispatcher.Bind(CommandIds.GridSizeDown, () => _gridIncrement.StepDown());
+        // While the Terrain Tools are armed, [ and ] size the brush instead of the grid (as in Alpine RED).
+        _dispatcher.Bind(CommandIds.GridSizeUp, () => { if (!TerrainRadiusStep(true)) { _gridIncrement.StepUp(); } });
+        _dispatcher.Bind(CommandIds.GridSizeDown, () => { if (!TerrainRadiusStep(false)) { _gridIncrement.StepDown(); } });
         _dispatcher.Bind(CommandIds.GridRotationUp, () => _rotationIncrement.StepUp());
         _dispatcher.Bind(CommandIds.GridRotationDown, () => _rotationIncrement.StepDown());
         _dispatcher.Bind(CommandIds.ToggleSnap, () => SetSnapEnabled(!_settings.SnapEnabled));
@@ -1380,7 +1384,11 @@ public sealed partial class MainWindow : Window, IEditorHost
     /// pre-save linter summary runs just before the write (informational: GED always saves Alpine v306,
     /// which supports every feature). Afterwards the shell refreshes, and one advisory nudge is shown.
     /// </summary>
-    internal async Task<EditorSaveResult> SaveToPathAsync(string path, bool saveAs)
+    /// <param name="path">The target level path.</param>
+    /// <param name="saveAs">True for Save As.</param>
+    /// <param name="packaging">True when Create Level Packfile saves first: the stale-packfile note is left out (that
+    /// packfile is about to be rebuilt).</param>
+    internal async Task<EditorSaveResult> SaveToPathAsync(string path, bool saveAs, bool packaging = false)
     {
         if (Document is null)
         {
@@ -1447,11 +1455,17 @@ public sealed partial class MainWindow : Window, IEditorHost
         AfterMutation();
         _statusMessage.Text = $"Saved {Path.GetFileName(path)} [Alpine v{Document.Rfl.Header.Version}]";
 
-        // The v306 upgrade's save-log lines (fog near clip reset, Looping now honoured, props layout rewrite).
+        // The save-log lines (fog near clip reset, Looping now honoured, props layout rewrite, a stale packfile).
         foreach (string note in Document.LastSaveNotes)
         {
+            bool stalePack = string.Equals(note, Document.LastStalePackfileNote, StringComparison.Ordinal);
+            if (stalePack && packaging)
+            {
+                continue;
+            }
+
             LogOperation("Save", note);
-            _notifications.Notify(Services.NotificationSeverity.Info, note);
+            _notifications.Notify(stalePack ? Services.NotificationSeverity.Warning : Services.NotificationSeverity.Info, note);
         }
 
         // RED-style advisory (owner decision): one nudge per save about staleness / re-seal.
@@ -1525,9 +1539,31 @@ public sealed partial class MainWindow : Window, IEditorHost
             return;
         }
 
-        var dlg = new LevelPropertiesDialog(Document);
+        var dlg = new LevelPropertiesDialog(Document, new LevelPropertiesServices
+        {
+            CameraForward = () => _viewportGrid.ActiveSurface.Camera is { } cam ? cam.Forward : null,
+            BrowseFile = PickLevelFileAsync,
+            LoadBitmap = LoadTextureBitmap,
+            ShowMessage = m => _dispatcher.ShowMessage(m),
+        });
         dlg.Closed += (_, _) => AfterMutation();
-        dlg.Show(this);
+        dlg.ShowDialog(this);
+    }
+
+    /// <summary>The Level Properties Browse… pickers: a texture (GeoMod) or bitmap (minimap); returns the leaf file name.</summary>
+    private async System.Threading.Tasks.Task<string?> PickLevelFileAsync(string kind)
+    {
+        IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = kind == "bitmap" ? "Choose the minimap bitmap" : "Choose the GeoMod texture",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("Images (*.tga, *.vbm, *.dds, *.png)") { Patterns = new[] { "*.tga", "*.vbm", "*.dds", "*.png" } },
+                new FilePickerFileType("All Files (*.*)") { Patterns = new[] { "*" } },
+            },
+        });
+        return files.Count == 0 ? null : System.IO.Path.GetFileName(files[0].Name);
     }
 
     private void ShowSettings()
@@ -1667,6 +1703,8 @@ public sealed partial class MainWindow : Window, IEditorHost
         _navGraph = new NavGraphService(Document);
         _groups = new GroupService(Document, _session.BrushEditor);
         _movers = new MoverService(Document);
+        _moverPreview?.Close(); // a preview never outlives its document
+        Document.Undo.Changed += () => _moverPreview?.Refresh();
         _cutscenes = new CutsceneService(Document);
         Document.ObjectsChanged += () => { _outliner.Refresh(); _history.Refresh(); _linkGraph.Refresh(); _depGraph.Refresh(); };
         // Item 8 (tiered refresh): a selection change is a LIGHTWEIGHT overlay update — the
@@ -1760,6 +1798,16 @@ public sealed partial class MainWindow : Window, IEditorHost
             _notifications.Notify(
                 Services.NotificationSeverity.Warning,
                 $"{restored} mover brush(es) restored to the world — resave to persist.");
+        }
+
+        // Movers missing from the editor groups section (levels saved by an earlier Glacier) are invisible to
+        // RED and Alpine RED, which rebuild their brushes into the static world. Mirror them as RED writes
+        // them. A no-op on RED-authored levels, which already list every mover there.
+        if (_movers.RepairEditorGroupMirror() is int mirrored && mirrored > 0)
+        {
+            _notifications.Notify(
+                Services.NotificationSeverity.Warning,
+                $"{mirrored} mover(s) repaired so RED and Alpine RED recognize them — resave to persist.");
         }
 
         // Every freshly created or opened document starts on the Select tool — this shared
@@ -1981,6 +2029,12 @@ public sealed partial class MainWindow : Window, IEditorHost
                 _dispatcher.ShowMessage("Eyedropper: that was not a brush face — nothing sampled.");
             }
 
+            return;
+        }
+
+        // A double-click on a keyframe opens Keyframe Properties (the first click selects it as usual).
+        if (TryOpenKeyframeDialog(id))
+        {
             return;
         }
 
@@ -2306,6 +2360,7 @@ public sealed partial class MainWindow : Window, IEditorHost
             MaxTextureDimension = 1024,
             // Out-of-norm hints on explicit runs only (never the implicit save-time lint).
             CheckNorms = showPanel,
+            CheckCraft = showPanel,
             GeometryIsPreview = _buildController?.GeometryIsPreview ?? false,
             FileName = Document.Path is { Length: > 0 } levelPath ? System.IO.Path.GetFileName(levelPath) : null,
         };
@@ -2682,7 +2737,7 @@ public sealed partial class MainWindow : Window, IEditorHost
     private (int Uid, int Face) _dragOverlayFace = (-1, -1);
 
     /// <summary>The resolved drop target: which pane (if any), the world point, and the hit brush face.</summary>
-    private readonly record struct DropTarget(bool OverPane, Ged.Core.Model.Vec3 Point, bool OnSurface, int BrushUid, int FaceIndex);
+    private readonly record struct DropTarget(bool OverPane, Ged.Core.Model.Vec3 Point, bool OnSurface, int BrushUid, int FaceIndex, Ged.Core.Model.Vec3 Normal = default);
 
     /// <summary>Which geometry set the last placement resolve traced (for the DragDrop log line).</summary>
     private string _lastPlacementSet = "none";
@@ -2708,7 +2763,7 @@ public sealed partial class MainWindow : Window, IEditorHost
             _lastPlacementSet = usedCompiled ? "compiled" : "brush-fallback";
             if (hit.Hit)
             {
-                return new DropTarget(true, hit.Point, true, hit.BrushUid, hit.FaceIndex);
+                return new DropTarget(true, hit.Point, true, hit.BrushUid, hit.FaceIndex, hit.Normal);
             }
         }
 
@@ -2779,8 +2834,8 @@ public sealed partial class MainWindow : Window, IEditorHost
             return;
         }
 
-        Vector3 offset = DragGhost.PlacementOffset(geo.Min, geo.Max, target.OnSurface, IsPickupDrop(kind, arg1, arg2));
-        var to = new Vector3(target.Point.X, target.Point.Y, target.Point.Z) + offset;
+        Vector3 offset = DropOffset(kind, arg1, arg2, geo, target);
+        var to =new Vector3(target.Point.X, target.Point.Y, target.Point.Z) + offset;
         _viewportGrid.SetGizmoOverlay(DragGhost.Translate(geo.Lines, to).ToList());
         _dragOverlayActive = true;
     }
@@ -2857,6 +2912,29 @@ public sealed partial class MainWindow : Window, IEditorHost
         }
     }
 
+    /// <summary>
+    /// The offset from the drop's surface point to where the object goes (shared by the live ghost and the drop): a
+    /// respawn point, the Player Start or a waypoint helper dropped on a floor stands <see cref="SpawnClearance.StandHeight"/>
+    /// up along the floor normal (<see cref="SpawnClearance"/>); everything else bottom-aligns, or a pickup's centre sits
+    /// 1 m up (<see cref="DragGhost.PlacementOffset"/>).
+    /// </summary>
+    private Vector3 DropOffset(PlaceableKind kind, string arg1, string? arg2, GhostGeometry geo, DropTarget target) =>
+        DropOffset(kind, arg1, target.OnSurface, target.Point, target.Normal)
+            ?? DragGhost.PlacementOffset(geo.Min, geo.Max, target.OnSurface, IsPickupDrop(kind, arg1, arg2));
+
+    /// <summary>The floor-standing lift of <see cref="DropOffset(PlaceableKind, string, string?, GhostGeometry, DropTarget)"/>, or null when it does not apply.</summary>
+    internal static Vector3? DropOffset(PlaceableKind kind, string arg1, bool onSurface, Ged.Core.Model.Vec3 point, Ged.Core.Model.Vec3 normal)
+    {
+        if (!onSurface || kind != PlaceableKind.Class || !Enum.TryParse(arg1, out LevelObjectKind objKind)
+            || !SpawnClearance.StandsOnFloor(objKind) || !SpawnClearance.IsFloor(normal))
+        {
+            return null;
+        }
+
+        Ged.Core.Model.Vec3 lifted = SpawnClearance.Lift(point, normal);
+        return new Vector3(lifted.X - point.X, lifted.Y - point.Y, lifted.Z - point.Z);
+    }
+
     /// <summary>True when the drop is a pickup item: an Item class not flagged <c>no_pickup</c> in items.tbl.</summary>
     private bool IsPickupDrop(PlaceableKind kind, string arg1, string? arg2)
     {
@@ -2920,8 +2998,8 @@ public sealed partial class MainWindow : Window, IEditorHost
         // (bottom-align, or pickup 1 m raise) using the SAME offset the live ghost showed.
         DropTarget target = ResolveDrop(e);
         GhostGeometry geo = EnsureDragGhost(descriptor, kind, arg1, arg2);
-        Vector3 offset = DragGhost.PlacementOffset(geo.Min, geo.Max, target.OnSurface, IsPickupDrop(kind, arg1, arg2));
-        var at = new Ged.Core.Model.Vec3(target.Point.X + offset.X, target.Point.Y + offset.Y, target.Point.Z + offset.Z);
+        Vector3 offset = DropOffset(kind, arg1, arg2, geo, target);
+        var at =new Ged.Core.Model.Vec3(target.Point.X + offset.X, target.Point.Y + offset.Y, target.Point.Z + offset.Z);
         string where = target.OnSurface ? "on the surface" : "in front of the camera";
         LogOperation("DragDrop", $"pane resolved: {(target.OverPane ? "yes" : "none")}; trace set: {_lastPlacementSet}; ray hit: " +
             (target.OnSurface ? $"({target.Point.X:0.##},{target.Point.Y:0.##},{target.Point.Z:0.##})" : "none") +

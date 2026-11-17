@@ -100,6 +100,9 @@ public sealed class RenderResult
     /// <summary>The hole overlay: count of leak markers found by the sealed check (null when not requested).</summary>
     public int? Holes { get; init; }
 
+    /// <summary>The floor-heights layer (heights overlay or mode): its colour range and what it marked (null when not drawn).</summary>
+    public RenderHeightsDto? Heights { get; init; }
+
     public RenderGeometryDto Geometry { get; init; } = new();
 
     /// <summary>The GPU device that drew the image (e.g. "Direct3D11 (hardware)").</summary>
@@ -211,6 +214,128 @@ public sealed class RenderObjectDto
 
     /// <summary>The label drawn next to it (null when it did not fit or labels are off).</summary>
     public string? Label { get; init; }
+}
+
+/// <summary>
+/// The floor-heights layer of a plan or top render: the colour map's range (a height y is t = (y − min) / (max − min),
+/// drawn at hue 240 · (1 − t)), the contour interval and the features the image marks — ramps and slopes, stairs, drop
+/// edges and flat floors (each listed only when the image shows it). Heights are world metres.
+/// </summary>
+public sealed class RenderHeightsDto
+{
+    /// <summary>The longest list kept per kind.</summary>
+    public const int ListLimit = 200;
+
+    /// <summary>[min, max] of the colour map (m).</summary>
+    public double[] Range { get; init; } = System.Array.Empty<double>();
+
+    /// <summary>How heights map to colours.</summary>
+    public string Colormap { get; init; } = string.Empty;
+
+    /// <summary>The contour interval on sloped floor (m).</summary>
+    public double ContourStep { get; init; }
+
+    /// <summary>World [x, y, z] of the level's lowest and highest walkable floor (the colour range rounds them out to half metres).</summary>
+    public double[] Lowest { get; init; } = System.Array.Empty<double>();
+
+    public double[] Highest { get; init; } = System.Array.Empty<double>();
+
+    /// <summary>Ramps and slopes (chevrons point uphill).</summary>
+    public List<RenderHeightsFlightDto> Ramps { get; init; } = new();
+
+    /// <summary>Flights of stairs (an arrow points uphill).</summary>
+    public List<RenderHeightsFlightDto> Stairs { get; init; } = new();
+
+    /// <summary>Drop edges (ticks on the low side).</summary>
+    public List<RenderHeightsDropDto> Drops { get; init; } = new();
+
+    /// <summary>Flat floor regions (largest first) with their spot height label when one was drawn.</summary>
+    public List<RenderHeightsFlatDto> Flats { get; init; } = new();
+
+    /// <summary>How many of each were drawn.</summary>
+    public RenderHeightsCountsDto Drawn { get; set; } = new();
+}
+
+/// <summary>A ramp, slope or flight of stairs.</summary>
+public sealed class RenderHeightsFlightDto
+{
+    /// <summary>Its low and high floor (m).</summary>
+    public double Low { get; init; }
+
+    public double High { get; init; }
+
+    public double Rise { get; init; }
+
+    /// <summary>World [x, y, z] of its foot and top.</summary>
+    public double[] Foot { get; init; } = System.Array.Empty<double>();
+
+    public double[] Top { get; init; } = System.Array.Empty<double>();
+
+    /// <summary>The uphill direction [dx, dz] (unit).</summary>
+    public double[] Climb { get; init; } = System.Array.Empty<double>();
+
+    /// <summary>Its length along the climb and width across it (m).</summary>
+    public double Run { get; init; }
+
+    public double Width { get; init; }
+
+    /// <summary>Plan area (m²).</summary>
+    public double Area { get; init; }
+
+    /// <summary>World [x, z] of its label point.</summary>
+    public double[] At { get; init; } = System.Array.Empty<double>();
+
+    /// <summary>The label drawn ("y0 → y1 m"), or null when it did not fit.</summary>
+    public string? Label { get; init; }
+}
+
+/// <summary>A drop edge.</summary>
+public sealed class RenderHeightsDropDto
+{
+    /// <summary>The edge as world [x, z] points.</summary>
+    public List<double[]> Points { get; init; } = new();
+
+    /// <summary>The floor above the edge (m).</summary>
+    public double High { get; init; }
+
+    /// <summary>The floor below it (m; null when there is none within 60 m).</summary>
+    public double? Low { get; init; }
+
+    /// <summary>High − low (m).</summary>
+    public double? Drop { get; init; }
+
+    /// <summary>The edge's length (m).</summary>
+    public double Length { get; init; }
+
+    /// <summary>The label drawn ("↓ 3.5 m"), or null.</summary>
+    public string? Label { get; init; }
+}
+
+/// <summary>A flat floor region.</summary>
+public sealed class RenderHeightsFlatDto
+{
+    public double Y { get; init; }
+
+    /// <summary>Area (m²).</summary>
+    public double Area { get; init; }
+
+    /// <summary>World [x, z] of its label point.</summary>
+    public double[] At { get; init; } = System.Array.Empty<double>();
+
+    /// <summary>The spot height drawn ("+2.5"), or null.</summary>
+    public string? Label { get; init; }
+}
+
+/// <summary>Counts of the heights symbols drawn.</summary>
+public sealed class RenderHeightsCountsDto
+{
+    public int Ramps { get; init; }
+
+    public int Stairs { get; init; }
+
+    public int Drops { get; init; }
+
+    public int Spots { get; init; }
 }
 
 /// <summary>The compiled geometry the image shows.</summary>

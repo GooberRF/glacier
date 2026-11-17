@@ -481,6 +481,15 @@
       point — and creates one if the level has none. A level with no Player Start and no multiplayer
       respawn points has nowhere to spawn and renders black in-game; the level linter
       (<em>Tools ▸ Run Level Linter</em>) flags this.</div>
+      <div class="note"><strong>Spawns stand 1 m above the floor.</strong> Multiplayer respawn points,
+      the Player Start and Ground or Water waypoint helpers belong about 1 m above the floor, so the
+      player or vehicle that appears there starts clear of it; Air waypoint helpers belong in open air.
+      <em>Place At Cursor</em> (<kbd>P</kbd>) and dragging one of these from the Object palette onto a
+      floor stand it 1 m up along the floor's normal (a wall hit, or a drop into open space, is left as
+      is). The level linter warns when one of them sits less than 0.5 m above the floor below it or is
+      inside solid geometry; it measures the compiled geometry, so build the level first. Scripted
+      placement (<code>level.place</code>) uses the coordinates it is given, and the linter reports
+      them the same way.</div>
 
       <h3>Inspectors</h3>
       <p>The Properties panel shows a purpose-built inspector for each kind — events (with their
@@ -490,6 +499,119 @@
       <strong>Room Effects</strong> (sky / liquid / ambient-light, with the full liquid-property field
       set). Multi-selection edits apply across the selection with mixed-value handling. Every edit is
       a single undo step.</p>
+
+      <h3>Alpine Faction 1.5 objects</h3>
+      <p>The <strong>Alpine</strong> group of the Object palette also places Alpine Faction 1.5's
+      objects, with Alpine RED's defaults, fields, choices and limits. Each has its own icon, and the
+      viewport draws what Alpine RED draws:</p>
+      <ul>
+        <li><strong>Weather Region</strong> — a box or sphere that rains or snows: shape and size,
+        density, how far it is active and visible, whether geometry blocks it, and the rain or snow
+        colour, speed, wind, sway and snow bitmap. Its volume shows while it is selected, with
+        <em>Always Show Range</em>, or with <em>Show All Ranges</em>.</li>
+        <li><strong>Vehicle Factory</strong> — spawns a vehicle or turret class (multiplayer) facing
+        along its arrow: respawn delay, team, lock to team, spawn at level start, and for a turret a
+        yaw limit, drawn as two yellow stops either side of the facing.</li>
+        <li><strong>Projection Camera</strong> — the view a <em>Display_Projection</em> event renders
+        into an animated texture. Link the event to the camera; the camera's frustum shows the event's
+        field of view and render size.</li>
+        <li><strong>Rope Emitter</strong> — a rope or zip line hanging to its target (any object; with
+        none it dangles): slack, dangle length, segments, thickness, colour, bitmap, glow, dynamic, sway,
+        zip-line speeds and direction, and decoration meshes duplicated along the rope (list up to six
+        mesh files separated by <code>;</code>, then set the count, spacing and order). The viewport
+        draws the rope's resting curve.</li>
+        <li><strong>Directional Light</strong> — parallel light travelling along its arrow, optionally
+        bounded by a box (turned by Box Yaw), sphere or cylinder with a feathered edge, for Alpine RED's
+        lightmap bake.</li>
+        <li><strong>Waypoint Helper</strong> — a navigation point for vehicle bots: air, water or ground,
+        the largest vehicle a ground route takes, a radius, and a landing / exit flag. Link helpers to
+        each other with <kbd>K</kbd> to make routes (at most 64 per helper).</li>
+      </ul>
+      <p>They move, rotate, copy, paste, duplicate and undo like every object, and a multi-selection of
+      one kind edits all of them at once (except the script name). A pasted set of waypoint helpers
+      keeps the links between the copies.</p>
+      <p><strong>Terrain.</strong> An Alpine <em>Terrain</em> (Alpine group of the palette) is a
+      heightfield: a grid of up to 257 × 257 vertices, axis-aligned, whose position is its min-X / min-Z
+      corner (moving it moves the whole grid; it never rotates). A new terrain is 129 × 129 vertices
+      2 m apart, flat, centred where you place it. The Properties panel edits its cell size, height
+      minimum and range, chunk size, lightmap density, <em>Geoable</em> (closed chunks geomod can carve —
+      also turn on Brush-based geomod in Level Properties ▸ General), <em>Skirts</em> (walls below the edges
+      and holes), <em>Fullbright</em>, thickness, skirt depth, the underside and crater textures, and its
+      texture layers (up to eight names separated by <code>;</code>, the first being the base). The
+      viewport draws a terrain as Alpine Faction 1.5 draws it on Direct3D 11: its layers blend smoothly
+      by their painted weights, overlays lie over them, its decorations stand on it and its baked lighting
+      shows. Heights, the grid size, holes and heightmaps can also be set from scripts and AI tools:
+      <code>level.terrain.create{…}</code>, then
+      <code>t:set_heights(function(x, z, wx, wz) … end)</code>, <code>t:generate{seed = 3, type =
+      "hybrid", height_range = 24, falloff = "island"}</code>, <code>t:resize{nx = 257, nz = 257}</code>,
+      <code>t:set_layers{…}</code>, <code>t:set_hole(x, z, true)</code>,
+      <code>t:import_heightmap("map.png")</code> / <code>t:export_heightmap("map.png")</code> (a
+      greyscale PNG or RAW16; image row 0 is the +Z edge), <code>t:height_at(x, z)</code>, and
+      <code>t:surface_at(x, z)</code> (nothing over a hole or outside the terrain), <code>t:set_holes(…)</code>
+      to cut many holes at once. Scripts can let the design kit decide between brush and terrain ground (see
+      <a href="#ai-ground">Brush or terrain ground</a>).</p>
+      <p>Build Geometry compiles each terrain into detail rooms, one per chunk, and records them so
+      Alpine Faction 1.5 recognises the terrain in game and draws it blended on Direct3D 11 (other
+      renderers show each cell's main texture). Terrain does not seal a level or form rooms: keep it
+      inside air (a sky box), or nothing collides with it — the linter says so. Air brushes do not cut
+      terrain; use holes to open it. After changing a terrain, rebuild before saving: a terrain changed
+      since the last build is saved without its record, and the game then draws its old geometry
+      without the blend (the Log panel notes it). <strong>Convert to Brushes</strong> (the Outliner's
+      right-click menu, or <code>t:to_brushes{keep = false}</code>) turns a terrain into one detail brush
+      per chunk, for levels that must not use terrain; it is one undo step.
+      <strong>Calculate Lighting</strong> bakes a light chart for every built terrain (not Fullbright
+      ones), with shadows from the level and the sun, and saves it the way Alpine RED does, whichever
+      lighting pipeline the level uses, and Alpine Faction 1.5 lights the terrain with it on Direct3D 11.
+      Terrain lighting from Alpine RED is kept until
+      you rebuild or relight; a terrain changed since its lighting was baked is noted in the Log panel at
+      save. Decorations set to cast shadows do not shadow the terrain in Glacier's bake.</p>
+      <p><strong>Terrain Tools.</strong> Select one terrain and the Terrain Tools appear at the top of the
+      Properties panel (Alpine RED's Terrain Tools window). Turn on <em>Paint in the viewport</em>, pick a
+      tool and drag on the terrain; clicks elsewhere select as usual, and a ring on the surface shows the
+      brush (the inner ring is where the falloff starts).</p>
+      <ul>
+        <li><strong>Paint Layer / Erase to Base / Smooth Weights</strong> blend toward the layer chosen in
+        the Layer list, toward layer 1, or toward the neighbours' blend. Choose an overlay or a decoration
+        in the list to paint its coverage instead.</li>
+        <li><strong>Paint Holes / Clear Holes</strong> open or fill the cells under the brush.
+        <strong>Geoable Chunks</strong> (geoable terrains) sets which chunks craters carve; the first
+        chunk you touch decides on or off.</li>
+        <li><strong>Raise / Lower</strong> move the surface by up to strength × radius / 20 per dab and keep
+        going while you hold still; the height range grows as needed. <strong>Smooth Heights</strong>,
+        <strong>Flatten</strong> (to the height where the stroke began) and <strong>Set Height</strong>
+        (to the Height field; <kbd>Ctrl</kbd>+click picks up the height under the cursor) blend toward
+        their target. <strong>Noise</strong> roughens by up to ± strength × radius / 4.</li>
+        <li><strong>Ramp</strong> slopes the ground at the Angle field along your drag;
+        <strong>Bridge Points</strong> lays a straight ramp from where you press to where you release.</li>
+      </ul>
+      <p>Radius (<kbd>[</kbd> and <kbd>]</kbd> while the tools are on), strength, falloff (smooth, linear,
+      constant) and spacing set the brush. Mirror X and Z repeat each dab across lines through the
+      terrain's centre plus an offset; <kbd>Shift</kbd>+click places the lines. Each stroke is one undo
+      step and <kbd>Esc</kbd> cancels the stroke in progress. A stroke that changes heights or holes
+      marks the build out of date: rebuild before playing. <strong>Stitch Edges</strong> snaps the
+      border to a neighbouring terrain of the same cell size. The Decorations group adds, changes and
+      removes decorations (mesh, density, scale, slope, draw distance, offset, linked layer, flags);
+      <em>Show decorations</em> hides them in the viewport. <strong>Generate...</strong> opens Generate
+      Terrain: grid size, height range, noise type, seed, feature size, octaves, roughness, lacunarity,
+      domain warp, exponent, terraces, offset and edge falloff, with a live height or shaded preview;
+      Apply is one undo step. Glacier's generator has no erosion or splat-map options. Scripts and AI
+      tools sculpt and paint with the same tools: <code>t:sculpt{tool = "raise", path = {{0, 0}, {20, 5}},
+      radius = 6}</code>, <code>t:paint{layer = 2, at = {4, 8}}</code>,
+      <code>t:set_decoration{mesh = "…", density = 0.4, coverage = 255}</code>,
+      <code>t:set_overlays{…}</code> and <code>t:stitch()</code>.</p>
+      <p><strong>Mover paths.</strong> With Legacy movers off (Level Properties ▸ Compatibility), a
+      mover's keyframes can start <strong>curved</strong> segments. The Path group of the Keyframe panel
+      (see <em>Movers, keyframes &amp; cutscenes</em>) sets each keyframe's Segment (straight / curved),
+      Handles (Auto, Aligned or Free), Easing and Segment Facing, and the mover's Mover Facing (None,
+      Follow Path, Keyframe Rotation) and Riders options. Curved segments and a loop's closing segment
+      are drawn in the viewport, and a selected keyframe shows its curve handles, which you can drag.</p>
+      <p><strong>Liquid emission.</strong> A <em>Liquid Room</em> room effect can make its liquid
+      surface glow for Alpine RED's bake: off, up only, or up and down, with a colour, intensity and
+      reach. A copied room effect keeps it.</p>
+      <p>The level linter reports what Alpine Faction would refuse or ignore — a vehicle factory with
+      no or an unsupported class, a rope whose target is gone, a Display_Projection event with no
+      camera, path settings on a mover that cannot use them, emission on a room effect that is not a
+      Liquid Room — and values Alpine loads clamped.</p>
 
       <h3>Links &amp; the link graph</h3>
       <p>Wire triggers to events to movers by linking objects (<kbd>K</kbd> to link, <kbd>Shift+K</kbd>
@@ -502,22 +624,55 @@
       path. The brushes stay normal, fully-editable world brushes; grouping them as a mover only adds
       the motion. Moving groups are listed and managed in the <strong>Moving Groups</strong> list.</p>
       <p>Each mover follows a chain of <strong>keyframes</strong>. A new keyframe is seeded at the
-      mover's own origin, lined up with the brush, and you drag it out to shape the path;
-      <strong>Add @ Cam</strong> instead drops the keyframe at the camera. Keyframes are real,
-      selectable objects — they show in the Outliner and draw on top of geometry so they can always be
-      clicked. Deleting a keyframe never removes the mover's brush; deleting a mover's <em>last</em>
+      mover's own origin, lined up with the brush, and you drag it out to shape the path. Keyframes are
+      real, selectable objects — they show in the Outliner and draw on top of geometry so they can always
+      be clicked. Deleting a keyframe never removes the mover's brush; deleting a mover's <em>last</em>
       keyframe dissolves the mover back to static geometry. <strong>Dissolve</strong> (on the Moving
       Groups list) turns any mover back into ordinary static brushes at any time.</p>
-      <p>The mover inspector exposes the full field set: <strong>Movement Type</strong> (one-way,
-      ping-pong, loop, lift), <strong>Is Door</strong>, <strong>Rotate In Place</strong>,
-      <strong>Starts Backwards</strong>, <strong>Use Travel Time as Speed</strong>,
-      <strong>Force Orient</strong>, <strong>No Player Collide</strong>, the starting keyframe, and all
-      four movement sounds — start, looping, stop and close — each with its own volume. Every keyframe
-      carries its own travel, return-travel, pause, accel and decel times, a triggered-event UID, two
-      item UIDs and a script name; a new keyframe starts with 1-second travel and return-travel times,
-      as in RED. Moving or rotating a whole mover in Object mode moves its brush with it as one undo
-      step; its keyframes stay where they are. A <strong>path preview</strong> ghost can be scrubbed along the path
-      to check the motion.</p>
+      <p>Movers are saved the way RED saves them, so a level opened in RED or Alpine RED keeps its movers
+      when it is rebuilt there, and mover edits made in either editor carry over to the other. A level
+      saved by an earlier Glacier is repaired when you open it; resave it to keep the fix. New keyframes
+      are named "Keyframe", as in RED.</p>
+      <p><strong>The Keyframe panel.</strong> Select any keyframe, or any brush or object of a mover, and
+      the Properties panel shows the Keyframe panel — RED's Keyframe Properties dialog in two parts.
+      Double-click a keyframe to open the same content as a window.</p>
+      <ul>
+        <li><strong>Mover (whole chain)</strong> — RED's Keyframe List Properties: Is Door, Starts Moving
+        Backwards, Hold Open, Rotate in Place, Use Travel Time as Velocity, Force Orient, No Player
+        Collide; Movement Type; Starting Keyframe (counted from 1, as RED shows it) with
+        <strong>Preview</strong>; the Start, Looping, Stop and Close sounds, each with Browse…, a volume
+        and a Preview button that plays it; and RED's three buttons. <strong>Propagate Sounds</strong>
+        copies the four sounds and volumes to every mover that has a keyframe with this keyframe's script
+        name. <strong>Propagate Properties</strong> copies the mover's flags, movement type and starting
+        keyframe to those movers, and this keyframe's pause, travel, acceleration, deceleration, event and
+        item UIDs and degrees about axis to every keyframe of that name. Both refuse a keyframe still named
+        "Keyframe" (or with no name) and work from one keyframe at a time. <strong>Stop Sounds</strong>
+        stops the sound preview.</li>
+        <li><strong>This keyframe (n of N)</strong> — with ◀ ▶ to step along the chain (each step selects
+        that keyframe in the viewport), <strong>Add Keyframe</strong> and <strong>Delete</strong>: Script
+        Name, Pause Time, Departing and Returning Travel Time, Acceleration and Deceleration Time (all in
+        seconds), Trigger Event With UID and Contains Item UID(s) (blank means none), Rotation Properties
+        (Degrees about Axis), the <strong>Path</strong> group (Segment, Handles, Easing, Mover Facing,
+        Segment Facing) and <strong>Riders</strong>. As in Alpine RED, Legacy movers greys the Path and
+        Riders settings, Rotate in Place greys the path shape and facing, and Segment Facing needs a Mover
+        Facing other than None. Mover Facing and Riders belong to the whole mover.</li>
+      </ul>
+      <p>Select several keyframes of one mover to edit them together: a field whose values differ shows
+      blank and keeps each keyframe's own value unless you change it. Every change is one undo step, and
+      a new keyframe starts with 1-second travel and return-travel times, as in RED. Moving or rotating a
+      whole mover in Object mode moves its brush with it as one undo step; its keyframes stay where they
+      are.</p>
+      <p><strong>Previewing a mover.</strong> <em>Preview</em> plays the mover in the viewport: its
+      brushes and objects travel the real path — Alpine curves with Legacy movers off, straight segments
+      with it on — with the game's timing (travel times or speeds, pauses, acceleration and deceleration,
+      easing, the movement type's order, Rotate in Place, Mover Facing and Force Orient). Play / Pause,
+      Stop, a scrub bar and a speed choice sit under Starting Keyframe; small ticks along the path mark
+      equal steps of time, so they bunch where the mover is slow. The preview never edits the level:
+      Stop returns the mover to its rest pose and nothing needs undoing.</p>
+      <p><strong>Curve handles.</strong> A selected keyframe's curve handles (orange) can be dragged in
+      the viewport; the handle under the cursor turns white. A handle moves in the plane facing the camera.
+      An Auto keyframe becomes Aligned, and an Aligned keyframe turns its other handle to stay opposite.
+      Each drag is one undo step; <kbd>Esc</kbd> cancels it, and Alt+click selects through a handle.</p>
       <p><strong>Driving a mover.</strong> Link a trigger or event to the mover to set it moving; the
       link attaches to the mover's <strong>start keyframe</strong>, which is the connection the game
       follows. In the Link Graph a mover's internal structure is drawn as dashed edges, distinct from
@@ -668,9 +823,10 @@
           points to add depth. Use to make geometry read more solidly without moving any lights.</td></tr>
           <tr><td><strong>Soft Shadows</strong></td><td>Softens shadow edges instead of hard stock
           edges. Use for a gentler, higher-quality look, especially on large open shadows.</td></tr>
-          <tr><td><strong>High-Resolution Lightmaps</strong></td><td>Raises lightmap texel density so
-          fine detail and small light cookies resolve crisply. Use on hero areas; it costs lightmap
-          pages and bake time.</td></tr>
+          <tr><td><strong>High-Resolution Lightmaps (Legacy lighting)</strong></td><td>Raises lightmap
+          texel density so fine detail and small light cookies resolve crisply, on levels that use Legacy
+          lighting. A level with Alpine lighting takes its resolution from the level's own
+          <em>High-Res Lightmaps</em> property instead (Level Properties), as Alpine RED does.</td></tr>
           <tr><td><strong>Seam Blend (cross-room)</strong></td><td>Blends lightmaps across room
           boundaries so a surface that spans a doorway is continuous. Use to kill visible seams at
           portals (mirrors Alpine's smooth-lights).</td></tr>
@@ -686,6 +842,98 @@
           movers from the lightmap shadow set).</td></tr>
         </tbody>
       </table></div>
+
+      <h3>Level Properties</h3>
+      <p><em>Level ▸ Level Properties</em> has Alpine RED's six tabs, with its groups, labels and
+      helper buttons. Edit freely: <strong>OK</strong> writes every change as one undo step, and
+      <strong>Cancel</strong> writes nothing.</p>
+      <ul>
+        <li><strong>General</strong> — Level name, Author, the Date (set on save) and the RFL version,
+        Multiplayer level; <strong>Level Flags</strong>: <em>Outside</em> and <em>Inside</em> flag every
+        room of the level (every room effect's Room Is Outside and the built rooms) at once, after RED's
+        warning, as their own undo step; <strong>GeoMod</strong>: texture (Browse…), level hardness
+        (0 = large craters, 100 = no craters), brush-based (RF2-style) geomod; Require Direct3D 11
+        Renderer.</li>
+        <li><strong>Lighting</strong> — Ambient Light and Distance Based Fog colours (a swatch, Change
+        color, the editable <code>&lt;r, g, b&gt;</code> text, and <em>Default</em> for RED's new-level
+        ambient), the fog's near clip (Direct3D 11 only; OK pulls it just below the far clip), far clip
+        and the camera far clip (0 = the fog far clip); the static-mesh ambient override and its scale;
+        and <strong>Sunlight</strong>: enable, <em>Set from camera</em> (aim the active 3D view the way
+        the sunlight should travel), yaw, pitch, intensity, spread, colour and its five options.</li>
+        <li><strong>Lightmaps</strong> — High-resolution lightmaps, the four Light Blocking options,
+        D3D11-only lightmaps (greyed with Legacy lighting or density Off), Lightmap density and
+        Compression.</li>
+        <li><strong>Gameplay</strong> — Player starts with headlamp, the vehicle flight ceiling, and the
+        Payload rules with the attackers' and defenders' respawn delay modifiers.</li>
+        <li><strong>Minimap</strong> — Enable minimap, the bitmap (Browse…, with a preview), its world
+        bounds and cut height. OK checks them as Alpine RED does: an enabled minimap needs a bitmap, the
+        bitmap is a bare file name, and the bounds are at least 1 m across. Baking the minimap from the
+        level is done in Alpine RED; Glacier shows those controls greyed.</li>
+        <li><strong>Compatibility</strong> — Legacy Cyclic_Timer events, Legacy movers, Legacy
+        lighting.</li>
+      </ul>
+
+      <h3>Alpine Faction 1.5 lighting settings</h3>
+      <p>The Lighting, Lightmaps and Compatibility tabs of <em>Level Properties</em> hold the settings
+      Alpine RED's own lightmap bake reads: Legacy lighting (the stock pipeline instead of Alpine's),
+      High-resolution lightmaps, lightmap density and compression, D3D11-only lightmaps, which faces and
+      meshes block light, and the <strong>sun</strong> (direction by yaw and pitch, colour, intensity,
+      soft-shadow spread, and how it lights meshes). A brush's <strong>No Shadow Cast</strong> option
+      (detail and mover brushes) leaves it out of the baked shadows.
+      Glacier's Calculate Lighting bakes with all of them, as Alpine RED does:</p>
+      <ul>
+        <li><strong>High-Res Lightmaps</strong> bakes the stock lightmaps on 256×256 pages at four times
+        the density (fragments up to 254 texels); it needs a Build Geometry, with either pipeline.</li>
+        <li><strong>Lightmap compression</strong> picks how the Alpine lightmaps are compressed (BC7, as
+        Alpine RED ships them): <em>Quality</em> is plain BC7; <em>Balanced</em> and <em>Compact</em>
+        trade a little accuracy for a smaller file.</li>
+        <li><strong>D3D11-only lightmaps</strong>: when the level has Alpine lightmaps, the save leaves the
+        stock lightmaps out (smaller file) and the level needs Alpine Faction on Direct3D 11; movers without
+        Alpine lightmaps then draw fullbright, and the Log panel names them. Glacier keeps the stock
+        lightmaps in memory, so turning the setting off and saving writes them again.</li>
+        <li>With Alpine lighting, shadows use Alpine's rules: <strong>Invisible Faces Occlude</strong> (they
+        block light reaching their front), <strong>Alpha Faces Occlude</strong> (faces with an alpha
+        texture), <strong>Alpha-Tested Occlusion</strong> (grates and fences cast patterned shadows through
+        their holes), <strong>Meshes Occlude</strong> (Alpine mesh objects cast shadows, unless the mesh's
+        No Shadow Cast is set), and <strong>No Shadow Cast</strong> brushes cast none. A mover is shadowed
+        by its own brushes only, as in Alpine RED.</li>
+        <li><strong>Liquid emission</strong> on a Liquid Room room effect makes its liquid surface glow:
+        what lies within the distance above it (and below, with Up And Down) is lit by the surface's
+        colour and intensity, shadowed by whatever stands in between.</li>
+      </ul>
+
+      <h3>Lightmap Pipeline (Alpine lightmaps)</h3>
+      <p>Each level stores its lightmap pipeline as Alpine Faction does, in its Alpine level properties.
+      Set it at the bottom of the <em>Level ▸ Lightmap Method</em> flyout (one undo step), in
+      <em>Level Properties</em> (Compatibility ▸ Legacy lighting and Lightmaps ▸ Lightmap density — the
+      same two stored settings, offered with the same density choices), with <code>ops.lightmaps(pipeline, density)</code> in
+      Lua, or with <code>--pipeline</code> / <code>--density</code> on <code>glacier-cli build</code> and
+      <code>light</code> (and the matching arguments of the AI <code>build</code> tool).</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Pipeline</th><th>What Calculate Lighting bakes</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Alpine</strong> <em>(default)</em></td><td>The stock lightmaps plus
+          Alpine Faction's sharper lightmaps for Direct3D 11: every surface gets a chart at the level's
+          density (8 texels per unit by default; 1–128, or Off), which Alpine Faction draws on
+          Direct3D 11. Other renderers draw the stock lightmaps, which become the average of each
+          surface's chart. If the charts would not fit Alpine's page budget the density is halved until
+          they do, and the build report says so. The viewport shows the Alpine lightmaps after the bake.</td></tr>
+          <tr><td><strong>Legacy</strong></td><td>The stock lightmaps only, exactly as before.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Movers get Alpine lightmaps of their own (the section's mover table), at the level's density or
+      below when the page budget is tight. The Alpine lightmaps are written BC7-compressed; the command
+      line's <code>--codec raw</code> (and <code>ops.lightmaps(pipeline, density, "raw")</code>) writes them
+      uncompressed instead, for comparison with Alpine RED's <code>-rawlightmaps</code> output. The viewport
+      draws Alpine lightmaps from Glacier's bakes and from levels Alpine RED baked.</p>
+      <p>The level sun and the Directional Light objects that start on are baked with either pipeline.
+      Bakes with the Alpine pipeline take longer than stock bakes; the live Preview Lighting stays
+      stock-only and leaves the Alpine lightmaps out until the next Calculate Lighting.</p>
+      <div class="note"><strong>Saving.</strong> The Alpine lightmaps are saved with the level while they
+      still match it. Rebuilding the geometry or relighting without them (a geometry-only build, the live
+      preview, Remove Lightmaps) means they no longer match, so the next save leaves them out with a note in
+      the Log panel until you run Calculate Lighting again. A level switched to Legacy lighting (or density
+      Off) saves without Alpine surface lightmaps, as Alpine RED does.</div>
     </section>
 
     <!-- 12 -->
@@ -696,6 +944,7 @@
       Editor</strong> window (syntax highlighting, Run / Dry-Run / Run-Selection). Scripts live in
       the portable <code>scripts\</code> library beside the app, and ship with an example gallery
       (array grids, spiral stairs, mass texture replace, and more).</p>
+      <p>Calculate Lighting (No Shadows) bakes the way RED's own no-shadows command does: every light lights every surface within its range, straight through walls and floors, so rooms near bright or numerous lights come out at full strength or brighter. Use it to check where light falls; judge brightness, mood and dark areas only after a full Calculate Lighting. The sky room is drawn full-bright in the Lit view, as in the game: its baked lightmap is not shown, so a sky box needs no lights of its own.</p>
       <ul>
         <li><strong>One run = one undo step.</strong> The whole run is a single undo transaction:
         success commits one undo node; an error or a Dry-Run rolls everything back, so a failed
@@ -762,12 +1011,15 @@
         <code>fields()</code> lists them. <code>level.player_start{…}</code> places or moves the Player Start.</li>
         <li><strong>Links, movers, groups, prefabs.</strong> <code>link_to</code> / <code>link_many</code> /
         <code>back_link</code> follow the editor's link rules (a link to a mover is stored on its start
-        keyframe); <code>level.create_mover{…}</code> and <code>mover:add_keyframe{…}</code> build movers;
+        keyframe); <code>level.create_mover{…}</code> and <code>mover:add_keyframe{…}</code> build movers,
+        and <code>mover:propagate_sounds(kf)</code> / <code>mover:propagate_properties(kf)</code> are the
+        Keyframe panel's Propagate buttons;
         <code>level.create_group{…}</code> groups parts; <code>prefab.list()</code> and
         <code>prefab.place{…}</code> use your prefab library.</li>
         <li><strong>Level properties.</strong> <code>level.props</code> (name, author, multiplayer, ambient
         light, fog…) and <code>level.alpine</code> (Alpine Faction level options, including the
-        <code>payload_*</code> rules).</li>
+        <code>payload_*</code> rules); <code>level.set_all_rooms_outside(true / false)</code> is the
+        Level Flags Outside / Inside buttons.</li>
         <li><strong>Discovery.</strong> <code>catalog.kinds()</code>, <code>catalog.classes("Item")</code>,
         <code>catalog.describe("Event", "Explode")</code> and <code>catalog.textures("rock")</code> list
         what can be placed and how to configure it (entity, item and clutter classes need an RF install
@@ -920,6 +1172,7 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
           <tr><td><code>summary &lt;level&gt;</code></td><td>A structured level summary (<code>--detail brief|normal|full</code>): bounds, brushes, objects, links, rooms, lint counts and tags.</td></tr>
           <tr><td><code>analyze &lt;level&gt;</code></td><td>Measures the level from its compiled geometry (floor area, headroom, corridor and doorway sizes, stairs, room graph, lighting, spawn and item spacing) without opening it for editing.</td></tr>
           <tr><td><code>norms</code></td><td>The corpus norms built into Glacier: how released levels are typically proportioned (doorway and corridor widths and heights, headroom, light density, texture tiling), as percentiles over many levels, aggregates only. <code>--metric opening.width</code> shows one measurement per group of levels (a curated reference set, all levels, deathmatch, CTF, single-player, …); <code>--compare &lt;level&gt;</code> shows where a level sits (below, within or above the typical range). The design kit's default sizes follow the reference set, and the linter adds info hints (never errors) when a level falls outside the typical range. Needs no level except with <code>--compare</code>.</td></tr>
+<tr><td><code>audit &lt;level&gt;</code></td><td>The craft audit, the check to pass before calling a level done (read-only). It reports props sunk into, floating over or pushed into the level, props placed at random (rocks on built floors, props in doorways or on stairs, lone props), stairs, ramps and bridges that lead nowhere, dead-end perches, doorways with rock, a drop or no headroom behind them, pieces built with their purpose check off that still fail it, flat-sided rock, and basic (under-dressed) areas, each with a position and a fix. <code>--json</code>, <code>--out &lt;file&gt;</code>, <code>--sealed</code> (build first), <code>--rf-dir</code> (real mesh bounds). Exits 1 when there are findings. Scripts: <code>level.audit{}</code>; the Lint panel shows the same findings as Craft warnings. Every finding carries a position and, where there is one, the UID of the object or brush (<code>uids</code> lists every brush involved, e.g. a bridge's deck or the brushes behind flat rock). Detail brushes are floor: a prop resting on a detail top is supported, and small pieces flush on a wall (lamps, plates, emblem strips) are wall fixtures. A bridge must have a deck at least 1 m level across that the walk from the spawns reaches; pipe tops, roofs and lintels are not bridges. Lights count for the floor under them up to its ceiling. The command-line audit has no time limit; a check that could not finish is listed as skipped and the report is not clean.</td></tr>
           <tr><td><code>grade &lt;level&gt;</code></td><td>The design grader: measures the level and checks its scale, shape, flow (loops, chokepoints, dead ends), population (items, dressing, spawns, cover, sightlines) and texturing against limits calibrated on well-regarded levels, with CTF, King of the Hill and Payload rules and their own limits for open-air / floating-platform maps. Prints the verdict — <em>PASS</em> (at most 2 failing checks), <em>REVIEW</em> (3–4) or <em>FAIL</em> (5 or more, or a hard check) — and each failing check with the measured values, a fix hint and the places to act on, followed by the player-class targets as <em>advisories</em> (playable area, floor per spawn, loops, floor-height classes: below, within or above the range of well-regarded levels — a Payload map takes the Payload layout budget for playable area and floor per spawn; never counted in the verdict) and the set pieces (the landmark bridge with its span, gap, depth and width, the longest span, the tallest landmark and atrium). A failing median-space check lists every space it counts with its area and location and how many more small spaces the median needs; the floor-height classes (floor binned by height in 0.5 m steps, a bin counting once it holds 2% of the playable floor) list the bins that count and the ones short of counting; Payload spawn safety counts only the spawn pairs live in the same checkpoint stage (<code>--gametype</code>, <code>--players</code>, <code>--json</code>; <code>--metrics</code> adds the whole metric table; <code>--fail-on review|fail</code> exits 6). Read-only; a level with missing or out-of-date geometry is measured on a private preview build.</td></tr>
           <tr><td><code>spatial &lt;op&gt; &lt;level&gt;</code></td><td>Spatial queries on the compiled geometry: <code>raycast</code>, <code>los</code>, <code>point_info</code>, <code>clearance</code>, <code>walk</code> (floor reachable on foot, by lift, jump pad or teleport; spawns and items off the floor), <code>routes</code>, <code>graph</code> (loops, chokepoints, pockets), <code>sightlines</code>, <code>cover</code>, <code>cells</code>, <code>area_report</code> (its sky share, <code>outdoor_fraction</code>, counts floor under sky faces as sky), <code>spawn_report</code>, <code>item_report</code>, <code>locations</code>, <code>purpose</code> (the function checks: every bridge with the route it serves or why it serves none, rock props that do not fit their space, free-standing cover with no sightline to break, and how visible each landmark is) and <code>setpieces</code> (bridges with their span — the deck end to end — width, free length over the gap and its depth; walkways that are not bridges, with the reason; free-standing landmarks with their height; atria; the largest spaces; <code>--max</code> caps each list). Every result says which build it measured. The same queries are the Lua <code>spatial</code> global and the MCP tool <code>spatial_query</code>.</td></tr>
           <tr><td><code>save &lt;level&gt;</code></td><td>Saves with the editor's save rules (<code>--out &lt;path&gt;</code> to save a copy). A level whose geometry is missing or out of date is built first (sealed, unlit), because the game cannot load a level with brushes and no compiled geometry; <code>--no-build</code> skips that with a warning. <code>run --save</code> does the same. Every save also writes the
@@ -1004,9 +1257,11 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
             plain sky colour when the level has no sky room.</td></tr>
           <tr><td><code>--region minx,miny,minz,maxx,maxy,maxz</code>, <code>--room &lt;index&gt;</code>, <code>--uid &lt;uid&gt;</code></td><td>Frame a box, a compiled room, or one object / brush instead of the whole level. A plan of a region frames the
             part of it that has geometry in the slice; an iso view of a region shows only what lies inside it.</td></tr>
-          <tr><td><code>--mode lit|textured|lightmaps|rooms|wireframe|seethrough</code></td><td>Shading, as in the View menu. <code>lit</code> (default)
+          <tr><td><code>--mode lit|textured|lightmaps|rooms|wireframe|seethrough|heights</code></td><td>Shading, as in the View menu. <code>lit</code> (default)
             uses the baked lightmaps; on a level that is not lit yet it shows textures, and without a Red Faction
-            install it shows each room in its own colour.</td></tr>
+            install it shows each room in its own colour. <code>heights</code> (plans and <code>--view top</code>) colours
+            every walkable floor by its height alone and greys every other surface, with the heights symbols and their
+            legend: a clean picture of the floor heights, the one Lua <code>ref.heights</code> reads back.</td></tr>
           <tr><td><code>--size WxH</code></td><td>Image size (up to 4096 on each side). Without it the longest side is 1024 and plans and other
             orthographic views take the proportions of what they frame (the storey's geometry, the region or the room);
             iso and camera views are 1024x1024.</td></tr>
@@ -1014,10 +1269,11 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
             and facing arrows) in a view other than a plan. Iso and camera views leave them out by default — a clean view of
             the level as a player sees it, with clutter and items drawn as their meshes when an RF install is mounted — and
             so does <code>--no-overlays</code>; the other orthographic views show them.</td></tr>
-          <tr><td><code>--overlays grid,scale,objects,labels,links,holes</code></td><td>Choose the overlays (<code>--no-overlays</code> for a
-            clean image). Plans show all but <code>holes</code> by default; other views show none. A legend
+          <tr><td><code>--overlays grid,scale,objects,labels,links,holes,heights</code></td><td>Choose the overlays (<code>--no-overlays</code> for a
+            clean image). Plans show all but <code>holes</code> and <code>heights</code> by default; other views show none. A legend
             explaining every symbol comes with any overlay (<code>nolegend</code> hides it); it sits in a corner the
             level leaves empty when there is one. <code>holes</code> marks leaks found by a sealed hole check.
+            <code>heights</code> (plans and <code>--view top</code>) shows how the floor changes height: see below.
             <code>icons</code> / <code>noicons</code> in the list work like <code>--icons</code> / <code>--no-icons</code>.</td></tr>
         </tbody>
       </table></div>
@@ -1029,6 +1285,17 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
       camera's view-projection matrix for perspective views). Rendering needs a graphics device:
       Direct3D 11 (or its software fallback) on Windows, OpenGL 3.3 on Linux; without one the command
       fails with exit code 1.</p>
+      <p><strong>Floor heights.</strong> The <code>heights</code> overlay tints every walkable floor by its height over the
+      texture, from blue (lowest) through cyan, green and yellow to red (highest); the legend's colour bar gives the
+      heights in metres. It covers the floor around the spawns and items, so a deep pit below the play keeps its
+      texture and only its height label. Floor that climbs gradually (a ramp or a slope) gets thin contour lines
+      every 0.5 m, white chevrons pointing uphill and a <code>low → high m</code> label; stairs get tread lines, a
+      white arrow uphill and the same label. An abrupt edge where a walkable floor ends more than a step (0.6 m)
+      above a lower floor, with no ramp or stairs joining them, is a heavy violet line with ticks on its low side,
+      labelled with the drop (<code>↓ 3.5 m</code>). Flat floors carry a spot height (<code>+2.5</code>). Steps a
+      player walks up are not marked. With <code>--json</code> the result's <code>heights</code> lists the colour range
+      and every ramp, flight of stairs, drop edge and flat floor the image shows, with their heights and
+      positions.</p>
       <h4 id="cli-reference">Matching reference screenshots</h4>
       <p>When a level is built from concept art, <code>glacier-cli ref</code> compares the level with each
       screenshot from a matching camera, so you (or an AI agent) can see exactly where the build differs. The
@@ -1041,7 +1308,9 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
         <tbody>
           <tr><td><code>ref view &lt;image&gt; --out &lt;png&gt;</code></td><td>The concept image with a labelled grid in its own
             pixels, to read a screenshot's rectangle; with <code>--crop x,y,w,h</code> it zooms on the crop
-            (and <code>--snap</code> shows it snapped onto the panel's frame).</td></tr>
+            (and <code>--snap</code> shows it snapped onto the panel's frame). <code>--step &lt;px&gt;</code> or
+            <code>--zoom &lt;n&gt;</code> draws the fine grid of Lua <code>ref.grid</code> instead: the crop enlarged with crisp
+            pixels, every line labelled and <code>x,y</code> at the crossings, to read map corners exactly.</td></tr>
           <tr><td><code>ref add &lt;image&gt; --id &lt;id&gt;</code></td><td>Stores a crop (<code>--crop</code>, <code>--snap</code>) as a
             reference with the area it shows (<code>--area</code>) and notes (<code>--notes</code>); <code>--replace</code>
             overwrites one with the same id.</td></tr>
@@ -1071,6 +1340,46 @@ kit.spawn_points{ room = hall, count = 2 }</code></pre>
       <p>A value that starts with a minus sign is written with an equals sign, for example
       <code>--camera=-136,1.7,-146</code>. The numbers are hints, not a score: concept art never matches a game
       render pixel for pixel, so judge the sheet by eye.</p>
+      <h4 id="cli-reference-plan">Recreating an area from an overhead picture</h4>
+      <p>For a map, mockup or drawing seen from above, the Lua <code>ref</code> global measures the picture and the
+      design kit's <code>kit.trace</code> builds it literally:</p>
+      <ol>
+        <li><code>ref.open(picture)</code> and <code>ref.grid{crop = {x, y, w, h}, zoom = 4, out = "grid.png"}</code>:
+          the picture with every grid line labelled in its own pixels, to read corners exactly.</li>
+        <li><code>ref.calibrate{bar = {x1, y1, x2, y2, metres}, origin = {px, py}, at = {x, z}}</code>: pixels to metres
+          from a scale bar or a known length (the top of the picture is +Z, north up); <code>ref.to_world</code>,
+          <code>ref.to_px</code> and <code>ref.world_points</code> convert.</li>
+        <li><code>ref.mask{samples = {{x, y}, ...}}</code> (optional): the playable area picked by colour, cleaned,
+          and traced into outline polygons (holes kept, or cut into hole-free pieces), with an overlay to check it.
+          <code>mode = "hsv"</code> separates painted rock from tiles, <code>split</code> gives pieces per colour or zone,
+          and <code>ref.mask_edit{fill = ..., erase = ...}</code> corrects the mask. <code>ref.grid{overlay = plan}</code>
+          draws your trace (or <code>"level"</code>, the built floor) over the picture to check every corner.</li>
+        <li><code>kit.trace{units = "px", regions = {...}, openings = {...}, solids = {...}}</code>: every region is a
+          polygon of any shape with a floor and a ceiling or open sky (rooms, corridors, yards, pits, ramps and stairs,
+          decks over a void); openings cut doorways through the wall between two regions; solids are pillars and
+          machine footprints. Nothing is reshaped or linked; overlapping regions, an opening that is not between its
+          regions, an impossible ramp and a crossed outline are refused with the reason. Where the picture shows rock,
+          a region can be a <code>"canyon"</code> or <code>"cave"</code>, a path can be a rough tunnel
+          (<code>organic = true</code>), and any wall can be rock (<code>rock_edges</code>, <code>walls = "rock"</code>),
+          with mounds, terrain and boulders on the floor. Rock walls are eroded: they lean in and out in tiers, with
+          buttresses, ledges carrying scree and overhangs above head height, and a cave's ceiling is one hanging
+          vault. The traced outline is kept, and <code>kit.rock_mass</code> raises mesas and outcrops from an outline,
+          with a talus apron and rounded strata.
+          The plan is built like a generated
+          layout that follows your design: the layout check reads its walk graph (<code>layout_check</code>), traced
+          stairs and ramps are the kit's own (named in the warnings when they climb into a wall), doorways get
+          frames, walls get trims, ceilings get beams, drops get railings, and every zone gets lights
+          (<code>via = "prism"</code> builds the bare plan). A ramp region may have any outline — a corridor that
+          widens as it climbs — with one sloped floor from its foot to its top and, standing on its own, a ceiling
+          parallel to that floor.</li>
+        <li>Heights: when the picture is a heights render (<code>--mode heights</code>, or a plan with the
+          <code>heights</code> overlay), <code>ref.heights{legend = {min, max}}</code> reads it back into a height grid,
+          flat floors, ramps, stairs and drop edges, as regions ready for <code>kit.trace{units = "px", regions =
+          h.regions}</code>, and writes a check overlay with <code>out</code>.</li>
+        <li><code>ops.build()</code> then <code>ref.compare{out = "cmp.png"}</code>: the level's walkable floor drawn on
+          the picture (missing red, extra orange) with the overlap, the wall error in metres and the largest missing
+          and extra regions. Fix the worst region, rebuild and compare again.</li>
+      </ol>
       <div class="note">On Linux, <code>glacier-cli</code> is included in the tar.gz package (the
       AppImage starts the editor).</div>
       <h3 id="cli-modules">The module library (glacier-cli modules)</h3>
@@ -1306,6 +1615,12 @@ level.brushes_tagged("kit.name", "hall"):select()  -- the parts of the room name
         always give the same rocks; a new seed gives new shapes in the same layout.</li>
         <li><strong>Keep it central.</strong> Keep large caves and canyons within about 200 m of the
         level's origin; geometry far from it is compiled less precisely.</li>
+        <li><strong>Within the lightmap budget.</strong> A level holds at most 32,767 lightmap surfaces (Alpine
+        RED's limit), and every rock facet a player can see takes one. Traced rock and rock masses share one
+        level-wide budget (<code>kit.defaults.organic_budget</code>): full facets near the floor, coarser cells
+        higher up, coarser still when the level's rock would not fit. When a level would pass the cap, faces nobody
+        can see (inside neighbouring rock or the wall) give up their surfaces first; any lit faces still left without
+        one are listed by the build, the save log and the linter, and <code>level.stats()</code> counts them.</li>
       </ul>
       <p>Two complete examples ship in the scripts library's <code>examples</code> folder and appear under
       <em>Scripts ▸ Examples</em>: <strong>snaking canyon</strong> (<code>kit-canyon.lua</code>, a 240 m outdoor
@@ -1313,6 +1628,31 @@ level.brushes_tagged("kit.name", "hall"):select()  -- the parts of the room name
       and <strong>cave network</strong> (<code>kit-cave.lua</code>, a hub with a cave climbing to a
       gallery, a passage to an armoury, and a loop down a pit and back up an underpass). Run either on a
       new level, then build, light and play it.</p>
+
+      <h3 id="ai-ground">Brush or terrain ground</h3>
+      <p>Open outdoor ground can be built from brushes or as an Alpine terrain. The design kit's
+      <code>kit.ground</code> makes that choice for one area and records the reason: it picks terrain only when
+      the area is large (at least 400 m² and 16 m across), open to the sky, needs no overhang, is natural ground
+      rather than a built deck or room, and the level already targets Direct3D 11 (the <em>Require Direct3D 11</em>
+      or <em>D3D11-only lightmaps</em> setting in Level Properties, or a terrain already in the level). Canyon walls,
+      caves and built floors always stay brushes. An agent can also ask for terrain or brush ground outright, or
+      only ask for the decision and its reasons without building anything.</p>
+      <ul>
+        <li><strong>What the kit builds.</strong> A terrain over the area with gentle mounds that level out at its
+        edges, at doorways and landings and under anything standing on it; worn paths between the openings and
+        rock on the crests, painted as terrain layers; holes outside the area's outline and where openings are cut.
+        It rests a few centimetres above the brush floor it covers.</li>
+        <li><strong>Always sealed.</strong> A terrain does not seal a level, so the kit keeps it inside air: an
+        outdoor room, an open-air layout's sky, or a sky volume it adds around a terrain built over open space.</li>
+        <li><strong>In a layout.</strong> Asking <code>kit.layout</code> for terrain ground gives the natural
+        platforms (isles and gardens) of an open-air layout a terrain top; built platforms keep their decks. The
+        layout itself (its areas, connections and objectives) is the same as with brush ground.</li>
+        <li><strong>Checked like any floor.</strong> After a build, the level checks treat the terrain as floor:
+        spawns stand 1 m above it, the design grader and reachability checks walk on it, and a spawn placed under
+        the terrain's surface is reported as inside the ground.</li>
+        <li><strong>On other renderers</strong> a terrain shows each cell's main texture without Alpine's terrain
+        lighting, which is why the automatic choice wants a Direct3D 11 level.</li>
+      </ul>
 
       <h3 id="ai-layout">Planning a whole level first</h3>
       <p>For a whole level, an agent following the guide starts from a <strong>layout plan</strong> rather
@@ -1431,7 +1771,21 @@ level.brushes_tagged("kit.name", "hall"):select()  -- the parts of the room name
       <h3>Packaging</h3>
       <p>The <strong>VPP packfile builder</strong> (<em>File ▸ Create Level Packfile</em>) collects
       your level and its referenced assets into a distributable <code>.vpp</code>, using the
-      dependency scan to find what the level needs.</p>
+      dependency scan to find what the level needs. It writes <code>&lt;level name&gt;.vpp</code> in the
+      level's own folder without asking, and replaces that packfile in place when it already exists.
+      It packs the level as it is now: unsaved changes are saved first (with the normal save rules), and
+      the packfile carries the saved <code>.rfl</code> file, so the packed level and the loose one are
+      identical. A level that has never been saved must be saved first. When a referenced file is
+      missing, the review dialog opens instead so you can decide what to pack.
+      <em>File ▸ Create Level Packfile As…</em> always opens the review dialog, where you can choose
+      which files to include and pick another output path. Scripts get the same behaviour from
+      <code>ops.package()</code>.</p>
+      <div class="note"><strong>Stale packfiles.</strong> Red Faction loads a level from a packfile
+      before a loose <code>.rfl</code> of the same name. If <code>mylevel.vpp</code> next to
+      <code>mylevel.rfl</code> still holds an older copy of the level, the game plays that copy, not your
+      latest save. Every save (editor, script or command line) notes this in the Log panel when it
+      happens; rebuild the packfile with <em>Create Level Packfile</em>, or delete it, before testing.
+      Play Level checks its staging folder the same way.</div>
       <div class="note"><strong>RFL versions.</strong> Glacier loads <code>.rfl</code> files from
       versions <strong>180–306</strong> and always <strong>saves version 306</strong> (the Alpine
       Faction 1.5 format). Opening a pre-Alpine (&lt;300) level shows a non-blocking informational
@@ -1440,20 +1794,26 @@ level.brushes_tagged("kit.name", "hall"):select()  -- the parts of the room name
       saved by a newer Alpine Faction opens read-only — Glacier shows a notice, marks the window title,
       and refuses to save it so its newer content is not lost.</div>
       <div class="note"><strong>Alpine Faction 1.5 objects.</strong> Weather regions, vehicle
-      factories, projection cameras, rope emitters, directional lights, vehicle waypoint helpers and
-      terrain from Alpine Faction 1.5 levels appear in the Outliner and can be inspected and read from
-      scripts. Glacier keeps them exactly as they were saved; edit them in Alpine RED.</div>
+      factories, projection cameras, rope emitters, directional lights and vehicle waypoint helpers are
+      placed and edited like any other object, and so is terrain (see <a href="#objects">Objects &amp;
+      events</a>). A level's terrain is written back exactly as it was saved until you change it. A few levels saved by
+      pre-release Alpine Faction builds store one of these object lists in a layout Glacier does not
+      fully read: that list is kept unchanged, its objects are read-only (the Properties panel says
+      why), and new objects of that kind cannot be added to the level.</div>
       <div class="note"><strong>Alpine lightmaps.</strong> A level lit in Alpine RED can carry Alpine
       Faction's Direct3D 11 lightmaps alongside (or, with "D3D11-only lightmaps", instead of) the stock
       lightmaps. Glacier keeps them unchanged until it rebuilds the geometry or recalculates the
-      lighting; after that they no longer match the level, so saving drops them with a note in the Log
-      panel, the game uses the stock lightmaps Glacier wrote, and the level's D3D11-only and Require
-      Direct3D 11 flags are updated to match. To get Alpine lighting back, re-bake the level in Alpine
-      RED. A D3D11-only level gets stock lightmaps from its next Calculate Lighting.</div>
+      lighting. Calculate Lighting with the Alpine pipeline (see <a href="#lighting">Lighting</a>) bakes
+      new Alpine lightmaps, which the next save writes in their place; any other rebuild or relight means
+      they no longer match the level, so saving drops them with a note in the Log panel and the game uses
+      the stock lightmaps Glacier wrote. The level's D3D11-only and Require Direct3D 11 flags are updated
+      to match: Glacier always writes the stock lightmaps as well, so a D3D11-only level gets stock
+      lightmaps from its next Calculate Lighting. Glacier's viewport shows Alpine lightmaps and terrain
+      light charts, whether Glacier or Alpine RED baked them.</div>
       <div class="note"><strong>New levels</strong> start with Alpine RED's new-level settings: Legacy
       Cyclic Timers and Legacy Movers off, every other Alpine level property at Alpine's defaults.
       Levels you open keep their own settings; one without Alpine level properties keeps the stock
-      behaviour (legacy timers and movers on) until you change one. The Alpine group of Level Properties
+      behaviour (legacy timers and movers on) until you change one. The Gameplay tab of Level Properties
       also holds the Payload rules (push speed, rollback, acceleration, checkpoint bonus, heal and ammo,
       overtime grace, respawn delay modifiers); a Payload cart needs Legacy Movers off, and the linter
       checks everything else Alpine Faction requires of the cart and its checkpoints.</div>
@@ -1584,6 +1944,7 @@ level.brushes_tagged("kit.name", "hall"):select()  -- the parts of the room name
         <thead><tr><th>Command</th><th>RED Classic</th><th>Modern</th></tr></thead>
         <tbody>
           <tr><td>Create Level Packfile</td><td class="key"></td><td class="key"></td></tr>
+          <tr><td>Create Level Packfile As…</td><td class="key"></td><td class="key"></td></tr>
           <tr><td>Export Level as OBJ…</td><td class="key"></td><td class="key"></td></tr>
           <tr><td>Export Level as glTF…</td><td class="key"></td><td class="key"></td></tr>
           <tr><td>Export Selection To Mesh…</td><td class="key"></td><td class="key"></td></tr>
@@ -1635,6 +1996,7 @@ level.brushes_tagged("kit.name", "hall"):select()  -- the parts of the room name
         <tbody>
           <tr><td>Back Link</td><td class="key"><kbd>Ctrl+K</kbd></td><td class="key"></td></tr>
           <tr><td>Break Link</td><td class="key"><kbd>Shift+K</kbd></td><td class="key"></td></tr>
+          <tr><td>Convert Terrain To Brushes</td><td class="key"></td><td class="key"></td></tr>
           <tr><td>Convert To Mesh Object</td><td class="key"></td><td class="key"></td></tr>
           <tr><td>Cycle Nav Connection</td><td class="key"><kbd>J</kbd></td><td class="key"></td></tr>
           <tr><td>Edit Links</td><td class="key"><kbd>Ctrl+L</kbd></td><td class="key"></td></tr>

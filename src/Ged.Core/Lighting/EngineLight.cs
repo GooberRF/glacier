@@ -3,9 +3,15 @@ using Ged.Core.Model;
 
 namespace Ged.Core.Lighting;
 
-/// <summary>Engine light shape (matches gr::Light +0x08: 2=point, 3=spot, 4=tube).</summary>
+/// <summary>Engine light shape (matches gr::Light +0x08: 1=directional, 2=point, 3=spot, 4=tube).</summary>
 public enum EngineLightType
 {
+    /// <summary>
+    /// A type-1 directional light: Alpine Faction's level sun and Directional Light objects, which Alpine RED bakes as
+    /// temporary type-1 scene lights (editor_patch/lightmap.cpp:2074-2150). Never produced by a stock level.
+    /// </summary>
+    Directional = 1,
+
     Point = 2,
     Spot = 3,
     Tube = 4,
@@ -89,11 +95,40 @@ public readonly struct EngineLight
     /// <summary>The premultiplied colour is all-zero (nothing to add).</summary>
     public bool IsBlack => Color.X <= 0f && Color.Y <= 0f && Color.Z <= 0f;
 
+    /// <summary>
+    /// Directional only: the unit directions toward the light its shadow rays are cast along — the axis alone, or the
+    /// axis plus two rings of four for a soft (spread) light (<see cref="Alpine.AlpineDirectionalLights"/>).
+    /// <c>ShadowDirections[0]</c> is the axis the N·L term uses.
+    /// </summary>
+    public Vec3[]? ShadowDirections { get; init; }
+
+    /// <summary>Directional only: the bounded light volume, or null for an unbounded light (the sun).</summary>
+    public Alpine.AlpineLightVolume? Volume { get; init; }
+
+    /// <summary>Directional only: liquid surfaces block this light's rays.</summary>
+    public bool LiquidOccludes { get; init; }
+
+    /// <summary>Directional only: show-sky faces let this light's rays through.</summary>
+    public bool SkyPasses { get; init; }
+
+    /// <summary>Directional only: occluders outside the volume may shadow (false clips rays at the volume exit).</summary>
+    public bool OutsideCasts { get; init; }
+
     /// <summary>Axis-aligned influence bounds (position ± range), for range-overlap surface culling.</summary>
     public Aabb Bounds
     {
         get
         {
+            if (Type == EngineLightType.Directional)
+            {
+                // An unbounded directional light reaches every surface; a bounded one its volume's bounding sphere
+                // (editor_patch/lightmap.cpp:2639-2652 dir_light_misses_box).
+                float reach = Volume is { } v ? v.BoundingRadius : 1e30f;
+                Vec3 c = Volume is { } vc ? vc.Center : default;
+                var rr = new Vec3(reach, reach, reach);
+                return new Aabb(c.Sub(rr), c.Add(rr));
+            }
+
             Vec3 mn = Vec3Math.Min(Position, Position2);
             Vec3 mx = Vec3Math.Max(Position, Position2);
             var r = new Vec3(Range, Range, Range);

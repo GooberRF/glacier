@@ -1743,10 +1743,52 @@ local function seg_dist(x, z, ax, az, bx, bz)
   return sqrt(qx * qx + qz * qz)
 end
 
+-- True when (x, z) lies inside the plan polygon pts ({x, z} pairs; even-odd rule).
+local function in_outline(pts, x, z)
+  local inside = false
+  local j = #pts
+  for i = 1, #pts do
+    local xi, zi, xj, zj = pts[i][1], pts[i][2], pts[j][1], pts[j][2]
+    if (zi > z) ~= (zj > z) and x < (xj - xi) * (z - zi) / (zj - zi) + xi then inside = not inside end
+    j = i
+  end
+  return inside
+end
+
+-- The sides of a plan polygon as outdoor_plan walks them: start point, unit direction, inward normal, length.
+local function outline_sides(pts)
+  local sides = {}
+  for i = 1, #pts do
+    local a, b = pts[i], pts[i % #pts + 1]
+    local dx, dz = b[1] - a[1], b[2] - a[2]
+    local len = sqrt(dx * dx + dz * dz)
+    if len > 0.5 then
+      dx, dz = dx / len, dz / len
+      local nx, nz = -dz, dx
+      local mx, mz = (a[1] + b[1]) / 2, (a[2] + b[2]) / 2
+      if not in_outline(pts, mx + nx * 0.05, mz + nz * 0.05) then nx, nz = -nx, -nz end
+      sides[#sides + 1] = { a[1], a[2], dx, dz, nx, nz, len }
+    end
+  end
+  return sides
+end
+
+-- The area of a plan polygon ({x, z} pairs).
+local function outline_area(pts)
+  local s = 0
+  for i = 1, #pts do
+    local a, b = pts[i], pts[i % #pts + 1]
+    s = s + a[1] * b[2] - b[1] * a[2]
+  end
+  return abs(s) / 2
+end
+
 -- The outdoor plan of one box r {x0, z0, x1, z1, y0, y1, floor}: fixtures along its edges (lamps on the walls, posts
 -- beside its doorways and along its open edges), inner posts only where the edges leave floor out of reach, never on
 -- the straight way between two doorways. o: {api, name, after, clearance, height, count (fixtures, or nil = by
--- area), stock_post, stock_lamp, skip(x, z)}. Returns plan entries {kind = "wall" | "post", ...} and the floor samples.
+-- area), stock_post, stock_lamp, skip(x, z), outline}. With outline (a plan polygon of {x, z} pairs inside the box),
+-- the fixtures follow the polygon's edges and only floor inside it is lit (a traced region that is not a rectangle).
+-- Returns plan entries {kind = "wall" | "post", ...} and the floor samples.
 local function outdoor_plan(r, o)
   local probe = P.shared()
   local floor0 = r.floor or r.y0
@@ -1758,6 +1800,21 @@ local function outdoor_plan(r, o)
     { r.x0, r.z0, 1, 0, 0, 1, w }, { r.x1, r.z0, 0, 1, -1, 0, d },
     { r.x1, r.z1, -1, 0, 0, -1, w }, { r.x0, r.z1, 0, -1, 1, 0, d },
   }
+  local outline = o.outline
+  local skip = o.skip
+  local area = w * d
+  -- The first fixture's spot: the middle of the longest side.
+  local first_t = w >= d and (w / 2) or (w + d / 2)
+  if outline ~= nil then
+    sides = outline_sides(outline)
+    lp, area = 0, outline_area(outline)
+    local longest = -1
+    for _, s in ipairs(sides) do
+      if s[7] > longest then longest, first_t = s[7], lp + s[7] / 2 end
+      lp = lp + s[7]
+    end
+    skip = function(x, z) return o.skip(x, z) or not in_outline(outline, x, z) end
+  end
   -- Stations every 0.5 m along the edges: the floor there, a wall at lamp height, an opening at body height.
   local st, t0 = {}, 0
   for si, s in ipairs(sides) do
@@ -1777,7 +1834,7 @@ local function outdoor_plan(r, o)
         local dw = probe:wall_distance(qx, g + e.lh, qz, -nx, -nz, 1.5)
         if dw < 1.0 and e.lh >= 2.5 then e.wall = { qx - nx * dw, qz - nz * dw } end
       end
-      if not o.skip(ex + nx * 0.5, ez + nz * 0.5) then st[#st + 1] = e end
+      if not skip(ex + nx * 0.5, ez + nz * 0.5) then st[#st + 1] = e end
       u = u + 0.5
     end
     t0 = t0 + len
@@ -1842,7 +1899,6 @@ local function outdoor_plan(r, o)
     return f
   end
 
-  local area = w * d
   local n = o.count or max(1, floor(area * OUTDOOR.per100 / 100 + 0.5))
   local plan = {}
   local function min_arc(t)
@@ -1874,7 +1930,7 @@ local function outdoor_plan(r, o)
     local target = nil
     if #plan == 0 then
       -- The first: the middle of the longest side.
-      target = w >= d and (w / 2) or (w + d / 2)
+      target = first_t
     end
     for _, e in ipairs(st) do
       local dd = target and -arc(e.t, target) or min_arc(e.t)
@@ -1891,7 +1947,7 @@ local function outdoor_plan(r, o)
   local L = probe:lattice(r.x0, r.z0, r.x1, r.z1, floor0 - 0.1, max(floor0, r.y1 - 1.0), P.HEADROOM, 4)
   local samples = {}
   for _, nd in ipairs(L.nodes) do
-    if not o.skip(nd.x, nd.z) then samples[#samples + 1] = { nd.x, nd.y, nd.z } end
+    if not skip(nd.x, nd.z) then samples[#samples + 1] = { nd.x, nd.y, nd.z } end
   end
   -- Each sample's distance to its nearest light, kept up to date as fixtures are added.
   local dn = {}
@@ -1966,7 +2022,7 @@ end
 -- kit.light_room (v3): lights under visible fixtures; outdoors on the edges.
 -- ---------------------------------------------------------------------------------------------
 
----@kit kit.light_room{room, spacing?, color?, range?, height?, name?, fixture?, theme?} → object[] — Lights over a room or corridor record, each with a visible fixture. Indoors a room gets a grid sized from its floor area and headroom (about 2.2 lights per 100 m² up to 5 m of headroom, easing to 1.8 in tall halls; never under 1.7 — DESIGN-QUALITY-SPEC §a.3, 1.7–4.5) and a corridor one row, a light every 4 m, along every leg of a kit.corridor{path = …}; each light hangs just under a ceiling fixture (a stock clutter light when the game tables are loaded, else a small full-bright detail lamp) attached to the ceiling measured over its spot. A room open to the sky is lit as the stock outdoor maps are: fewer, stronger lights (about 0.5 per 100 m², range and intensity raised so the floor gets at least 90 % of the light a ceiling grid would give it) on its edges — a lamp on the wall where a wall stands at lamp height, a lamp post beside each doorway and along open edges (a stock post when the tables are loaded and the headroom allows, else a detail post with a full-bright head) — and a post inside the room only where floor would be more than 18 m from every light, never on the straight way between two doorways; each fixture also gets a short 5 m glow light (on the wall under a wall lamp, at a post's foot), as the stock maps light their outdoor fixtures. Raised floors, ramps and lowered ceilings move every fixture with them; a light never goes inside a solid (it moves to a free spot, or is skipped with a warning). The fixtures are in the returned list's fixtures field (outdoors the glow lights in its glows field).
+---@kit kit.light_room{room, spacing?, color?, range?, height?, name?, fixture?, theme?} → object[] — Lights over a room or corridor record, each with a visible fixture. Indoors a room gets a grid sized from its floor area and headroom (about 2.2 lights per 100 m² up to 5 m of headroom, easing to 1.8 in tall halls; never under 1.7 — DESIGN-QUALITY-SPEC §a.3, 1.7–4.5) and a corridor one row, a light every 4 m, along every leg of a kit.corridor{path = …}; each light hangs just under a ceiling fixture (a stock clutter light when the game tables are loaded, else a small full-bright detail lamp) attached to the ceiling measured over its spot. A room open to the sky is lit as the stock outdoor maps are: fewer, stronger lights (about 0.5 per 100 m², range and intensity raised so the floor gets at least 90 % of the light a ceiling grid would give it) on its edges — a lamp on the wall where a wall stands at lamp height, a lamp post beside each doorway and along open edges (a stock post when the tables are loaded and the headroom allows, else a detail post with a full-bright head) — and a post inside the room only where floor would be more than 18 m from every light, never on the straight way between two doorways (a record carrying its plan outline as points, as kit.trace's regions do, is lit as one space along that outline); each fixture also gets a short 5 m glow light (on the wall under a wall lamp, at a post's foot), as the stock maps light their outdoor fixtures. Raised floors, ramps and lowered ceilings move every fixture with them; a light never goes inside a solid (it moves to a free spot, or is skipped with a warning). The fixtures are in the returned list's fixtures field (outdoors the glow lights in its glows field).
 ---@opt room: record — Required: the room or corridor record to light (min/max box; its air brush decides which solids stand in it).
 ---@opt spacing: number = from the floor area and headroom; 4 along a corridor — Grid cell size in metres (one light per cell); giving it overrides the area rule (open to the sky: the distance between fixtures along the edges).
 ---@opt color: {r, g, b} = the theme's colour, else kit.defaults.light_color — Light colour, 0-255 per channel.
@@ -2040,6 +2096,17 @@ function kit.light_room(t)
     local stock = fixture ~= false and fixture ~= "brush" and classes ~= nil
     local glows = {}
     local boxes = legs or { r }
+    -- A record carrying its plan outline (points: {x, z} pairs, as kit.trace regions do) is lit as one outdoor space
+    -- along that outline, so a traced region that is not a rectangle gets one plan for all its floor.
+    local outline = nil
+    if legs == nil and type(t.room.points) == "table" and #t.room.points >= 3 then
+      outline = {}
+      for i, q in ipairs(t.room.points) do
+        local x, z = type(q) == "table" and tonumber(q[1]) or nil, type(q) == "table" and tonumber(q[2]) or nil
+        if x == nil or z == nil then outline = nil break end
+        outline[i] = { x, z }
+      end
+    end
     for bi, b in ipairs(boxes) do
       local function skip(x, z)
         for q = 1, bi - 1 do
@@ -2049,9 +2116,17 @@ function kit.light_room(t)
         return false
       end
       local bw, bd = b.x1 - b.x0, b.z1 - b.z0
-      local count = t.spacing ~= nil and max(1, floor(2 * (bw + bd) / spacing + 0.5)) or nil
+      local edges = 2 * (bw + bd)
+      if outline ~= nil then
+        edges = 0
+        for i = 1, #outline do
+          local p, q = outline[i], outline[i % #outline + 1]
+          edges = edges + sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2)
+        end
+      end
+      local count = t.spacing ~= nil and max(1, floor(edges / spacing + 0.5)) or nil
       local plan, samples, far = outdoor_plan(b, { after = after, height = height_opt, count = count,
-        stock_post = stock and classes[POLE.class] ~= nil, skip = skip })
+        stock_post = stock and classes[POLE.class] ~= nil, skip = skip, outline = outline })
       if #plan == 0 then
         log.warn(api .. ": " .. name .. " has no edge or floor spot for an outdoor light, so it gets no light.")
       end

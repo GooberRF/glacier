@@ -490,12 +490,20 @@ public sealed class Alpine306ChunkTests
         Assert.Single(terrain.Overlays);
         Assert.Equal("bush.v3m", Assert.Single(terrain.Decorations).Mesh);
         Assert.Equal(4, terrain.BuildMapping.Count);
-        Assert.Equal(40u, terrain.CompressedSize);
+        Assert.Equal(65, terrain.Nx);
+        Assert.True(terrain.CompressedSize > 0);
+        Assert.True(terrain.Grid.IsHole(34, 12));
+        Assert.False(terrain.Grid.IsHole(33, 12));
+        Assert.True(terrain.Grid.Diagonal(0, 0));
+        Assert.NotNull(terrain.Grid.OverlayCoverage);
+        Assert.NotNull(terrain.Grid.DecorationCoverage);
+        Assert.True(terrain.BuildIsCurrent);
         Assert.Equal(body, Write(t));
 
         byte[] unknownFlag = Alpine306Synthetic.TerrainSection(flags: 0x41);
         var bad = (AlpineTerrainSection)Parse(SectionType.AlpineTerrain, unknownFlag);
-        Assert.Contains("flag bits", bad.StructureProblem, StringComparison.Ordinal);
+        Assert.Contains("unknown flags", bad.StructureProblem, StringComparison.Ordinal);
+        Assert.True(bad.IsReadOnly);
         Assert.Equal(unknownFlag, Write(bad));
 
         for (int len = 0; len < body.Length; len++)

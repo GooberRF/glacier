@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Ged.Core.Editor;
 using Ged.Core.IO.Rfl;
 using Ged.Core.IO.Rfl.Sections;
@@ -61,9 +62,11 @@ public static class DocumentLinks
         ArgumentNullException.ThrowIfNull(doc);
         foreach (RflSection s in doc.Rfl.Sections)
         {
+            // The editor groups section's movers are copies of moving_groups (MovingGroupMirror): each once.
             if (s.Content is GroupsSection gs)
             {
-                foreach (Group g in gs.Groups)
+                bool editorCopy = MovingGroupMirror.IsEditorCopy(doc.Rfl, s);
+                foreach (Group g in gs.Groups.Where(g => !editorCopy || g.IsMoving == 0))
                 {
                     yield return g;
                 }

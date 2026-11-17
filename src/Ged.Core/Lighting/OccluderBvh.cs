@@ -151,13 +151,36 @@ public sealed class OccluderBvh
         }
 
         Vec3 d = dir.Scale(1f / dist);
-        Vec3 inv = new(SafeInv(d.X), SafeInv(d.Y), SafeInv(d.Z));
         const float eps = 0.01f;
         float tMax = dist - eps;
         if (tMax <= eps)
         {
             return false;
         }
+
+        return Traverse(origin, d, eps, tMax, surfacePlane);
+    }
+
+    /// <summary>
+    /// True when the ray from <paramref name="origin"/> along the unit direction <paramref name="dir"/> hits an
+    /// occluder between 0.01 and <paramref name="tMax"/> — a directional light's shadow ray, which has no target point
+    /// (Alpine RED traces it to 1e6 or to the light volume's exit, editor_patch/lightmap.cpp:1939-1954). Occluders in
+    /// <paramref name="surfacePlane"/> are ignored as in <see cref="Occluded"/>.
+    /// </summary>
+    public bool OccludedAlong(Vec3 origin, Vec3 dir, float tMax, RfPlane? surfacePlane = null)
+    {
+        const float eps = 0.01f;
+        if (_rootCount == 0 || !(tMax > eps))
+        {
+            return false;
+        }
+
+        return Traverse(origin, dir, eps, tMax, surfacePlane);
+    }
+
+    private bool Traverse(Vec3 origin, Vec3 d, float eps, float tMax, RfPlane? surfacePlane)
+    {
+        Vec3 inv = new(SafeInv(d.X), SafeInv(d.Y), SafeInv(d.Z));
 
         // Iterative stack traversal (thread-safe: no shared mutable state).
         Span<int> stack = stackalloc int[64];

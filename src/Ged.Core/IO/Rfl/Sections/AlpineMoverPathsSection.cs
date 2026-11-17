@@ -15,7 +15,7 @@ namespace Ged.Core.IO.Rfl.Sections;
 /// records, anything else is kept raw and read-only.
 /// </para>
 /// </summary>
-public sealed class AlpineMoverPathsSection : IRflSectionContent
+public sealed class AlpineMoverPathsSection : IRflSectionContent, IRetainedChunk
 {
     private const uint MaxRecords = 65536;
 

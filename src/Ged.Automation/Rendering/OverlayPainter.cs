@@ -5,6 +5,7 @@ using System.Linq;
 using System.Numerics;
 using Ged.Core.Editing;
 using Ged.Core.Editor;
+using Ged.Core.IO.Tex;
 using Ged.Core.Model;
 using Ged.Rendering;
 
@@ -18,7 +19,7 @@ namespace Ged.Automation.Rendering;
 /// exactly where its object renders. Deterministic: objects are processed in a fixed (kind priority,
 /// UID) order and label placement is greedy in that order.
 /// </summary>
-internal sealed class OverlayPainter
+internal sealed partial class OverlayPainter
 {
     private static readonly Rgba CutColor = new(12, 12, 14);
     private static readonly Rgba MoverCutColor = new(230, 90, 230);
@@ -123,6 +124,12 @@ internal sealed class OverlayPainter
         RenderOverlays want = _spec.Overlays;
         bool any = want != RenderOverlays.None;
         Legend.AddRange(_baseLegend);
+        bool heights = (want & RenderOverlays.Heights) != 0 && Heights is not null;
+        if (heights)
+        {
+            Legend.AddRange(HeightsLegend(Heights!.Min, Heights.Max, Heights.ContourStep));
+        }
+
         List<Glyph> glyphs = (want & (RenderOverlays.Objects | RenderOverlays.Labels | RenderOverlays.Links)) != 0
             ? CollectGlyphs()
             : new List<Glyph>();
@@ -181,15 +188,36 @@ internal sealed class OverlayPainter
             _occupied.Add((sx, sy, sw, sh));
         }
 
+        // The axis indicator comes with the map furniture; a picture of floor heights alone stays clean.
+        bool axes = (want & ~RenderOverlays.Heights) != 0;
         int ab = AxisBox();
         (int ax, int ay) = Place(axisCorner, ab, ab, pad);
-        _panels.Add((ax, ay, ab, ab));
-        _occupied.Add((ax, ay, ab, ab));
+        if (axes)
+        {
+            _panels.Add((ax, ay, ab, ab));
+            _occupied.Add((ax, ay, ab, ab));
+        }
 
         if ((want & RenderOverlays.Grid) != 0 && _ortho)
         {
             DrawGrid();
             Drawn |= RenderOverlays.Grid;
+        }
+
+        if (heights)
+        {
+            // The object glyphs (drawn later, on top) keep their spots: heights labels go round them.
+            if ((want & RenderOverlays.Objects) != 0)
+            {
+                foreach (Glyph g in glyphs)
+                {
+                    float rr = Radius(g.Style) + 1;
+                    _occupied.Add(((int)(g.Screen.X - rr), (int)(g.Screen.Y - rr), (int)(rr * 2) + 1, (int)(rr * 2) + 1));
+                }
+            }
+
+            DrawHeights(Heights!);
+            Drawn |= RenderOverlays.Heights;
         }
 
         if ((want & RenderOverlays.Objects) != 0)
@@ -273,7 +301,11 @@ internal sealed class OverlayPainter
             Drawn |= RenderOverlays.Scale;
         }
 
-        DrawAxes(axisCorner, pad);
+        if (axes)
+        {
+            DrawAxes(axisCorner, pad);
+        }
+
         if ((want & RenderOverlays.Legend) != 0)
         {
             DrawLegend(lx, ly, lw, lh, lines);
@@ -333,6 +365,11 @@ internal sealed class OverlayPainter
         }
 
         RenderOverlays want = _spec.Overlays;
+        if ((want & RenderOverlays.Heights) != 0)
+        {
+            entries.AddRange(HeightsLegend(-888.5, -888.5, 0.5)); // the widest range text, for the panel's size
+        }
+
         List<Glyph> glyphs = (want & (RenderOverlays.Objects | RenderOverlays.Links)) != 0 ? CollectGlyphs(screenFilter: false) : new List<Glyph>();
         entries.AddRange(ObjectLegend(glyphs, want));
         (int w, int h, _) = LegendLayout(titleLines, entries);
@@ -942,6 +979,15 @@ internal sealed class OverlayPainter
 
         foreach (RenderLegendDto e in legend)
         {
+            if (e.Glyph == "colorbar")
+            {
+                // The colour bar: its title, the bar, its tick labels.
+                lines.Add((e.Meaning, null));
+                lines.Add((BarRow, e));
+                lines.Add((TickRow, e));
+                continue;
+            }
+
             lines.Add((e.Count is int n && e.Glyph is not ("hatch" or "line" or "fill") ? $"{e.Meaning} ({n})" : e.Meaning, e));
         }
 
@@ -950,7 +996,7 @@ internal sealed class OverlayPainter
         int w = 0;
         foreach ((string text, RenderLegendDto? e) in lines)
         {
-            w = Math.Max(w, BitmapFont.Measure(text, _ts) + (e is null ? 0 : swatch + (3 * _ts)));
+            w = Math.Max(w, text is BarRow or TickRow ? BarWidth : BitmapFont.Measure(text, _ts) + (e is null ? 0 : swatch + (3 * _ts)));
         }
 
         int pad = 4 * _ts;
@@ -968,6 +1014,13 @@ internal sealed class OverlayPainter
         foreach ((string text, RenderLegendDto? e) in lines)
         {
             int tx = x + pad;
+            if (text is BarRow or TickRow)
+            {
+                DrawColorBar(tx, cy, text == BarRow);
+                cy += lineH;
+                continue;
+            }
+
             if (e is not null)
             {
                 Rgba col = ParseHex(e.Color);
@@ -994,6 +1047,9 @@ internal sealed class OverlayPainter
                         _c.Line(new Vector2(tx, center.Y), new Vector2(tx + swatch, center.Y), col, MathF.Max(1f, _u * 0.75f));
                         _c.Line(new Vector2(tx + swatch, center.Y), new Vector2(tx + swatch - (3 * _ts), center.Y - (2 * _ts)), col, MathF.Max(1f, _u * 0.75f));
                         _c.Line(new Vector2(tx + swatch, center.Y), new Vector2(tx + swatch - (3 * _ts), center.Y + (2 * _ts)), col, MathF.Max(1f, _u * 0.75f));
+                        break;
+                    case "chevron" or "stairs" or "drop" or "spot":
+                        DrawHeightsSwatch(e.Glyph, tx, cy, swatch, BitmapFont.LineHeight(_ts));
                         break;
                     default:
                         DrawGlyph(e.Glyph, center, MathF.Min(swatch * 0.42f, (2.6f * _u) + 2f), col);

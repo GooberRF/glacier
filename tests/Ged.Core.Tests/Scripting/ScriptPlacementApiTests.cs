@@ -326,8 +326,8 @@ public sealed class ScriptPlacementApiTests
             "assert(rep.ok and #rep.linked == 1)",
             (d, _) =>
             {
-                int start = d.Rfl.Sections.Select(s => s.Content).OfType<GroupsSection>()
-                    .SelectMany(g => g.Groups).Single(g => g.IsMoving != 0).MovingData!.Keyframes[0].Uid;
+                // The mover is listed in moving_groups and, as RED stores it, in the editor groups (same instance).
+                int start = Assert.Single(new MoverService(d).Movers).MovingData!.Keyframes[0].Uid;
                 Assert.All(d.Objects.Where(o => o.Kind == LevelObjectKind.Trigger), t => Assert.Equal(new[] { start }, ((Trigger)t.Model).Links));
             });
     }

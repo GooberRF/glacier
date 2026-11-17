@@ -36,6 +36,7 @@ internal sealed class SpaceSampler
         .ToArray();
 
     private readonly List<SFace> _faces = new();
+    private Spatial.TerrainGround? _ground;
     private readonly CancellationToken _ct;
     private readonly Action? _probe;
     private Spatial.FaceBvh _bvh = null!;
@@ -117,6 +118,9 @@ internal sealed class SpaceSampler
     /// <summary>The lattice pitch in use (metres).</summary>
     public double Pitch { get; private set; }
 
+    /// <summary>The level's terrain ground the samples honour, or null.</summary>
+    public Spatial.TerrainGround? Ground => _ground;
+
     /// <summary>The number of faces kept for ray tests.</summary>
     public int FaceCount => _faces.Count;
 
@@ -126,12 +130,13 @@ internal sealed class SpaceSampler
     /// <summary>
     /// Prepares the geometry: keeps world faces (detail included — they are walkable/collidable) minus portal faces,
     /// faces in sky rooms and liquid surfaces. Faces whose texture name contains "invisible" block rays but never
-    /// yield floor samples.
+    /// yield floor samples. With <paramref name="ground"/> (the level's terrains), floor under a terrain's top is inside
+    /// the ground and yields no valid samples (<see cref="Spatial.TerrainGround"/>).
     /// </summary>
-    public static SpaceSampler Build(Geometry geo, CancellationToken ct, Action? probe = null)
+    public static SpaceSampler Build(Geometry geo, CancellationToken ct, Action? probe = null, Spatial.TerrainGround? ground = null)
     {
         ArgumentNullException.ThrowIfNull(geo);
-        var s = new SpaceSampler(ct, probe);
+        var s = new SpaceSampler(ct, probe) { _ground = ground };
         for (int i = 0; i < geo.Faces.Count; i++)
         {
             if ((i & 1023) == 0)
@@ -335,6 +340,24 @@ internal sealed class SpaceSampler
     /// </summary>
     public void Measure(double pitch, int maxSamples, FocusRect? focus, int parallelism)
     {
+        _headroomOnly = false;
+        MeasureCore(pitch, maxSamples, focus, parallelism);
+    }
+
+    /// <summary>
+    /// As <see cref="Measure(double, int)"/>, but every sample is measured for headroom and validity only (no
+    /// horizontal rays: width, axis, length and the corridor class stay unset). For floor-extent measurements.
+    /// </summary>
+    public void MeasureHeadroom(double pitch, int maxSamples, int parallelism)
+    {
+        _headroomOnly = true;
+        MeasureCore(pitch, maxSamples, focus: null, parallelism);
+    }
+
+    private bool _headroomOnly;
+
+    private void MeasureCore(double pitch, int maxSamples, FocusRect? focus, int parallelism)
+    {
         _focus = focus;
         double g = pitch > 0 ? pitch : 0.5;
         double projected = 0;
@@ -463,8 +486,8 @@ internal sealed class SpaceSampler
         const double Lift = 0.005;
         double? up = Cast(new Vec3d(s.P.X, s.P.Y + Lift, s.P.Z), new Vec3d(0, 1, 0), SkyCap, HitFilter.DownFacing);
         s.Headroom = up is double h ? h + Lift : double.PositiveInfinity;
-        s.Valid = s.Headroom >= MinHeadroom;
-        if (!s.Valid)
+        s.Valid = s.Headroom >= MinHeadroom && !(_ground is { } ground && ground.IsUnder(s.P));
+        if (!s.Valid || _headroomOnly)
         {
             return;
         }

@@ -65,6 +65,12 @@ public enum RenderOverlays
     /// <summary>The legend panel (view, scale, what each glyph means).</summary>
     Legend = 64,
 
+    /// <summary>
+    /// Floor heights (plan and top views): walkable floor tinted by height over the image, contours, uphill chevrons and
+    /// labels on ramps, tread lines and an arrow on stairs, ticked drop edges, spot heights and a colour bar.
+    /// </summary>
+    Heights = 128,
+
     /// <summary>The overlays a plan view draws by default.</summary>
     PlanDefault = Grid | Scale | Objects | Labels | Links | Legend,
 }
@@ -77,9 +83,10 @@ public enum RenderOverlays
 /// <c>y</c>, <c>thickness</c>, <c>below</c> (plan slice), <c>camera</c> / <c>look</c> ([x,y,z]) and
 /// <c>fov</c> (vertical degrees) or <c>hfov</c> (horizontal degrees: the vertical field of view follows from the image's aspect),
 /// <c>eyeHeight</c> (camera view: put the camera this many metres above the floor under it, keeping the pitch), <c>region</c> ([minx,miny,minz,maxx,maxy,maxz]) | <c>room</c> (index) |
-/// <c>uid</c>, <c>mode</c> (lit|textured|lightmaps|rooms|wireframe|seethrough), <c>width</c>,
+/// <c>uid</c>, <c>mode</c> (lit|textured|lightmaps|rooms|wireframe|seethrough|heights: heights colours the walkable floor
+/// by height alone, plan and top views), <c>width</c>,
 /// <c>height</c> (a fixed image size), <c>maxSide</c> (without width/height: the image's longest side, default
-/// 1024; an orthographic view sizes the image to the framed geometry's or region's proportions), <c>overlays</c> (array of grid|scale|objects|labels|links|holes|legend, or "none"),
+/// 1024; an orthographic view sizes the image to the framed geometry's or region's proportions), <c>overlays</c> (array of grid|scale|objects|labels|links|holes|legend|heights, or "none"),
 /// <c>icons</c> (true|false, or "icons" / "noicons" in the overlays list: the editor's 3-D object icons in a non-plan view;
 /// default off for iso and camera views and whenever overlays is "none", on for the other orthographic views),
 /// <c>build</c> (auto|preview|sealed|none).</para>
@@ -139,7 +146,7 @@ public sealed class RenderSpec
 
     public int? Uid { get; init; }
 
-    /// <summary>lit | textured | lightmaps | rooms | wireframe | seethrough.</summary>
+    /// <summary>lit | textured | lightmaps | rooms | wireframe | seethrough | heights.</summary>
     public string Mode { get; init; } = "lit";
 
     public int Width { get; init; } = DefaultSize;
@@ -166,10 +173,13 @@ public sealed class RenderSpec
     public string Build { get; init; } = "auto";
 
     /// <summary>The accepted mode names.</summary>
-    public static readonly IReadOnlyList<string> Modes = new[] { "lit", "textured", "lightmaps", "rooms", "wireframe", "seethrough" };
+    public static readonly IReadOnlyList<string> Modes = new[] { "lit", "textured", "lightmaps", "rooms", "wireframe", "seethrough", "heights" };
 
-    /// <summary>The accepted overlay names, in drawing order.</summary>
-    public static readonly IReadOnlyList<string> OverlayNames = new[] { "grid", "scale", "objects", "labels", "links", "holes", "legend" };
+    /// <summary>The accepted overlay names, in drawing order (bit i of <see cref="RenderOverlays"/> is name i).</summary>
+    public static readonly IReadOnlyList<string> OverlayNames = new[] { "grid", "scale", "objects", "labels", "links", "holes", "legend", "heights" };
+
+    /// <summary>True when the floor-heights layer is drawn (the heights overlay, or the heights mode).</summary>
+    public bool HeightsOn => (Overlays & RenderOverlays.Heights) != 0;
 
     /// <summary>The accepted build policies.</summary>
     public static readonly IReadOnlyList<string> BuildPolicies = new[] { "auto", "preview", "sealed", "none" };
@@ -326,6 +336,16 @@ public sealed class RenderSpec
             icons = named.Contains("icons") ? true : named.Contains("noicons") ? false : null;
             overlaysNone = overlays == RenderOverlays.None && icons is null;
         }
+        else if (mode == "heights")
+        {
+            // The heights mode draws its symbols and colour legend unless an overlay list says otherwise.
+            overlays |= RenderOverlays.Heights | RenderOverlays.Legend;
+        }
+
+        if ((mode == "heights" || (overlays & RenderOverlays.Heights) != 0) && view is not (RenderView.Plan or RenderView.Top))
+        {
+            throw Usage("Floor heights (--mode heights, the heights overlay) are drawn on the plan and top views only.");
+        }
 
         if (Bool(args, "icons") is bool flag)
         {
@@ -434,6 +454,7 @@ public sealed class RenderSpec
                 "links" => RenderOverlays.Links,
                 "holes" => RenderOverlays.Holes,
                 "legend" => RenderOverlays.Legend,
+                "heights" => RenderOverlays.Heights,
                 _ => throw Usage($"Unknown overlay '{raw}' (use {string.Join(", ", OverlayNames)}, nolegend, icons, noicons, or none)."),
             };
         }

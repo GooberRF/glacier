@@ -15,6 +15,14 @@ public sealed class TestApp : Application
 
 public static class TestAppBuilder
 {
+    /// <summary>
+    /// Set to 1 to render with Skia instead of the headless drawing stub, so screenshot evidence
+    /// (<see cref="P2ScreenshotEvidence"/>) can capture real frames. The normal test run leaves it unset.
+    /// </summary>
+    public const string RenderVariable = "GED_APP_TESTS_RENDER";
+
     public static AppBuilder BuildAvaloniaApp() =>
-        AppBuilder.Configure<TestApp>().UseHeadless(new AvaloniaHeadlessPlatformOptions());
+        System.Environment.GetEnvironmentVariable(RenderVariable) == "1"
+            ? AppBuilder.Configure<TestApp>().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
+            : AppBuilder.Configure<TestApp>().UseHeadless(new AvaloniaHeadlessPlatformOptions());
 }

@@ -161,6 +161,19 @@ public static class ToolRequests
                 break;
             }
 
+            case "terrain":
+                args["script"] = TerrainLua(Str(given, "op") ?? "query", given);
+                if (Str(given, "op") == "query")
+                {
+                    args["dryRun"] = true;
+                }
+
+                if (options.DefaultScriptName is { } terrainScript)
+                {
+                    args["name"] = terrainScript();
+                }
+
+                break;
             case "build":
                 if (!args.ContainsKey("sealed"))
                 {
@@ -322,6 +335,176 @@ public static class ToolRequests
         o[name] is JsonValue v && v.TryGetValue(out string? s) ? s : null;
 
     private static AutomationException Usage(string message) => new(AutomationErrorCodes.Usage, message);
+
+    /// <summary>A Lua function <c>info(t)</c>: the facts of a terrain handle the terrain tools return.</summary>
+    private const string TerrainInfo =
+        "local function info(t)\n" +
+        "  return {uid = t.uid, name = t.name, origin = {t.origin.x, t.origin.y, t.origin.z}, nx = t.nx, nz = t.nz,\n" +
+        "    cell_size = t.cell_size, size = {t.size_x, t.size_z}, height_min = t.height_min, height_range = t.height_range,\n" +
+        "    chunk_cells = t.chunk_cells, chunk_count = t.chunk_count, layers = t.layers, built = t.built, geoable = t.geoable, skirts = t.skirts,\n" +
+        "    lighting = t.lighting, decorations = #t:decorations(), overlays = t.overlays}\n" +
+        "end\n";
+
+    /// <summary>The Lua a terrain tool runs (the same API a script calls: level.terrain, terrain:*).</summary>
+    private static string TerrainLua(string tool, JsonObject given)
+    {
+        var lua = new System.Text.StringBuilder(ResultAsJson).Append(TerrainInfo);
+        string? key = Str(given, "terrain");
+        string Pick() => key is null
+            ? "level.terrain.all()[1]"
+            : $"level.terrain.get({(int.TryParse(key, NumberStyles.Integer, CultureInfo.InvariantCulture, out int uid) ? uid.ToString(CultureInfo.InvariantCulture) : Lua(key))})";
+        string Need() => $"local t = {Pick()}\nif not t then ged.fail({Lua(key is null ? "The level has no terrain." : $"No terrain '{key}'.")}, \"terrain_query lists the level's terrains; op = create makes one.\") end\n";
+        string Num(string name) => given[name] is JsonValue v && Number(v) is double d ? d.ToString("R", CultureInfo.InvariantCulture) : string.Empty;
+        string Flag(string name) => given[name] is JsonValue v && v.TryGetValue(out bool b) ? (b ? "true" : "false") : string.Empty;
+        string Layers(string name) => "{" + string.Join(", ", (Str(given, name) ?? string.Empty)
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(Lua)) + "}";
+        double[] Pairs(string name) => given[name] is JsonArray arr ? arr.Select(n => n is null ? 0 : Number(n) ?? 0).ToArray() : Array.Empty<double>();
+        void Opt(List<string> into, string name)
+        {
+            string v = given[name] switch
+            {
+                JsonValue jv when jv.TryGetValue(out bool _) => Flag(name),
+                JsonValue jv when Number(jv) is not null => Num(name),
+                JsonValue jv when jv.TryGetValue(out string? s) => Lua(s!),
+                _ => string.Empty,
+            };
+            if (v.Length > 0)
+            {
+                into.Add($"{name} = {v}");
+            }
+        }
+
+        switch (tool)
+        {
+            case "create":
+            {
+                var o = new List<string>();
+                if (given["center"] is JsonArray c && c.Count == 3)
+                {
+                    o.Add("center = {" + string.Join(", ", c.Select(n => (n is null ? 0 : Number(n) ?? 0).ToString("R", CultureInfo.InvariantCulture))) + "}");
+                }
+
+                foreach (string n in new[] { "nx", "nz", "cell_size", "name", "height_range" })
+                {
+                    Opt(o, n);
+                }
+
+                if (Str(given, "layers") is not null)
+                {
+                    o.Add("layers = " + Layers("layers"));
+                }
+
+                lua.Append("local t = level.terrain.create{").Append(string.Join(", ", o)).Append("}\nreturn json(info(t))\n");
+                break;
+            }
+
+            case "generate":
+            {
+                var o = new List<string>();
+                foreach (string n in new[] { "seed", "type", "feature_size", "height_range", "falloff" })
+                {
+                    Opt(o, n);
+                }
+
+                lua.Append(Need()).Append("t:generate{").Append(string.Join(", ", o)).Append("}\nreturn json(info(t))\n");
+                break;
+            }
+
+            case "edit":
+            {
+                lua.Append(Need());
+                if (given.ContainsKey("nx") || given.ContainsKey("nz"))
+                {
+                    var o = new List<string>();
+                    Opt(o, "nx");
+                    Opt(o, "nz");
+                    lua.Append("t:resize{").Append(string.Join(", ", o)).Append("}\n");
+                }
+
+                if (Str(given, "layers") is not null)
+                {
+                    lua.Append("t:set_layers(").Append(Layers("layers")).Append(")\n");
+                }
+
+
+                double[] holes = Pairs("holes");
+                for (int i = 0; i + 1 < holes.Length; i += 2)
+                {
+                    lua.Append(CultureInfo.InvariantCulture, $"t:set_hole({(int)holes[i]}, {(int)holes[i + 1]}, true)\n");
+                }
+
+                if (Str(given, "heightmap") is { } path)
+                {
+                    lua.Append("t:import_heightmap(").Append(Lua(path)).Append(")\n");
+                }
+
+                lua.Append("return json(info(t))\n");
+                break;
+            }
+
+            case "sculpt":
+            {
+                double[] pts = Pairs("points");
+                if (pts.Length < 2)
+                {
+                    throw Usage("terrain sculpt needs 'points': x, z, ... (one point dabs once; more make a stroke).");
+                }
+
+                // layers = "mode[:radius:strength:layer]" (the sculpt op reuses the layers argument)
+                string[] spec = (Str(given, "layers") ?? "raise").Split(':', StringSplitOptions.TrimEntries);
+                var o = new List<string> { "tool = " + Lua(spec[0]) };
+                string[] keys = { "radius", "strength", "layer" };
+                for (int k = 1; k < spec.Length && k <= keys.Length; k++)
+                {
+                    if (!double.TryParse(spec[k], NumberStyles.Float, CultureInfo.InvariantCulture, out double v))
+                    {
+                        throw Usage($"terrain sculpt: '{spec[k]}' in layers is not a number (mode[:radius:strength:layer]).");
+                    }
+
+                    o.Add($"{keys[k - 1]} = {v.ToString("R", CultureInfo.InvariantCulture)}");
+                }
+
+                Opt(o, "seed");
+                var path = new System.Text.StringBuilder("{");
+                for (int i = 0; i + 1 < pts.Length; i += 2)
+                {
+                    path.Append(CultureInfo.InvariantCulture, $"{{{pts[i]:R}, {pts[i + 1]:R}}}, ");
+                }
+
+                o.Add("path = " + path.Append('}'));
+                lua.Append(Need()).Append("local r = t:sculpt{").Append(string.Join(", ", o))
+                    .Append("}\nlocal i = info(t)\ni.changed = r.changed\ni.geometry = r.geometry\ni.note = r.note\nreturn json(i)\n");
+                break;
+            }
+
+            case "query":
+            {
+                double[] points = Pairs("points");
+                var sample = new System.Text.StringBuilder("{");
+                for (int i = 0; i + 1 < points.Length; i += 2)
+                {
+                    sample.Append(CultureInfo.InvariantCulture, $"{{{points[i]:R}, {points[i + 1]:R}}}, ");
+                }
+
+                sample.Append('}');
+                lua.Append(key is null ? "local list = level.terrain.all()\n" : $"local list = {{{Pick()}}}\n")
+                    .Append("local out = {}\nlocal pts = ").Append(sample).Append('\n')
+                    .Append("for _, t in ipairs(list) do\n  local i = info(t)\n  i.lint = t:lint()\n  i.heights = {}\n")
+                    .Append("  for _, p in ipairs(pts) do i.heights[#i.heights + 1] = t:height_at(p[1], p[2]) end\n")
+                    .Append("  out[#out + 1] = i\nend\nreturn json(out)\n");
+                break;
+            }
+
+            case "to_brushes":
+            {
+                string keep = Flag("keep");
+                lua.Append(Need()).Append("local q = t:to_brushes{keep = ").Append(keep.Length > 0 ? keep : "false").Append("}\nreturn json({brushes = q.count})\n");
+                break;
+            }
+        }
+
+        return lua.ToString();
+    }
 
     /// <summary>A Lua function <c>json(value)</c> that renders a result table as JSON text (the run's return value).</summary>
     private const string ResultAsJson =

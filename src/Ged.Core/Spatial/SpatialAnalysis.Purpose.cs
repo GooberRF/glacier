@@ -52,7 +52,14 @@ public sealed partial class SpatialAnalysis
     private const double BrushMaxFoot = 6.0;  // a prop brush's largest horizontal extent (m)
 
     /// <summary>One bridge's route reading: the floor on each side closer to the far end across it, the walk between its ends without it.</summary>
-    internal sealed record BridgeRoute(SetPieceBridge Bridge, double CatchA, double CatchB, double Detour, double Saving, bool DetourUnder, double UnderArea, double UnderHigh, string? Fault, int EndA = -1, int EndB = -1);
+    /// <remarks><see cref="NotBridge"/>: why a detected deck is no bridge at all (no walkable deck, or no walk reaches it); such a reading has no fault and serves no route.</remarks>
+    internal sealed record BridgeRoute(SetPieceBridge Bridge, double CatchA, double CatchB, double Detour, double Saving, bool DetourUnder, double UnderArea, double UnderHigh, string? Fault, int EndA = -1, int EndB = -1, string? NotBridge = null);
+
+    /// <summary>A bridge's deck is level across at least this wide (m): narrower tops (a pipe, a beam, a rail) are no deck.</summary>
+    public const double BridgeDeckMinWidth = 1.0;
+
+    /// <summary>The deck's top counts as level across where it stays within this height (m) of its centre line.</summary>
+    private const double DeckLevelTolerance = 0.1;
 
     /// <summary>One free-standing (or wall-side) prop cluster as read for theme fit and cover purpose.</summary>
     internal sealed record PropRead(
@@ -145,7 +152,7 @@ public sealed partial class SpatialAnalysis
         }
 
         body["rules"] = string.Create(CultureInfo.InvariantCulture,
-            $"Bridge (walk graph without the deck): purposeless when redundant (the floor beside or below joins its ends with a walk at most {RouteRedundantRatio:0.##}x its length + 1 m) or leading nowhere (under {RouteDeadEndCatchment:0} m2 of floor on one side reaches the far end at least {RouteMinSaving:0} m, or a fifth of the span, sooner across it, no item or spawn waits within 15 m of that end, and that end leads on, walking or dropping, to under {4 * RouteDeadEndCatchment:0} m2); purposeless_bridges counts bridges spanning {SetPieceSpan:0} m or more; catchment_ok = at least {RouteMinCatchment:0} m2 on each side (the kit's bar for a new bridge). "
+            $"Bridge (walk graph without the deck): purposeless when redundant (the floor beside or below joins its ends with a walk at most {RouteRedundantRatio:0.##}x its length + 1 m) or leading nowhere (under {RouteDeadEndCatchment:0} m2 of floor on one side reaches the far end at least {RouteMinSaving:0} m, or a fifth of the span, sooner across it, no item or spawn waits within 15 m of that end, and that end leads on, walking or dropping, to under {4 * RouteDeadEndCatchment:0} m2); purposeless_bridges counts bridges spanning {SetPieceSpan:0} m or more; catchment_ok = at least {RouteMinCatchment:0} m2 on each side (the kit's bar for a new bridge). A crossing whose top is level across under {BridgeDeckMinWidth:0.#} m (a pipe, beam or rail top) or that no walk from the spawns reaches (a roof, a lintel over an opening) is not a bridge (not_a_bridge says why) and has no fault. "
             + $"Prop: a cluster of small solid brushes standing {PropMinHeight:0.#}-{PropMaxHeight:0.#} m above playable floor (at most {PropMaxFoot:0} m across); free-standing at least {FreeStanding:0} m from every wall and floor edge. Theme mismatch: a free-standing rock prop (half its face area rock textures) in a built space (walls mostly built textures: an interior, or a yard walled all round under the sky); scattered rock: a free-standing rock prop anywhere that is not cover (rubble belongs against walls and edges). "
             + $"Cover: a free-standing prop 0.9-2.8 m tall; orphan cover has no open line of {LaneMinLength:0} m or more through it (both ways along one of 8 axes at 1.2 m: nothing to break). Landmark: hidden when fewer than 2 spaces see it. "
             + $"Flight: built stairs or a ramp climbing at least {FlightMinRise:0} m between landings (rock slopes left out). purposeless_flights counts flights that climb into a wall or onto a solid (no floor beyond the top step, under {FlightIntoSolid:0.#} m clear), are blocked (a wall or prop under {FlightBlocked:0.#} m from the first or top step), lead onto nothing (no landing beyond the top, only a drop) or lead into a dead-end pit in a bridge's gap (under {FlightPocket:0} m2, reached only by flights from the floor the bridge joins); flights_noted lists, without counting, redundant ones (another way up to the same floor on foot within {FlightRedundantRatio:0.#}x the length + 1 m of the foot) and dead ends (a pit or perch under {FlightPocket:0} m2 reached only by flights from one floor, empty or entered twice; a top leading to under {FlightDeadEnd:0} m2 with nothing on it). "
@@ -170,8 +177,9 @@ public sealed partial class SpatialAnalysis
         ["floor_under"] = R(r.UnderArea),
         ["floor_under_raised"] = R(r.UnderHigh),
         ["catchment_ok"] = Math.Min(r.CatchA, r.CatchB) >= RouteMinCatchment,
-        ["role"] = r.Fault is null ? "route" : null,
+        ["role"] = r.Fault is null && r.NotBridge is null ? "route" : null,
         ["fault"] = r.Fault,
+        ["not_a_bridge"] = r.NotBridge,
     };
 
     private static JsonObject PropJson(PropRead p) => new()
@@ -260,15 +268,81 @@ public sealed partial class SpatialAnalysis
     }
 
     /// <summary>
+    /// The deck proper of a detected bridge: its drop-sided floor grown from mid-span over steps no higher than a smooth
+    /// deck has (a level or evenly sloped deck keeps every sample). A ledge or shelf joined to the deck's side or end at
+    /// another height (rock beside a tunnel mouth the deck runs into) drops out, so the deck's ends are read where the deck
+    /// itself meets the floor in line with it. Null when nothing drops out.
+    /// </summary>
+    private (int[] Deck, DeckFrame Frame, double DeckY)? DeckProper(SetPieceBridge b, int[] deck)
+    {
+        var inDeck = new HashSet<int>(deck);
+        int seed = deck.OrderBy(i => _s[i].P.Sub(b.Centre).Length).ThenBy(i => i).First();
+        double step = Math.Max(0.25, 0.45 * _g);
+        var keep = new HashSet<int> { seed };
+        var q = new Queue<int>();
+        q.Enqueue(seed);
+        while (q.Count > 0)
+        {
+            int u = q.Dequeue();
+            foreach (WalkEdge e in _w.Adj[u])
+            {
+                if (!e.Drop && !e.Link && inDeck.Contains(e.To) && Math.Abs(_s[e.To].P.Y - _s[u].P.Y) <= step && keep.Add(e.To))
+                {
+                    q.Enqueue(e.To);
+                }
+            }
+        }
+
+        if (keep.Count == deck.Length || keep.Count < Math.Max(4, 0.4 * deck.Length))
+        {
+            return null; // nothing to trim, or the deck itself is stepped: keep the reading as detected
+        }
+
+        int[] proper = deck.Where(keep.Contains).ToArray();
+        double mx = proper.Average(c => _s[c].P.X), mz = proper.Average(c => _s[c].P.Z);
+        double sxx = 0, szz = 0, sxz = 0;
+        foreach (int c in proper)
+        {
+            double dx = _s[c].P.X - mx, dz = _s[c].P.Z - mz;
+            sxx += dx * dx;
+            szz += dz * dz;
+            sxz += dx * dz;
+        }
+
+        double th = 0.5 * Math.Atan2(2 * sxz, sxx - szz);
+        var probe = new DeckFrame(mx, mz, Math.Cos(th), Math.Sin(th), 0, 0, 0, 0);
+        var frame = probe with
+        {
+            U0 = proper.Min(c => probe.U(_s[c].P)), U1 = proper.Max(c => probe.U(_s[c].P)),
+            V0 = proper.Min(c => probe.V(_s[c].P)), V1 = proper.Max(c => probe.V(_s[c].P)),
+        };
+        return (proper, frame, Med(proper.Select(c => _s[c].P.Y)));
+    }
+
+    /// <summary>
     /// A bridge's route reading: with its deck taken out of the walk graph (every playable sample on the deck's strip at
     /// deck height), the playable floor that reaches the far end at least the saving sooner across the deck (each side),
-    /// the walk between its ends, whether that walk passes under the deck, and the floor under its free span.
+    /// the walk between its ends, whether that walk passes under the deck, and the floor under its free span. The deck is
+    /// its proper part (<see cref="DeckProper"/>): the ends are the floor it meets in line with it.
     /// </summary>
     private BridgeRoute ReadRoute(SetPieceBridge b)
     {
         if (b.Deck is not { Length: > 0 } deck || b.EndA < 0 || b.EndB < 0 || b.Frame is not { } f)
         {
             return new BridgeRoute(b, 0, 0, double.PositiveInfinity, double.NaN, false, 0, 0, "its ends were not found on walkable floor");
+        }
+
+        if (NotADeck(b, deck, f) is { } notBridge)
+        {
+            return new BridgeRoute(b, 0, 0, double.PositiveInfinity, double.NaN, false, 0, 0, null, b.EndA, b.EndB, notBridge);
+        }
+
+        double deckY = b.DeckY;
+        bool trimmed = false;
+        if (DeckProper(b, deck) is { } proper)
+        {
+            (deck, f, deckY) = proper;
+            trimmed = true;
         }
 
         var blocked = new bool[_s.Count];
@@ -279,19 +353,19 @@ public sealed partial class SpatialAnalysis
 
         // The walk-on points: the floor just off each end of the deck nearest its centre line at deck height (not a rail
         // or chord top beside it).
-        int endA = b.EndA, endB = b.EndB;
+        int endA = trimmed ? -1 : b.EndA, endB = trimmed ? -1 : b.EndB;
         double bestA = double.PositiveInfinity, bestB = double.PositiveInfinity, vm = (f.V0 + f.V1) / 2;
         foreach (int c in deck)
         {
             foreach (WalkEdge e in _w.Adj[c])
             {
-                if (e.Link || e.Drop || blocked[e.To] || !_w.Play[e.To] || Math.Abs(_s[e.To].P.Y - b.DeckY) > 1.0)
+                if (e.Link || e.Drop || blocked[e.To] || !_w.Play[e.To] || Math.Abs(_s[e.To].P.Y - deckY) > 1.0)
                 {
                     continue;
                 }
 
                 Vec3d p = _s[e.To].P;
-                double u = f.U(p), score = Math.Abs(f.V(p) - vm) + (4 * Math.Abs(p.Y - b.DeckY));
+                double u = f.U(p), score = Math.Abs(f.V(p) - vm) + (4 * Math.Abs(p.Y - deckY));
                 if (u < f.U0 - 0.2 && score < bestA)
                 {
                     bestA = score;
@@ -305,6 +379,10 @@ public sealed partial class SpatialAnalysis
             }
         }
 
+        // A trimmed deck with no floor found beyond one of its ends keeps the end the detection found there.
+        endA = endA < 0 ? b.EndA : endA;
+        endB = endB < 0 ? b.EndB : endB;
+
         double underArea = 0, underHigh = 0, lowest = double.PositiveInfinity;
         var under = new List<int>();
         foreach (int i in _w.PlayIdx)
@@ -316,11 +394,11 @@ public sealed partial class SpatialAnalysis
                 continue;
             }
 
-            if (Math.Abs(p.Y - b.DeckY) <= 1.0)
+            if (Math.Abs(p.Y - deckY) <= 1.0)
             {
                 blocked[i] = true;
             }
-            else if (p.Y < b.DeckY - 2 && u >= f.U0 + 1 && u <= f.U1 - 1 && v >= f.V0 && v <= f.V1)
+            else if (p.Y < deckY - 2 && u >= f.U0 + 1 && u <= f.U1 - 1 && v >= f.V0 && v <= f.V1)
             {
                 under.Add(i);
                 lowest = Math.Min(lowest, p.Y);
@@ -367,7 +445,7 @@ public sealed partial class SpatialAnalysis
             {
                 Vec3d p = _s[s].P;
                 double u = f.U(p), v = f.V(p);
-                if (u >= f.U0 && u <= f.U1 && v >= f.V0 - 1 && v <= f.V1 + 1 && p.Y <= b.DeckY - 2)
+                if (u >= f.U0 && u <= f.U1 && v >= f.V0 - 1 && v <= f.V1 + 1 && p.Y <= deckY - 2)
                 {
                     viaUnder = true;
                     break;
@@ -428,6 +506,186 @@ public sealed partial class SpatialAnalysis
         }
 
         return new BridgeRoute(b, catchA, catchB, detour, saving, viaUnder, underArea, underHigh, fault, endA, endB);
+    }
+
+    /// <summary>
+    /// Why a detected drop-sided crossing is no bridge, or null when it is one. A bridge has a walkable deck: a top level
+    /// across at least <see cref="BridgeDeckMinWidth"/> m (read on the geometry at five stations along the free span, the
+    /// median kept — a round pipe's or a beam's top is narrower, however the 0.5 m lattice reads it), and one the walk from
+    /// the spawns reaches (<see cref="WalkGraph.Walked"/>): a roof, a lintel over an opening or a pipe top that no walk
+    /// leads onto is kept as playable floor but is no route anyone crosses.
+    /// </summary>
+    private string? NotADeck(SetPieceBridge b, int[] deck, DeckFrame f)
+    {
+        var across = new Vec3d(-f.Az, 0, f.Ax);
+        double vm = (f.V0 + f.V1) / 2;
+        var widths = new List<double>();
+        for (int k = 0; k < 5; k++)
+        {
+            double u = f.U0 + ((k + 0.5) / 5 * (f.U1 - f.U0));
+            var c = new Vec3d(f.Mx + (u * f.Ax) - (vm * f.Az), b.DeckY, f.Mz + (u * f.Az) + (vm * f.Ax));
+            if (_sp.Cast(new Vec3d(c.X, b.DeckY + 0.6, c.Z), new Vec3d(0, -1, 0), 1.2, SpaceSampler.HitFilter.UpFacing) is not double t)
+            {
+                continue;
+            }
+
+            // The deck's height at this station: its centre line, unless something stands there (a rail, a track): then
+            // the median of the top across the middle metre.
+            double top = b.DeckY + 0.6 - t;
+            var around = new List<double> { top };
+            foreach (double o in new[] { -0.5, -0.25, 0.25, 0.5 })
+            {
+                Vec3d q = c.Add(across.Scale(o));
+                if (_sp.Cast(new Vec3d(q.X, b.DeckY + 0.6, q.Z), new Vec3d(0, -1, 0), 1.2, SpaceSampler.HitFilter.UpFacing) is double to)
+                {
+                    around.Add(b.DeckY + 0.6 - to);
+                }
+            }
+
+            double median = Med(around);
+            if (top - median > DeckLevelTolerance / 2)
+            {
+                top = median;
+            }
+            double width = 0.05;
+            foreach (int side in new[] { 1, -1 })
+            {
+                for (double d = 0.05; d <= DeckMaxWidth / 2; d += 0.05)
+                {
+                    Vec3d q = c.Add(across.Scale(side * d));
+                    // The top goes on while it stays level (or something stands on it: a rail, a kerb, a track); it ends
+                    // where it falls away below the centre line (a round top curving down) or stops.
+                    if (_sp.Cast(new Vec3d(q.X, top + 0.3, q.Z), new Vec3d(0, -1, 0), 0.3 + DeckLevelTolerance + 0.05, SpaceSampler.HitFilter.UpFacing, out int fi) is not double h
+                        || fi < 0 || h > 0.3 + DeckLevelTolerance
+                        || (h > 0.3 - DeckLevelTolerance && _sp.Faces[fi].N.Y < SpaceSampler.FloorNormalY))
+                    {
+                        break;
+                    }
+
+                    width += 0.05;
+                }
+            }
+
+            widths.Add(width);
+        }
+
+        if (widths.Count > 0)
+        {
+            double w = Med(widths);
+            if (w < BridgeDeckMinWidth)
+            {
+                return string.Create(CultureInfo.InvariantCulture, $"no walkable deck: its top is level across only {w:0.##} m (a pipe, beam or rail top; a deck is at least {BridgeDeckMinWidth:0.#} m wide)");
+            }
+        }
+
+        if (_w.Walked is { } walked && !deck.Any(i => walked[i]))
+        {
+            return "no walk from the spawns reaches its top (a roof, a lintel over an opening or a pipe top that nothing leads onto)";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The brushes whose faces make the deck of <paramref name="b"/>: the floor face under every few deck samples, matched
+    /// to the brush faces lying in its plane (<see cref="BrushesOnFaces"/>); most deck area first.
+    /// </summary>
+    internal int[] DeckBrushes(SetPieceBridge b)
+    {
+        if (b.Deck is not { Length: > 0 } deck)
+        {
+            return Array.Empty<int>();
+        }
+
+        var hits = new List<(Vec3d P, Vec3d N, double Weight)>();
+        for (int n = 0; n < deck.Length; n += 2)
+        {
+            Vec3d p = _s[deck[n]].P;
+            if (_sp.Cast(new Vec3d(p.X, p.Y + 0.05, p.Z), new Vec3d(0, -1, 0), 0.3, SpaceSampler.HitFilter.UpFacing, out int fi) is double t && fi >= 0)
+            {
+                hits.Add((new Vec3d(p.X, p.Y + 0.05 - t, p.Z), _sp.Faces[fi].N, 1));
+            }
+        }
+
+        return BrushesOnFaces(_level.Brushes(), hits);
+    }
+
+    /// <summary>
+    /// The brushes with a face through each point in the given plane orientation: a compiled face is a piece of one brush
+    /// face, so the brush face whose plane holds the point, with the same facing, and whose bounds hold it is its source.
+    /// Where a solid brush and an air brush both qualify (a deck's top level with the floor an air brush carved), the
+    /// solid one owns the point. Ordered by the summed weight of the points each brush owns (ties by uid).
+    /// </summary>
+    internal static int[] BrushesOnFaces(IReadOnlyList<Brush> brushes, IReadOnlyList<(Vec3d P, Vec3d N, double Weight)> points)
+    {
+        if (points.Count == 0)
+        {
+            return Array.Empty<int>();
+        }
+
+        double x0 = points.Min(p => p.P.X) - 0.1, y0 = points.Min(p => p.P.Y) - 0.1, z0 = points.Min(p => p.P.Z) - 0.1;
+        double x1 = points.Max(p => p.P.X) + 0.1, y1 = points.Max(p => p.P.Y) + 0.1, z1 = points.Max(p => p.P.Z) + 0.1;
+        var owners = new List<(int Uid, bool Air)>[points.Count];
+        foreach (Brush br in brushes)
+        {
+            if (br.Geometry.Vertices.Count == 0)
+            {
+                continue;
+            }
+
+            (Vec3d mn, Vec3d mx, _) = BrushBox(br);
+            if (mx.X < x0 || mn.X > x1 || mx.Y < y0 || mn.Y > y1 || mx.Z < z0 || mn.Z > z1)
+            {
+                continue;
+            }
+
+            bool air = (br.Flags & (uint)BrushFlags.Air) != 0;
+            List<Compiler.CsgFace> faces = Compiler.BrushWorld.ToWorldFaces(br, 0, out _);
+            for (int i = 0; i < points.Count; i++)
+            {
+                (Vec3d p, Vec3d nrm, _) = points[i];
+                if (p.X < mn.X - 0.05 || p.X > mx.X + 0.05 || p.Y < mn.Y - 0.05 || p.Y > mx.Y + 0.05 || p.Z < mn.Z - 0.05 || p.Z > mx.Z + 0.05)
+                {
+                    continue;
+                }
+
+                foreach (Compiler.CsgFace cf in faces)
+                {
+                    if (cf.IsPortal)
+                    {
+                        continue;
+                    }
+
+                    Vec3 fn = cf.Plane.Normal;
+                    if ((fn.X * nrm.X) + (fn.Y * nrm.Y) + (fn.Z * nrm.Z) > 0.995
+                        && Math.Abs(cf.Plane.Distance(new Vec3((float)p.X, (float)p.Y, (float)p.Z))) < 0.02)
+                    {
+                        (owners[i] ??= new List<(int, bool)>(2)).Add((br.Uid, air));
+                        break;
+                    }
+                }
+            }
+        }
+
+        var weight = new Dictionary<int, double>();
+        for (int i = 0; i < points.Count; i++)
+        {
+            if (owners[i] is not { } own)
+            {
+                continue;
+            }
+
+            bool anySolid = own.Any(o => !o.Air);
+            foreach ((int uid, bool air) in own)
+            {
+                if (!air || !anySolid)
+                {
+                    weight[uid] = weight.GetValueOrDefault(uid) + points[i].Weight;
+                }
+            }
+        }
+
+        return weight.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key).Select(kv => kv.Key).ToArray();
     }
 
     // ---- props: theme fit and cover lanes -----------------------------------------------------------------

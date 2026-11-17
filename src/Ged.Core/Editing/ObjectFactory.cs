@@ -65,6 +65,13 @@ public static class ObjectFactory
         new(LevelObjectKind.NoteObject, "Note Object", "Alpine", Alpine: true),
         new(LevelObjectKind.CoronaObject, "Corona Object", "Alpine", Alpine: true),
         new(LevelObjectKind.BagObject, "Bag Object", "Alpine", Alpine: true),
+        new(LevelObjectKind.WeatherRegion, "Weather Region", "Alpine", Alpine: true),
+        new(LevelObjectKind.VehicleFactory, "Vehicle Factory", "Alpine", Alpine: true),
+        new(LevelObjectKind.ProjectionCamera, "Projection Camera", "Alpine", Alpine: true),
+        new(LevelObjectKind.RopeEmitter, "Rope Emitter", "Alpine", Alpine: true),
+        new(LevelObjectKind.DirectionalLight, "Directional Light", "Alpine", Alpine: true),
+        new(LevelObjectKind.WaypointHelper, "Waypoint Helper", "Alpine", Alpine: true),
+        new(LevelObjectKind.Terrain, "Terrain", "Alpine", Alpine: true),
     };
 
     /// <summary>The full set of kinds exercised by the acceptance round-trip.</summary>
@@ -77,6 +84,8 @@ public static class ObjectFactory
         LevelObjectKind.GeoRegion, LevelObjectKind.GasRegion, LevelObjectKind.ClimbRegion, LevelObjectKind.PushRegion,
         LevelObjectKind.RoomEffect,
         LevelObjectKind.MeshObject, LevelObjectKind.NoteObject, LevelObjectKind.CoronaObject, LevelObjectKind.BagObject,
+        LevelObjectKind.WeatherRegion, LevelObjectKind.VehicleFactory, LevelObjectKind.ProjectionCamera,
+        LevelObjectKind.RopeEmitter, LevelObjectKind.DirectionalLight, LevelObjectKind.WaypointHelper, LevelObjectKind.Terrain,
     };
 
     private static Mat3 Ident => Mat3.Identity;
@@ -257,11 +266,13 @@ public static class ObjectFactory
                 },
                 () => new AlpineNoteObjectsSection(), c => ((AlpineNoteObjectsSection)c).Notes),
 
+            // The corona bitmap: glowball.tga, the stock light corona (RED.exe FUN_00431d80 @0x00431e08 packs it for every
+            // light with its corona on; it is the corona bitmap the stock levels use most, ahead of LightCorona04.tga).
             LevelObjectKind.CoronaObject => Bp(kind, SectionType.AlpineCoronaObjects, uid,
                 new AlpineCoronaObject
                 {
                     Uid = uid, Position = pos, Orientation = Ident,
-                    ColorR = 255, ColorG = 220, ColorB = 160, ColorA = 255, CoronaBitmap = "glow1.tga",
+                    ColorR = 255, ColorG = 220, ColorB = 160, ColorA = 255, CoronaBitmap = "glowball.tga",
                     ConeAngle = 45f, Intensity = 1f, RadiusDistance = 20f, RadiusScale = 1f, DiminishDistance = 40f,
                     VolumetricBitmap = string.Empty,
                 },
@@ -271,6 +282,68 @@ public static class ObjectFactory
                 new AlpineBagObject { Uid = uid, Position = pos, Orientation = Ident },
                 () => new AlpineBagObjectsSection(), c => ((AlpineBagObjectsSection)c).Bags),
 
+            // Alpine Faction 1.5 objects at Alpine RED's new-object defaults (the DedObject field initialisers,
+            // editor_patch/mfc_types.h:778-1041; script names as PlaceNew*Object assigns them).
+            LevelObjectKind.WeatherRegion => Bp(kind, SectionType.AlpineWeatherRegions, uid,
+                new AlpineWeatherRegion
+                {
+                    Uid = uid, Position = pos, Orientation = Ident, Shape = 0, WeatherType = 0,
+                    Width = 10f, Height = 10f, Depth = 10f, Radius = 5f, DensityScale = 1f,
+                    RainColor = new RfColor(170, 190, 215, 110), RainFallSpeed = 14f, RainWindX = 1.1f, RainWindZ = 0.4f,
+                    RainStreakSeconds = 0.035f, SnowColor = new RfColor(235, 240, 255, 190), SnowFallSpeed = 1.2f,
+                    SnowSwayAmplitude = 0.55f, SnowSwaySpeed = 1.7f, SnowSpriteRadius = 0.035f, SnowBitmap = "af_gbrsnowfl01.tga",
+                    AlwaysShowRange = 0, InitiallyEnabled = 1, ActiveDistance = 0f, VisibleDistance = 0f, BlockByGeometry = 0,
+                    ColumnWidth = 0.5f,
+                },
+                () => new AlpineWeatherRegionsSection(), c => ((AlpineWeatherRegionsSection)c).Records),
+
+            LevelObjectKind.VehicleFactory => Bp(kind, SectionType.AlpineVehicleFactories, uid,
+                new AlpineVehicleFactory
+                {
+                    Uid = uid, Position = pos, Orientation = Ident, VehicleClass = "Jeep01", RespawnDelaySeconds = 30f,
+                    Team = 0xFF, TurretYawLimitDegrees = 0, Reserved = 0, LockToTeam = 0, ActiveByDefault = 1,
+                },
+                () => new AlpineVehicleFactoriesSection(), c => ((AlpineVehicleFactoriesSection)c).Records),
+
+            LevelObjectKind.ProjectionCamera => Bp(kind, SectionType.AlpineProjectionCameras, uid,
+                new AlpineProjectionCamera { Uid = uid, Position = pos, Orientation = Ident },
+                () => new AlpineProjectionCamerasSection(), c => ((AlpineProjectionCamerasSection)c).Records),
+
+            LevelObjectKind.RopeEmitter => Bp(kind, SectionType.AlpineRopeEmitters, uid,
+                new AlpineRopeEmitter
+                {
+                    Uid = uid, Position = pos, Orientation = Ident, TargetUid = -1, DangleLength = 3f, Slack = 0.5f,
+                    Weight = 1f, Thickness = 0.03f, Segments = 24, UvTilesPerMeter = 0f, PackedColor = 0xFFFFFFFFu,
+                    Bitmap = string.Empty, SwayAmplitude = 0.05f, SwaySpeed = 1f, Flags = 0, InitiallyOn = 1,
+                    Decorations = null, ZipDownSpeed = 15f, ZipUpSpeed = 10f, ZipDirection = 0,
+                },
+                () => new AlpineRopeEmittersSection(), c => ((AlpineRopeEmittersSection)c).Records),
+
+            // Travelling straight down, Alpine's record default (common/include/common/alpine_dir_light.h:52-58).
+            LevelObjectKind.DirectionalLight => Bp(kind, SectionType.AlpineDirectionalLights, uid,
+                new AlpineDirectionalLight
+                {
+                    Uid = uid, Position = pos,
+                    Orientation = new Mat3(new Vec3(0f, -1f, 0f), new Vec3(1f, 0f, 0f), new Vec3(0f, 0f, 1f)),
+                    Color = new RfColor(255, 255, 255, 255), Intensity = 1f, InitiallyOn = 1, Shape = 0,
+                    ExtentX = 10f, ExtentY = 10f, ExtentZ = 10f, BoxYaw = 0f, Feather = 0f, Spread = 0f,
+                    CastBakedShadows = 1, LiquidOccludes = 1, SkyPasses = 1, OutsideCasts = 1, AffectsMeshes = 1,
+                    MeshMode = 0, AlwaysShowRange = 0,
+                },
+                () => new AlpineDirectionalLightsSection(), c => ((AlpineDirectionalLightsSection)c).Records),
+
+            // Ground / driller / radius 4: Alpine RED's new helper (DedWaypointHelper, mfc_types.h:841-847).
+            LevelObjectKind.WaypointHelper => Bp(kind, SectionType.AlpineWaypointHelpers, uid,
+                new AlpineWaypointHelper { Uid = uid, Position = pos, HelperType = 2, Flags = 0, SizeClass = 2, Radius = 4f },
+                () => new AlpineWaypointHelpersSection(), c => ((AlpineWaypointHelpersSection)c).Records),
+
+            // Alpine RED's new terrain: 129 x 129 flat vertices, 2 m cells, one Rck_default.tga layer, centred on the
+            // placement point (editor_patch/terrain.cpp:3089-3118 centres it under the camera, 4 m below eye level).
+            LevelObjectKind.Terrain => Bp(kind, SectionType.AlpineTerrain, uid,
+                AlpineTerrainEdit.CreateDefault(uid, new Vec3(
+                    pos.X - (AlpineTerrainRules.Extent(AlpineTerrainRules.DefaultVerts, AlpineTerrainRules.DefaultCellSize) * 0.5f), pos.Y,
+                    pos.Z - (AlpineTerrainRules.Extent(AlpineTerrainRules.DefaultVerts, AlpineTerrainRules.DefaultCellSize) * 0.5f))),
+                () => new AlpineTerrainSection(), c => ((AlpineTerrainSection)c).Terrains),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Not a placeable object kind (movers/keyframes/player start are handled elsewhere)."),
         };
 

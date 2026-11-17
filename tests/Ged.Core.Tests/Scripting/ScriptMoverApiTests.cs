@@ -146,14 +146,15 @@ public sealed class ScriptMoverApiTests
     public void Mover_Fields_Match_The_Schema_And_Round_Trip()
     {
         EditorDocument doc = MakeMoverLevel();
-        string[] keys = MoverInspectorSchema.MoverFields.Select(f => f.EffectiveKey).ToArray();
+        string[] keys = MoverInspectorSchema.MoverFields.Concat(MoverInspectorSchema.MoverPathFields).Select(f => f.EffectiveKey).ToArray();
         Assert.Equal(keys.Length, keys.Distinct().Count());
         (Ged.Core.Scripting.ScriptRunResult names, _) = ScriptTestFixture.Run(doc,
             "local t = {} for _, f in ipairs(level.movers[1]:fields()) do t[#t+1] = f.name .. ':' .. f.type end return table.concat(t, ',')");
         Assert.True(names.Success, names.Error?.ToDisplayString());
         Assert.StartsWith("movement_type:enum,is_door:bool,", names.ReturnValue, StringComparison.Ordinal);
         Assert.Contains("starting_keyframe:int", names.ReturnValue, StringComparison.Ordinal);
-        Assert.EndsWith("hold_open:bool", names.ReturnValue, StringComparison.Ordinal);
+        Assert.Contains("hold_open:bool", names.ReturnValue, StringComparison.Ordinal);
+        Assert.EndsWith("path_orientation:enum,riders_turn:bool,riders_detach_on_leave:bool", names.ReturnValue, StringComparison.Ordinal);
 
         // set(get()) for every field is a byte no-op.
         byte[] before = doc.SaveToBytes(updateTimestamp: false);

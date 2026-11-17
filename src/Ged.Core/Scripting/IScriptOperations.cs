@@ -58,9 +58,29 @@ public sealed class ScriptOpReport
     [ScriptDoc("The output file path when the operation wrote one, else nil.")]
     public string? Path { get; init; }
 
+    /// <summary>Lua: <c>report.surfaces</c> — lightmap surfaces the build made.</summary>
+    [ScriptDoc("For ops.build / ops.light: the lightmap surfaces the build made (a level holds at most surface_cap; 0 for other operations).", Since = 2)]
+    public int Surfaces { get; init; }
+
+    /// <summary>Lua: <c>report.surfaces_wanted</c> — lightmap surfaces the lit faces would make before the cap.</summary>
+    [ScriptDoc("For ops.build / ops.light: the lightmap surfaces the lit faces would make without the cap (more than surface_cap means faces went unlit).", Since = 2)]
+    public int SurfacesWanted { get; init; }
+
+    /// <summary>Lua: <c>report.unlit_faces</c> — lit faces left without a surface past the cap.</summary>
+    [ScriptDoc("For ops.build / ops.light: lit faces that got no lightmap surface because the level reached surface_cap (they draw unlit); 0 normally.", Since = 2)]
+    public int UnlitFaces { get; init; }
+
+    /// <summary>Lua: <c>report.surface_cap</c> — the most lightmap surfaces a level holds (Alpine RED's limit).</summary>
+    [ScriptDoc("The most lightmap surfaces a level holds (32767, Alpine RED's limit).", Since = 2)]
+    public int SurfaceCap => Compiler.SurfaceBuilder.MaxLevelSurfaces;
+
     /// <summary>Lua: <c>report.repair</c> — the build-repair counters of a build (nil when it did not repair).</summary>
     [ScriptDoc("For ops.build / ops.light: the hole-repair counters (repair_report) when the build repaired holes (the editor's Repair Holes When Building setting, on by default), else nil.", Since = 2)]
     public ScriptRepairReport? Repair { get; init; }
+
+    /// <summary>Lua: <c>report.lightmaps</c> — what a lighting bake produced (nil for a build without lighting).</summary>
+    [ScriptDoc("For ops.light: what the bake produced (lightmap_report: pipeline, Alpine chart density, pages, charts), else nil.", Since = 2)]
+    public ScriptLightmapReport? Lightmaps { get; init; }
 
     public override string ToString() => Message;
 }

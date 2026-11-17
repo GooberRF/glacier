@@ -27,6 +27,7 @@ public sealed class ScriptContext
         Rng = new ScriptRng(options.Seed);
 
         Brushes = services.Brushes ?? new BrushEditor(Document);
+        BrushIndex = new ScriptBrushIndex(Brushes);
         Links = services.Links ?? new LinkService(Document);
         Groups = services.Groups ?? new GroupService(Document);
         Movers = services.Movers ?? new MoverService(Document);
@@ -54,6 +55,7 @@ public sealed class ScriptContext
         Spatial = new ScriptSpatial(this);
         KitCore = new ScriptKitCore(this);
         Design = new ScriptDesign(this);
+        Ref = new ScriptRef(this);
     }
 
     // ---- Lua-facing globals ---------------------------------------------------
@@ -89,11 +91,16 @@ public sealed class ScriptContext
 
     public ScriptDesign Design { get; }
 
+    public ScriptRef Ref { get; }
+
     // ---- Shared internal state (reachable because the facade lives in Ged.Core) ----
 
     internal EditorDocument Document { get; }
 
     internal BrushEditor Brushes { get; }
+
+    /// <summary>The run's cached brush bounds, plan grid and volumes (see <see cref="ScriptBrushIndex"/>).</summary>
+    internal ScriptBrushIndex BrushIndex { get; }
 
     internal LinkService Links { get; }
 
@@ -459,6 +466,7 @@ public sealed class ScriptContext
         ["geo"] = Geo,
         ["spatial"] = Spatial,
         ["design"] = Design,
+        ["ref"] = Ref,
     };
 
     /// <summary>Throws when a destructive op is not permitted; used by delete/save/package/playtest

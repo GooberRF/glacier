@@ -91,39 +91,57 @@ public static class AlpineLevelPropertiesSchema
 
     /// <summary>
     /// The Alpine Faction 1.5 properties (alpine_level_properties chunk versions 5 and 6: lighting, sun, minimap,
-    /// vehicles, far clip), read-only until their authoring lands. Reported by <c>level.alpine</c> for scripts;
-    /// the Level Properties dialog does not show them yet. Absent-chunk values are Alpine's defaults
-    /// (editor_patch/level.h:1133-1180).
+    /// vehicles, far clip), editable as Alpine RED's Level Properties tabs edit them (editor_patch/level.cpp:1540-2470;
+    /// ranges from SanitizeSunProperties, level.h:1094-1119, the dialog's read_dlg_float calls and
+    /// common/include/common/alpine_camera_far_clip.h). Shown in the Level Properties dialog's Alpine 1.5 groups and
+    /// reported by <c>level.alpine</c>. The stored bit fields stay read-only raw values; their mapper settings are the
+    /// separate <c>*_setting</c> fields (bit0 of each is recomputed on every save). Absent-chunk values are Alpine's
+    /// defaults (editor_patch/level.h:1133-1180). How the lighting fields change a bake is the lightmap pipeline's
+    /// concern: Glacier's bake reads every one of them (Lighting/Alpine/AlpineLightmapSettings.cs,
+    /// AlpineDirectionalLights.cs), as Alpine RED's does.
     /// </summary>
     public static IReadOnlyList<LevelPropertyField> Alpine15Fields { get; } = new[]
     {
         ReadOnly(new InspectorField("Props Chunk Version", "Version", InspectorEditor.Int) { Key = "props_version" }, 0),
-        ReadOnly(new InspectorField("Legacy Lighting", "LegacyLighting", InspectorEditor.Bool) { Key = "legacy_lighting", Note = "Off = Alpine's lighting pipeline (the default); on = the stock pipeline." }, false),
-        ReadOnly(new InspectorField("High-Res Lightmaps", "HighresLightmaps", InspectorEditor.Bool) { Key = "highres_lightmaps" }, false),
-        ReadOnly(new InspectorField("Lightmap Density", "LightmapDensity", InspectorEditor.Int) { Key = "lightmap_density", Note = "Texels per unit: 0 = default (8), 255 = off." }, 0),
+
+        // Lighting (level.h:982-1004; dialog "Lightmaps" tab, level.cpp:2125-2185).
+        Alpine15(new InspectorField("Legacy Lighting", "LegacyLighting", InspectorEditor.Bool) { Key = "legacy_lighting", Note = "Off = Alpine's lighting pipeline (the default); on = the stock pipeline." }, false),
+        Alpine15(new InspectorField("High-Res Lightmaps", "HighresLightmaps", InspectorEditor.Bool) { Key = "highres_lightmaps" }, false),
+        Alpine15(new InspectorField("Lightmap Density", "LightmapDensity", InspectorEditor.Int) { Key = "lightmap_density", Min = 0, Max = 255, Note = "Texels per unit: 0 = default (8), 1–128, 255 = off." }, 0),
         ReadOnly(new InspectorField("D3D11-Only Lightmaps", "D3D11OnlyLightmaps", InspectorEditor.Int) { Key = "d3d11_only_lightmaps", Note = "Bit 0: no stock lightmaps stored; bit 1: the setting." }, 0),
-        ReadOnly(new InspectorField("Lightmap Compression", "LightmapCompression", InspectorEditor.Int) { Key = "lightmap_compression", Note = "0 quality, 1 balanced, 2 compact." }, 0),
-        ReadOnly(new InspectorField("Sun Enabled", "EnableSun", InspectorEditor.Bool) { Key = "sun_enabled" }, false),
-        ReadOnly(new InspectorField("Sun Yaw", "SunYaw", InspectorEditor.Float) { Key = "sun_yaw" }, 0f),
-        ReadOnly(new InspectorField("Sun Pitch", "SunPitch", InspectorEditor.Float) { Key = "sun_pitch" }, 90f),
-        ReadOnly(new InspectorField("Sun Red", "SunColorR", InspectorEditor.Int) { Key = "sun_red" }, 255),
-        ReadOnly(new InspectorField("Sun Green", "SunColorG", InspectorEditor.Int) { Key = "sun_green" }, 255),
-        ReadOnly(new InspectorField("Sun Blue", "SunColorB", InspectorEditor.Int) { Key = "sun_blue" }, 255),
-        ReadOnly(new InspectorField("Sun Intensity", "SunIntensity", InspectorEditor.Float) { Key = "sun_intensity" }, 1f),
-        ReadOnly(new InspectorField("Sun Spread Angle", "SunSpreadAngle", InspectorEditor.Float) { Key = "sun_spread_angle" }, 0f),
-        ReadOnly(new InspectorField("Sun Casts Baked Shadows", "SunCastBakedShadows", InspectorEditor.Bool) { Key = "sun_cast_baked_shadows" }, true),
-        ReadOnly(new InspectorField("Sun Affects Meshes", "SunAffectsMeshes", InspectorEditor.Bool) { Key = "sun_affects_meshes" }, true),
-        ReadOnly(new InspectorField("Liquid Occludes Sun", "SunLiquidOccludes", InspectorEditor.Bool) { Key = "sun_liquid_occludes" }, true),
-        ReadOnly(new InspectorField("Invisible Faces Occlude", "InvisibleFacesOcclude", InspectorEditor.Bool) { Key = "invisible_faces_occlude" }, false),
-        ReadOnly(new InspectorField("Alpha Faces Occlude", "AlphaFacesOcclude", InspectorEditor.Bool) { Key = "alpha_faces_occlude" }, false),
-        ReadOnly(new InspectorField("Alpha-Tested Occlusion", "AlphaTestedOcclusion", InspectorEditor.Bool) { Key = "alpha_tested_occlusion" }, false),
-        ReadOnly(new InspectorField("Meshes Occlude", "MeshesOcclude", InspectorEditor.Bool) { Key = "meshes_occlude" }, false),
-        ReadOnly(new InspectorField("Vehicle Flight Ceiling Enabled", "VehicleFlightCeilingEnabled", InspectorEditor.Bool) { Key = "vehicle_flight_ceiling_enabled" }, false),
-        ReadOnly(new InspectorField("Vehicle Flight Ceiling", "VehicleFlightCeiling", InspectorEditor.Float) { Key = "vehicle_flight_ceiling" }, 0f),
-        ReadOnly(new InspectorField("Minimap Enabled", "MinimapEnabled", InspectorEditor.Bool) { Key = "minimap_enabled" }, false),
-        ReadOnly(new InspectorField("Minimap Bitmap", "MinimapBitmap", InspectorEditor.Text) { Key = "minimap_bitmap" }, string.Empty),
-        ReadOnly(new InspectorField("Camera Far Clip", "CameraFarClip", InspectorEditor.Float) { Key = "camera_far_clip", Note = "0 = the stock far clip." }, 0f),
-        ReadOnly(new InspectorField("Require Direct3D 11", "RequireD3D11", InspectorEditor.Int) { Key = "require_d3d11", Note = "Bit 0: needed; bit 1: the setting." }, 0),
+        Alpine15(new InspectorField("D3D11-Only Lightmaps Setting", "D3D11OnlyLightmaps", InspectorEditor.Bool) { Key = "d3d11_only_lightmaps_setting", Mask = AlpineLevelPropertiesSection.D3D11OnlySetting, Note = "Store only Alpine (Direct3D 11) lightmaps when baking in Alpine RED." }, false),
+        Alpine15(new InspectorField("Lightmap Compression", "LightmapCompression", InspectorEditor.Enum) { Key = "lightmap_compression", Options = new[] { "Quality", "Balanced", "Compact" } }, 0),
+        Alpine15(new InspectorField("Invisible Faces Occlude", "InvisibleFacesOcclude", InspectorEditor.Bool) { Key = "invisible_faces_occlude" }, false),
+        Alpine15(new InspectorField("Alpha Faces Occlude", "AlphaFacesOcclude", InspectorEditor.Bool) { Key = "alpha_faces_occlude" }, false),
+        Alpine15(new InspectorField("Alpha-Tested Occlusion", "AlphaTestedOcclusion", InspectorEditor.Bool) { Key = "alpha_tested_occlusion" }, false),
+        Alpine15(new InspectorField("Meshes Occlude", "MeshesOcclude", InspectorEditor.Bool) { Key = "meshes_occlude" }, false),
+
+        // Sun (level.h:982-994, SanitizeSunProperties :1094-1119).
+        Alpine15(new InspectorField("Sun Enabled", "EnableSun", InspectorEditor.Bool) { Key = "sun_enabled" }, false),
+        Alpine15(new InspectorField("Sun Yaw", "SunYaw", InspectorEditor.Float) { Key = "sun_yaw", Min = 0, Max = 360, Note = "Degrees around world up." }, 0f),
+        Alpine15(new InspectorField("Sun Pitch", "SunPitch", InspectorEditor.Float) { Key = "sun_pitch", Min = 0, Max = 90, Note = "Degrees above the horizon; 90 = overhead." }, 90f),
+        Alpine15(new InspectorField("Sun Red", "SunColorR", InspectorEditor.Int) { Key = "sun_red", Min = 0, Max = 255 }, 255),
+        Alpine15(new InspectorField("Sun Green", "SunColorG", InspectorEditor.Int) { Key = "sun_green", Min = 0, Max = 255 }, 255),
+        Alpine15(new InspectorField("Sun Blue", "SunColorB", InspectorEditor.Int) { Key = "sun_blue", Min = 0, Max = 255 }, 255),
+        Alpine15(new InspectorField("Sun Intensity", "SunIntensity", InspectorEditor.Float) { Key = "sun_intensity", Min = 0, Max = 10 }, 1f),
+        Alpine15(new InspectorField("Sun Spread Angle", "SunSpreadAngle", InspectorEditor.Float) { Key = "sun_spread_angle", Min = 0, Max = 45, Note = "Penumbra half-angle in degrees for soft baked shadows." }, 0f),
+        Alpine15(new InspectorField("Sun Casts Baked Shadows", "SunCastBakedShadows", InspectorEditor.Bool) { Key = "sun_cast_baked_shadows" }, true),
+        Alpine15(new InspectorField("Sun Affects Meshes", "SunAffectsMeshes", InspectorEditor.Bool) { Key = "sun_affects_meshes" }, true),
+        Alpine15(new InspectorField("Sun Mesh Mode", "SunMeshMode", InspectorEditor.Enum) { Key = "sun_mesh_mode", Options = new[] { "Scaled By Lightmap", "Everywhere" } }, 0),
+        Alpine15(new InspectorField("Sun Drives Shadow-Map Direction", "SunDrivesShadowmapDir", InspectorEditor.Bool) { Key = "sun_drives_shadowmap_dir" }, true),
+        Alpine15(new InspectorField("Liquid Occludes Sun", "SunLiquidOccludes", InspectorEditor.Bool) { Key = "sun_liquid_occludes" }, true),
+
+        // Level settings (v6; level.h:1040-1063, dialog level.cpp:1640-1725, 2400-2470).
+        Alpine15(new InspectorField("Vehicle Flight Ceiling Enabled", "VehicleFlightCeilingEnabled", InspectorEditor.Bool) { Key = "vehicle_flight_ceiling_enabled" }, false),
+        Alpine15(new InspectorField("Vehicle Flight Ceiling", "VehicleFlightCeiling", InspectorEditor.Float) { Key = "vehicle_flight_ceiling", Note = "World height aircraft cannot climb above." }, 0f),
+        Alpine15(new InspectorField("Minimap Enabled", "MinimapEnabled", InspectorEditor.Bool) { Key = "minimap_enabled" }, false),
+        Alpine15(new InspectorField("Minimap Bitmap", "MinimapBitmap", InspectorEditor.Text) { Key = "minimap_bitmap", Note = "A bitmap file name (no path)." }, string.Empty),
+        Alpine15(new InspectorField("Minimap World Min", "MinimapWorldMin", InspectorEditor.Vector) { Key = "minimap_world_min", Note = "The world corner the minimap's first pixel covers (X and Z are used)." }, default(Vec3)),
+        Alpine15(new InspectorField("Minimap World Max", "MinimapWorldMax", InspectorEditor.Vector) { Key = "minimap_world_max" }, default(Vec3)),
+        Alpine15(new InspectorField("Minimap Cut Height", "MinimapCutHeight", InspectorEditor.Float) { Key = "minimap_cut_height" }, 0f),
+        Alpine15(new InspectorField("Camera Far Clip", "CameraFarClip", InspectorEditor.Float) { Key = "camera_far_clip", Min = 0, Max = 100000, Note = "0 = the stock far clip." }, 0f),
+        ReadOnly(new InspectorField("Require Direct3D 11", "RequireD3D11", InspectorEditor.Int) { Key = "require_d3d11", Note = "Bit 0: needed (recomputed on save); bit 1: the setting." }, 0),
+        Alpine15(new InspectorField("Require Direct3D 11 Setting", "RequireD3D11", InspectorEditor.Bool) { Key = "require_d3d11_setting", Mask = AlpineLevelPropertiesSection.RequireD3D11Setting, Note = "Tell players the level needs the Direct3D 11 renderer." }, false),
     };
 
     /// <summary>Everything <c>level.alpine</c> reports: the editable fields, then the read-only 1.5 fields.</summary>
@@ -134,6 +152,9 @@ public static class AlpineLevelPropertiesSchema
 
     private static LevelPropertyField Payload(string label, string path, string key, double min, double max, float dflt, string? note) =>
         Alpine(new InspectorField(label, path, InspectorEditor.Float) { Key = key, Min = min, Max = max, Note = note }, dflt, label);
+
+    private static LevelPropertyField Alpine15(InspectorField f, object defaultWhenAbsent) =>
+        new(f, LevelPropertyTarget.AlpineLevelProperties, defaultWhenAbsent) { UndoDescription = f.Label };
 
     private static LevelPropertyField ReadOnly(InspectorField f, object defaultWhenAbsent)
     {

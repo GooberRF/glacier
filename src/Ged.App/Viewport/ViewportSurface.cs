@@ -420,6 +420,10 @@ public sealed class ViewportSurface : NativeControlHost, IViewportInput, IViewpo
     /// <summary>Whether Alt is currently held (temporary snap-invert during a drag).</summary>
     public bool AltHeld => (_input.Modifiers & GestureModifiers.Alt) != 0;
 
+    public bool CtrlHeld => (_input.Modifiers & GestureModifiers.Ctrl) != 0;
+
+    public bool ShiftHeld => (_input.Modifiers & GestureModifiers.Shift) != 0;
+
     /// <summary>
     /// Whether the temporary snap-invert modifier is held during a drag. This is Alt,
     /// which also covers the documented Linux fallback <b>Ctrl+Alt</b>: many X11 window

@@ -3,6 +3,7 @@ using System.Linq;
 using Ged.Core.IO.Rfl;
 using Ged.Core.IO.Rfl.Sections;
 using Ged.Core.Lighting;
+using Ged.Core.Lighting.Alpine;
 using Ged.Core.Model;
 
 namespace Ged.Core.Compiler;
@@ -53,7 +54,28 @@ public static class GeometryBuildService
             }
         }
 
+        // [ALPINE] Terrain: every chunk of every terrain goes in as a temporary detail brush after the authored brushes,
+        // isolated into a detail room of its own (editor_patch/terrain_build.cpp:245-288, level.cpp:666-706). Glacier's
+        // detail brushes never take part in the boolean, so air brushes do not cut terrain (ALPINE-COMPAT-SPEC §11.1, Q10).
+        TerrainBuild? terrain = null;
+        options.TerrainBrushUids = System.Array.Empty<int>();
+        if (options.Alpine && Find<AlpineTerrainSection>(rfl) is { IsReadOnly: false, Terrains.Count: > 0 } terrainSection)
+        {
+            terrain = TerrainBuildMapping.Prepare(terrainSection.Terrains);
+            brushes = new List<Brush>(brushes);
+            brushes.AddRange(terrain.Brushes);
+            var isolatedWithTerrain = new HashSet<int>(options.IsolatedBrushUids);
+            isolatedWithTerrain.UnionWith(terrain.BrushUids);
+            options.IsolatedBrushUids = isolatedWithTerrain;
+            options.TerrainBrushUids = terrain.BrushUids;
+        }
+
         CompiledLevel result = GeometryCompiler.Compile(brushes, effects, options);
+        if (terrain is not null)
+        {
+            TerrainBuildMapping.Finish(terrain, result);
+            result.Terrain = terrain;
+        }
 
         // Preserve authored per-room state the compile cannot derive: is_airlock is authored via RED's
         // room-property UI and PRESERVED in the serialized room table (never recomputed — dmabrupt ships
@@ -91,6 +113,8 @@ public static class GeometryBuildService
             }
         }
 
+        // The Alpine charts waited for the movers' surfaces (their charts pack with the static ones).
+        LightingBaker.FinishAlpineCharts(result, result.Report);
         return result;
     }
 
@@ -261,11 +285,15 @@ public static class GeometryBuildService
         // to Glass instead of its authored material.
         UpdateAlpineRoomLinks(rfl, result);
 
-        // [ALPINE] The level's Alpine lightmap chunk was baked for the geometry just replaced: the next save drops it
-        // (AlpineLightmapSavePolicy, ALPINE-COMPAT-SPEC §9 interim rule).
+        // [ALPINE] Each terrain's chunk-to-room mapping now describes this build (terrain_build.cpp:361-454).
+        UpdateTerrainMappings(rfl, result);
+
+        // [ALPINE] The level's Alpine lightmap chunk was baked for the geometry just replaced: the next save replaces it
+        // with the charts this build baked, or drops it when it baked none (AlpineLightmapSavePolicy).
         rfl.NoteGlacierLightingChange(result.BakeStats is null
             ? GlacierLightingChange.Geometry
             : GlacierLightingChange.Geometry | GlacierLightingChange.Lighting);
+        rfl.AttachAlpineLightmaps(result.BakeStats?.AlpineLightmaps);
     }
 
     /// <summary>
@@ -286,9 +314,16 @@ public static class GeometryBuildService
             return null;
         }
 
+        // The level's own Alpine directional lights (sun, Directional Light objects), as a build bakes them.
+        if (options.DirectionalLights.Count == 0)
+        {
+            options.DirectionalLights = AlpineDirectionalLights.FromLevel(rfl);
+        }
+
         BakeStats stats = LevelLighting.BakeInto(geometry.Geometry, lightmaps.Lightmaps, lights, levelAmbient, options, region);
         host.Dirty = true;
         rfl.NoteGlacierLightingChange(GlacierLightingChange.Lighting);
+        rfl.AttachAlpineLightmaps(stats.AlpineLightmaps);
         return stats;
     }
 
@@ -347,6 +382,39 @@ public static class GeometryBuildService
         if (changed)
         {
             host!.Dirty = true;
+        }
+    }
+
+    /// <summary>
+    /// Stores each terrain's chunk-to-room mapping from the build (or none, when the build did not compile it or a chunk
+    /// got no room) and the geometry fingerprint of the terrain it was made for, so a later edit invalidates it. Marks the
+    /// terrain chunk dirty only when a mapping changed.
+    /// </summary>
+    private static void UpdateTerrainMappings(RflFile rfl, CompiledLevel result)
+    {
+        if (FindSection(rfl, SectionType.AlpineTerrain) is not { Content: AlpineTerrainSection { IsReadOnly: false } section } host)
+        {
+            return;
+        }
+
+        bool changed = false;
+        foreach (AlpineTerrain t in section.Terrains)
+        {
+            TerrainBuildEntry? entry = result.Terrain?.Terrains.FirstOrDefault(e => e.TerrainUid == t.Uid);
+            List<AlpineTerrainChunkMapping> mapping = entry?.Mapping ?? new List<AlpineTerrainChunkMapping>();
+            if (!t.BuildMapping.SequenceEqual(mapping))
+            {
+                t.BuildMapping.Clear();
+                t.BuildMapping.AddRange(mapping);
+                changed = true;
+            }
+
+            t.BuiltGeometryFingerprint = entry?.Mapping is null ? null : entry.GeometryFingerprint;
+        }
+
+        if (changed)
+        {
+            host.Dirty = true;
         }
     }
 

@@ -271,10 +271,83 @@ public sealed class BuildResult
     /// </summary>
     public BuildRepairDto? Repair { get; init; }
 
+    /// <summary>What the lighting bake produced (present when lighting was baked).</summary>
+    public LightmapBakeDto? Lightmaps { get; init; }
+
     public List<BuildMessageDto> Messages { get; init; } = new();
 
     /// <summary>The save performed after the build (<c>save</c> arg), when requested.</summary>
     public SaveResult? Saved { get; set; }
+}
+
+/// <summary>
+/// A lighting bake's lightmaps: the pipeline it ran (the level's Alpine "Legacy lighting" property) and, for the Alpine
+/// pipeline, the Direct3D 11 surface charts it baked (saved with the level as its Alpine lightmap chunk).
+/// </summary>
+public sealed class LightmapBakeDto
+{
+    /// <summary>"alpine" or "legacy".</summary>
+    public string Pipeline { get; init; } = "legacy";
+
+    /// <summary>Texels per world unit the charts were baked at (0 when none).</summary>
+    public int Density { get; init; }
+
+    /// <summary>The density the bake started from.</summary>
+    public int RequestedDensity { get; init; }
+
+    /// <summary>Times the density was halved to fit the page budget.</summary>
+    public int Halvings { get; init; }
+
+    /// <summary>Alpine lightmap pages (256×256).</summary>
+    public int Pages { get; init; }
+
+    /// <summary>Surfaces with an Alpine chart.</summary>
+    public int Charts { get; init; }
+
+    public int Tiles { get; init; }
+
+    /// <summary>Alpine directional lights baked (sun, Directional Light objects).</summary>
+    public int DirectionalLights { get; init; }
+
+    /// <summary>Why no Alpine charts were baked, when none were.</summary>
+    public string? Skipped { get; init; }
+
+    /// <summary>The layer codec written ("bc7", "raw", or "none").</summary>
+    public string Codec { get; init; } = "none";
+
+    /// <summary>The BC7 compression mode ("quality", "balanced", "compact").</summary>
+    public string Compression { get; init; } = "quality";
+
+    /// <summary>Movers with Alpine charts (the mover table).</summary>
+    public int Movers { get; init; }
+
+    /// <summary>Mover surfaces with an Alpine chart.</summary>
+    public int MoverCharts { get; init; }
+
+    /// <summary>Liquid rooms whose emission lit the bake.</summary>
+    public int LiquidEmitters { get; init; }
+
+    /// <summary>Bytes of the Alpine lightmap section body (0 when none).</summary>
+    public int SectionBytes { get; init; }
+
+    public static LightmapBakeDto? From(Ged.Core.Lighting.BakeStats? stats) => stats is null ? null : new LightmapBakeDto
+    {
+        Pipeline = stats.Pipeline is { } p ? Ged.Core.Lighting.Alpine.AlpineLightmapSettings.Name(p) : "legacy",
+        Density = stats.AlpineLightmaps?.Density ?? 0,
+        RequestedDensity = stats.AlpineLightmaps?.RequestedDensity ?? 0,
+        Halvings = stats.AlpineLightmaps?.DensityHalvings ?? 0,
+        Pages = stats.AlpineLightmaps?.Pages.Length ?? 0,
+        Charts = stats.AlpineLightmaps?.ChartedSurfaces ?? 0,
+        Tiles = stats.AlpineLightmaps?.Tiles.Length ?? 0,
+        DirectionalLights = stats.DirectionalLights,
+        Skipped = stats.AlpineSkipped,
+        Codec = stats.AlpineLightmaps is { } a ? Ged.Core.Lighting.Alpine.AlpineLightmapSettings.CodecName(a.Codec) : "none",
+        Compression = stats.AlpineLightmaps is { } b ? Ged.Core.Lighting.Alpine.AlpineLightmapSettings.CompressionName(b.Compression) : "quality",
+        Movers = stats.AlpineLightmaps?.Movers.Count ?? 0,
+        MoverCharts = stats.AlpineLightmaps?.Movers.Sum(m => m.ChartCount) ?? 0,
+        LiquidEmitters = stats.LiquidEmitters,
+        SectionBytes = stats.AlpineLightmaps?.Body.Length ?? 0,
+    };
 }
 
 /// <summary>The eleven build-repair counters Alpine RED prints after a build, in its order.</summary>
@@ -410,8 +483,9 @@ public sealed class SaveResult
 
     /// <summary>
     /// The save log: what upgrading the level to RFL 306 changed or activated (a fog near clip reset to 0, Looping
-    /// sound events that now loop, a pre-release props layout rewritten) and an Alpine lightmap chunk dropped because
-    /// Glacier rebuilt or relit the level; omitted when nothing.
+    /// sound events that now loop, a pre-release props layout rewritten), an Alpine lightmap chunk dropped because
+    /// Glacier rebuilt or relit the level, and a stale packfile beside the level (its <c>&lt;name&gt;.vpp</c> still holds
+    /// an older copy, which the game would load instead); omitted when nothing.
     /// </summary>
     public IReadOnlyList<string>? UpgradeNotes { get; init; }
 }

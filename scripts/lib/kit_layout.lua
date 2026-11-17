@@ -582,7 +582,7 @@ def("nook", {
 -- Open-air archetypes -------------------------------------------------------------------------
 
 def("isle", {
-  class = "open_air", min = { 18, 18 }, max = { 34, 34 }, levels = { 0 }, loops = 0, open_air = true,
+  class = "open_air", min = { 18, 18 }, max = { 34, 34 }, levels = { 0 }, loops = 0, open_air = true, natural_ground = true,
   summary = "A floating octagonal island with a rocky underside, kerb-and-rail edges and rock cover.",
   chamfer = function(z) return q2(math.min(z.size[1], z.size[2]) * 0.18) end,
 })
@@ -643,7 +643,7 @@ def("mast", {
 })
 
 def("garden", {
-  class = "open_air", min = { 18, 18 }, max = { 30, 30 }, levels = { 0 }, loops = 0, open_air = true, chamfer = 4,
+  class = "open_air", min = { 18, 18 }, max = { 30, 30 }, levels = { 0 }, loops = 0, open_air = true, chamfer = 4, natural_ground = true,
   summary = "A rocky floating garden: boulders and low rock walls as cover, railed edges.",
 })
 
@@ -1130,6 +1130,52 @@ local function resolver(graph, rng, keep)
     local l, za, zb = P.link, P.za, P.zb
     P.mode = "join"
     local names = za.id .. " and " .. zb.id
+    -- A literal join (kit.trace): two traced zones whose welded outlines share wall stretches exactly. The opening is
+    -- the trace's band (its floors may differ: a ramp's foot, a deck at a storey), any length counts, and no air strip
+    -- is cut across the line (the outlines meet on identical corners, so their air already merges).
+    local lit = type(l.literal) == "table" and za.archetype == "poly" and zb.archetype == "poly"
+    if lit then
+      local bot = l.literal.y0 or math.max(za.pos[2], zb.pos[2])
+      local top = l.literal.y1 or math.min(za.pos[2] + (za.height or 6), zb.pos[2] + (zb.height or 6))
+      P.y0, P.y1, P.ext, P.ext_quads, P.span = bot, top, nil, {}, 0
+      local pa, pb = poly_of(za), poly_of(zb)
+      local first = nil
+      for i = 1, #pa do
+        local a, _, t, L, n = poly_edge(pa, i)
+        for j = 1, #pb do
+          local c, d, u = poly_edge(pb, j)
+          if t[1] * u[1] + t[2] * u[2] < -0.9998 then
+            local dc = math.abs((c[1] - a[1]) * n[1] + (c[2] - a[2]) * n[2])
+            local dd = math.abs((d[1] - a[1]) * n[1] + (d[2] - a[2]) * n[2])
+            if dc < 0.05 and dd < 0.05 then
+              local sc = (c[1] - a[1]) * t[1] + (c[2] - a[2]) * t[2]
+              local sd = (d[1] - a[1]) * t[1] + (d[2] - a[2]) * t[2]
+              local s0, s1 = math.max(0, math.min(sc, sd)), math.min(L, math.max(sc, sd))
+              if s1 - s0 > 0.05 then
+                local p0 = { a[1] + t[1] * s0, a[2] + t[2] * s0 }
+                local p1 = { a[1] + t[1] * s1, a[2] + t[2] * s1 }
+                local pm = { (p0[1] + p1[1]) / 2, (p0[2] + p1[2]) / 2 }
+                local ua = used_of(za.id, i)
+                ua[#ua + 1] = { lo = s0, hi = s1, y0 = bot, y1 = top }
+                add_port(za, { side = i, seg = { p0, p1 }, pt = pm, nrm = { n[1], n[2] }, lo = s0, hi = s1, y0 = bot, y1 = top, link = l, floor = bot, join = true })
+                local l0 = (p0[1] - c[1]) * u[1] + (p0[2] - c[2]) * u[2]
+                local l1 = (p1[1] - c[1]) * u[1] + (p1[2] - c[2]) * u[2]
+                local ub = used_of(zb.id, j)
+                ub[#ub + 1] = { lo = math.min(l0, l1), hi = math.max(l0, l1), y0 = bot, y1 = top }
+                add_port(zb, { side = j, seg = { p0, p1 }, pt = pm, nrm = { -n[1], -n[2] }, lo = math.min(l0, l1), hi = math.max(l0, l1), y0 = bot, y1 = top,
+                  link = l, floor = bot, join = true })
+                P.span = P.span + (s1 - s0)
+                first = first or { i, j }
+              end
+            end
+          end
+        end
+      end
+      if first then P.side_a, P.side_b = first[1], first[2] end
+      P.literal = true
+      P.ok = true
+      return
+    end
     if math.abs(za.pos[2] - zb.pos[2]) > DATA.max_step + EPS then
       err(l, "level", "the join between " .. names .. " has floors " .. fmt(math.abs(za.pos[2] - zb.pos[2])) ..
         " m apart; joined zones are one space (floors within " .. fmt(DATA.max_step) .. " m).")
@@ -1790,11 +1836,41 @@ local function resolver(graph, rng, keep)
     end
   end
 
+  -- Literal links (kit.trace's openings): an opening exactly where it was traced, through the wall gap between two
+  -- poly zones (l.literal = {quad, y0, y1, pa, pb}: its plan quad, its band, its points on a's and b's walls). Its
+  -- ports sit on each zone's nearest edge at the traced point; nothing is moved or routed.
+  local function literal_link(P)
+    local l, za, zb = P.link, P.za, P.zb
+    local L = l.literal
+    P.mode, P.W = "literal", l.width or DATA.door_width
+    local half = P.W / 2
+    local function port(z, at)
+      local p = poly_of(z)
+      if not p or type(at) ~= "table" then return nil end
+      local best, bi = math.huge, 1
+      for i = 1, #p do local d = pt_seg(at, p[i], p[i % #p + 1]) if d < best then best, bi = d, i end end
+      local a, _, t, len, n = poly_edge(p, bi)
+      local c = clamp((at[1] - a[1]) * t[1] + (at[2] - a[2]) * t[2], 0, len)
+      local pt = { a[1] + t[1] * c, a[2] + t[2] * c }
+      local q = { side = bi, seg = { { pt[1] - t[1] * half, pt[2] - t[2] * half }, { pt[1] + t[1] * half, pt[2] + t[2] * half } }, pt = pt, nrm = { n[1], n[2] },
+        lo = c - half, hi = c + half, y0 = L.y0, y1 = L.y1, link = l, floor = L.y0, literal = true }
+      add_port(z, q)
+      local u = used_of(z.id, bi)
+      u[#u + 1] = { lo = q.lo, hi = q.hi, y0 = L.y0, y1 = L.y1 }
+      return q
+    end
+    P.pa, P.pb = port(za, L.pa), port(zb, L.pb)
+    P.side_a, P.side_b = P.pa and P.pa.side, P.pb and P.pb.side
+    if type(L.quad) == "table" then plan.foot[#plan.foot + 1] = { poly = L.quad, band = { L.y0, L.y1 }, link = l, id = l.id } end
+    P.ok = true
+  end
+
   local X = { graph = graph, plan = plan, used = used, join = join, free = free }
   -- A link that is not a join: classic, true when it needs a free route after all (the classic geometry failed on
   -- a free-method graph, or it is free to begin with).
   function X.classic(P)
     local l, za, zb = P.link, P.za, P.zb
+    if type(l.literal) == "table" and za.archetype == "poly" and zb.archetype == "poly" then literal_link(P) return false end
     local rect = za.archetype ~= "poly" and zb.archetype ~= "poly"
     if rect and same_rot(zone_rot(za), zone_rot(zb)) and not wants_free(l) then
       if graph.method == "free" and FREE_TYPES[l.type] then return not classic(P, false) end
@@ -2199,8 +2275,12 @@ local function check(graph)
       local poly_bad = nil
       if A and A.poly then
         -- a traced zone: its outline is the plan; pos x/z and size follow from it when missing
+        -- (a literal zone, kit.trace's: the trace validated and welded its outline already, so it may carry up to
+        -- 256 points, T-vertices close together and small areas)
+        local lit = type(z.literal) == "table"
         local o = z.outline
-        if type(o) ~= "table" or #o < 3 or #o > 64 then poly_bad = "needs outline = 3 to 64 world points {x, z}"
+        local maxp = lit and 256 or 64
+        if type(o) ~= "table" or #o < 3 or #o > maxp then poly_bad = "needs outline = 3 to " .. maxp .. " world points {x, z}"
         else
           for k, q in ipairs(o) do
             if type(q) ~= "table" or type(q[1] or q.x) ~= "number" or type(q[2] or q.z) ~= "number" then poly_bad = "outline[" .. k .. "] must be a point {x, z}" break end
@@ -2208,12 +2288,13 @@ local function check(graph)
         end
         local p = (poly_bad == nil) and poly_of(z) or nil
         if p then
+          local close = lit and 1e-3 or 0.25
           for k = 1, #p do
             local q, r = p[k], p[k % #p + 1]
-            if math.abs(q[1] - r[1]) + math.abs(q[2] - r[2]) < 0.25 then poly_bad = "outline points " .. k .. " and " .. (k % #p + 1) .. " are closer than 0.25 m" break end
+            if math.abs(q[1] - r[1]) + math.abs(q[2] - r[2]) < close then poly_bad = "outline points " .. k .. " and " .. (k % #p + 1) .. " are closer than " .. fmt(close) .. " m" break end
           end
-          if not poly_bad and not simple(p) then poly_bad = "the outline is not a simple polygon (its edges cross or touch; list the points in order around the plan)" end
-          if not poly_bad and math.abs(area2(p)) < 16 then poly_bad = "the outline encloses less than 16 m2" end
+          if not poly_bad and not lit and not simple(p) then poly_bad = "the outline is not a simple polygon (its edges cross or touch; list the points in order around the plan)" end
+          if not poly_bad and math.abs(area2(p)) < (lit and 1 or 16) then poly_bad = "the outline encloses less than " .. (lit and 1 or 16) .. " m2" end
         end
         if poly_bad == nil and (type(z.pos) ~= "table" or type(z.pos[2]) ~= "number") then poly_bad = "needs pos = {x, floor, z} (the floor height; x and z may be left out)" end
         if poly_bad == nil then
@@ -2238,6 +2319,12 @@ local function check(graph)
           violation(V, "error", "size", "zone " .. z.id .. " (" .. z.archetype .. ") is " .. fmt(z.size[1]) .. " x " .. fmt(z.size[2]) ..
             " m; the archetype needs at least " .. fmt(mn[1]) .. " x " .. fmt(mn[2]) .. " m" ..
             (A.dims and (" (heading " .. heading_of(z) .. ")") or "") .. ".", z.id)
+        end
+        if z.ground ~= nil and z.ground ~= "brush" and z.ground ~= "terrain" and z.ground ~= "auto" then
+          violation(V, "error", "schema", "zone " .. z.id .. ": ground must be \"brush\", \"terrain\" or \"auto\" (got " .. tostring(z.ground) .. ").", z.id)
+        elseif (z.ground == "terrain" or z.ground == "auto") and not (A.open_air or A.sky) then
+          -- (kit.ground: terrain is open outdoor ground; a roofed zone keeps its brush floor)
+          violation(V, "rule", "ground", "zone " .. z.id .. " (" .. z.archetype .. ") asks for " .. z.ground .. " ground but is roofed: terrain needs open sky, so it keeps its brush floor.", z.id)
         end
         if z.params ~= nil and type(z.params) ~= "table" then
           violation(V, "error", "schema", "zone " .. z.id .. ": params must be a table.", z.id)
@@ -2315,14 +2402,17 @@ local function check(graph)
       else
         close = poly_near(wp[i], wp[j], m - EPS, wb[i], wb[j])
       end
-      if close and not joined[a.id .. "\0" .. b.id] then
+      -- (two literal zones: kit.trace refused shared volume, thin wedges and thin slabs itself; traced regions touch
+      -- along shared walls and stack as storeys, which generated zones never do)
+      if close and not joined[a.id .. "\0" .. b.id] and not (type(a.literal) == "table" and type(b.literal) == "table") then
         violation(V, "error", "geometry", "zones " .. a.id .. " and " .. b.id .. " overlap or stand closer than " .. fmt(m) .. " m.", a.id)
       end
     end
   end
   for _, l in ipairs(graph.links) do
     local za, zb = ids[l.a], ids[l.b]
-    if l.type ~= "join" then
+    -- (a literal link stands where it was traced, between floors kit.trace checked)
+    if l.type ~= "join" and type(l.literal) ~= "table" then
     local oa, ob = port_offsets(l, za, zb)
     if l.type ~= "drop" and l.type ~= "window" and not has_level(za, oa) then
       violation(V, "error", "level", "link " .. l.id .. ": a_y " .. fmt(za.pos[2] + oa) .. " is not a port level of " .. za.id ..
@@ -2755,7 +2845,7 @@ local function check(graph)
   return V, plan
 end
 
----@kit kit.check_layout{graph} → violation[] — Checks a layout graph against the c.1-1 rules before anything is built: schema and geometry (zones apart, every link fits its walls, levels and gaps), degree >= 2 except reward nooks, no articulation zone with >= 10% of the area behind it, cycle rank per 1,000 m2, 2 node-disjoint routes between hubs and objectives, 3+ floor levels 4.5-10 m apart joined by 2+ kinds of vertical link, archetype variety, mirror symmetry only for team modes, and the CTF / KOTH / payload / open-air rules and the size budget. A link without a_y / b_y meets each zone at its floor (a graded road's top floor at its exit end). Payload tracks run on any heading: a road zone's params.heading is the way the cart travels through it (entered on the opposite end), the cart turns inside the zones between roads, consecutive cart zones need a road, bridge, doorway or corridor between them, and a bridge outside open-air layouts spans a chasm between two floors at one level. Free-form plans: zone.rot turns a zone's plan (its sides stay its own), a poly zone's outline is its world plan, a link that is not straight between facing walls of two rectangle zones of one rot is free (path waypoints, a_side / b_side, a_at / b_at, or routed clear of the zones and links), and a join opens two touching zones into one space; the checker reports overlaps and clearances in world coordinates, free links that bend more than 90 degrees, run under 1 m a segment, enter or pass within 1 m of a zone or cross another link on its storey, or lack the straight a stair or ramp needs, and joins that do not touch. A hand-made zone without levels, height or chamfer gets its archetype's. Each violation is {severity ("error": cannot build; "rule": a design rule), rule, message, zone?, link?}.
+---@kit kit.check_layout{graph} → violation[] — Checks a layout graph against the c.1-1 rules before anything is built: schema and geometry (zones apart, every link fits its walls, levels and gaps), degree >= 2 except reward nooks, no articulation zone with >= 10% of the area behind it, cycle rank per 1,000 m2, 2 node-disjoint routes between hubs and objectives, 3+ floor levels 4.5-10 m apart joined by 2+ kinds of vertical link, archetype variety, mirror symmetry only for team modes, the CTF / KOTH / payload / open-air rules, the size budget, and each zone's ground request (zone.ground "brush", "terrain" or "auto"; terrain only under open sky). A link without a_y / b_y meets each zone at its floor (a graded road's top floor at its exit end). Payload tracks run on any heading: a road zone's params.heading is the way the cart travels through it (entered on the opposite end), the cart turns inside the zones between roads, consecutive cart zones need a road, bridge, doorway or corridor between them, and a bridge outside open-air layouts spans a chasm between two floors at one level. Free-form plans: zone.rot turns a zone's plan (its sides stay its own), a poly zone's outline is its world plan, a link that is not straight between facing walls of two rectangle zones of one rot is free (path waypoints, a_side / b_side, a_at / b_at, or routed clear of the zones and links), and a join opens two touching zones into one space; the checker reports overlaps and clearances in world coordinates, free links that bend more than 90 degrees, run under 1 m a segment, enter or pass within 1 m of a zone or cross another link on its storey, or lack the straight a stair or ramp needs, and joins that do not touch. A hand-made zone without levels, height or chamfer gets its archetype's. Each violation is {severity ("error": cannot build; "rule": a design rule), rule, message, zone?, link?}.
 ---@opt graph: table — Required: a kit.layout graph (possibly edited).
 function kit.check_layout(t)
   check_keys("kit.check_layout", t, { "graph" })
@@ -2869,7 +2959,7 @@ local POOL = {
   open_air_hub = { "ring", "hangar" },
 }
 
----@kit kit.layout{gametype?, players?, class?, brief?, seed?, area?, style?, step?, segments?} → graph — Generates a layout graph before any brush: zones (archetype, plan, floor level, palette, role, ground), typed links, objectives (spawn groups, flags, the hill, the payload cart and checkpoints with the spawn hand-off) and the size budget from the player class (DESIGN-QUALITY-SPEC §a.1, §c.1-1, §h). A plain table: edit it, then kit.check_layout, kit.layout_preview and kit.build_layout. The same seed gives the same graph.
+---@kit kit.layout{gametype?, players?, class?, brief?, seed?, area?, style?, step?, segments?, ground?} → graph — Generates a layout graph before any brush: zones (archetype, plan, floor level, palette, role, ground), typed links, objectives (spawn groups, flags, the hill, the payload cart and checkpoints with the spawn hand-off) and the size budget from the player class (DESIGN-QUALITY-SPEC §a.1, §c.1-1, §h). A plain table: edit it, then kit.check_layout, kit.layout_preview and kit.build_layout. The same seed gives the same graph.
 ---@opt gametype: string = "dm" — "dm", "ctf", "koth" or "payload".
 ---@opt players: integer = 8 — Intended players: 2-4 an arena (XS), up to 8 S, up to 16 M, more L; payload 12+ adds segments.
 ---@opt class: string = "standard" — "standard" (indoor, with courtyards) or "open_air" (floating platforms, sky bridges and decks); payload is its own class.
@@ -2879,10 +2969,15 @@ local POOL = {
 ---@opt style: table = none — {theme = "bunker"} or {themes = {...}}: palette themes in order of use.
 ---@opt step: number = 5 (payload 4.5) — Metres between floor levels (4.5-10).
 ---@opt segments: integer = by players (3-5) — Payload segments (checkpoints).
+---@opt ground: string = "brush" — The ground of the open-air and sky zones (zone.ground): "brush" (brush slabs and floors), "terrain" (an Alpine terrain over the natural-ground zones: isles and gardens; built decks stay brushes) or "auto" (kit.ground decides per zone when the layout is built). The graph is the same either way; only zone.ground changes.
 function kit.layout(t)
   local api = "kit.layout"
   t = t or {}
-  check_keys(api, t, { "gametype", "players", "class", "brief", "seed", "area", "style", "step", "segments" })
+  check_keys(api, t, { "gametype", "players", "class", "brief", "seed", "area", "style", "step", "segments", "ground" })
+  local ground = t.ground
+  if ground ~= nil and ground ~= "brush" and ground ~= "terrain" and ground ~= "auto" then
+    fail(api, "'ground' must be \"brush\", \"terrain\" or \"auto\" (got " .. tostring(ground) .. ").")
+  end
   local gametype = t.gametype or "dm"
   if gametype ~= "dm" and gametype ~= "ctf" and gametype ~= "koth" and gametype ~= "payload" then
     fail(api, "'gametype' must be \"dm\", \"ctf\", \"koth\" or \"payload\" (got " .. tostring(gametype) .. ").")
@@ -2970,6 +3065,11 @@ function kit.layout(t)
     if score == 0 then break end
   end
   best.attempt = nil
+  -- The ground request (kit.ground decides and builds it in kit.build_layout); generation never reads it, so a seed
+  -- gives the same zones, links and objectives whatever the ground.
+  if ground ~= nil and ground ~= "brush" then
+    for _, z in ipairs(best.zones) do if z.ground ~= nil then z.ground = ground end end
+  end
   best.notes = {}
   for _, m in ipairs(best.dropped or {}) do best.notes[#best.notes + 1] = "dropped " .. m end
   best.dropped = nil
@@ -2977,14 +3077,14 @@ function kit.layout(t)
   return best
 end
 
----@kit kit.layout_archetypes{} → archetype[] — The zone archetypes kit.layout and kit.build_layout use: {name, class ("indoor", "open_air", "payload" or "traced" for the poly zone), min = {w, d} (kit.check_layout refuses smaller zones; a road's {w, d} turns with its heading), max = {w, d} (the sizes kit.layout generates; larger hand-made zones are allowed), levels (port levels; "step" = one level up), loops (inside the zone), summary}.
+---@kit kit.layout_archetypes{} → archetype[] — The zone archetypes kit.layout and kit.build_layout use: {name, class ("indoor", "open_air", "payload" or "traced" for the poly zone), min = {w, d} (kit.check_layout refuses smaller zones; a road's {w, d} turns with its heading), max = {w, d} (the sizes kit.layout generates; larger hand-made zones are allowed), levels (port levels; "step" = one level up), loops (inside the zone), summary, natural_ground (true: its ground may be an Alpine terrain, zone.ground)}.
 function kit.layout_archetypes(t)
   if t ~= nil then check_keys("kit.layout_archetypes", t, {}) end
   local out = {}
   for i, n in ipairs(LORDER) do
     local A = LA[n]
     out[i] = { name = n, class = A.class, min = { A.min[1], A.min[2] }, max = { A.max[1], A.max[2] }, levels = copy_list(A.levels),
-      loops = A.loops, summary = A.summary, hub = A.hub or false, hill = A.hill or false }
+      loops = A.loops, summary = A.summary, hub = A.hub or false, hill = A.hill or false, natural_ground = A.natural_ground or false }
   end
   return out
 end
@@ -3202,6 +3302,14 @@ local function zone_ctx(gname, z, plan)
   R.solids, R.spots, R.parts, R.brushes, R.warnings = {}, {}, {}, {}, {}
   R.flights, R.rails = {}, {} -- the zone's stair records (for their stringers and handrails) and its open edges {a, b, y} (zone frame)
   R.lane = nil
+  -- A literal zone (kit.trace via the layout builder): its own textures, and the name its brushes answer to
+  -- (kit.zone: the traced region's, or its path's).
+  if type(z.literal) == "table" then
+    R.literal = z.literal
+    R.tag = z.literal.tag
+    if z.literal.texture then R.textures = { floor = z.literal.texture, wall = z.literal.texture, ceiling = z.literal.texture }
+    elseif z.literal.textures then R.textures = z.literal.textures end
+  end
   return R
 end
 
@@ -4700,8 +4808,16 @@ RECIPES.overlook = {
 -- A traced space: the room (or yard) is its outline; a raised ceiling bay over the biggest convex piece indoors;
 -- low cover blocks on a lattice of its clear floor, kept 2 m in from the walls and off the port approaches and the
 -- cart lane; floor spots on a 4 m grid.
+-- A literal zone (zone.literal = {shell, inner, late}, kit.trace's) builds its traced plan through its own hooks
+-- instead: no raised ceiling bay, no cover, no pilasters (the room detail pass lines its walls); each hook is called as
+-- hook(R, LAYOUT) and adds what it builds to R.brushes (R.room = {pieces, outline} for the lights and the detail pass).
 RECIPES.poly = {
   shell = function(R)
+    if R.literal then
+      if R.literal.shell then R.literal.shell(R, LAYOUT) end
+      if R.z.sky then R.sky = true end
+      return
+    end
     local foot = {}
     for i, q in ipairs(R.poly) do foot[i] = { q[1], q[2] } end
     local rec = shaped(R, { pos = { 0, R.y, 0 }, footprint = foot, height = R.h })
@@ -4719,6 +4835,10 @@ RECIPES.poly = {
     end
   end,
   inner = function(R)
+    if R.literal then
+      if R.literal.inner then R.literal.inner(R, LAYOUT) end
+      return
+    end
     local p = R.poly
     local function clear_floor(x, z, m) return inside(p, x, z) and edge_dist(p, x, z) >= m end
     -- the plan's own frame: local x along its longest wall (the first of walls within 5 cm of it), so a traced zone
@@ -4804,6 +4924,10 @@ RECIPES.poly = {
   -- Wall articulation indoors: pilasters about every 4.5 m along the traced walls at least 9 m long, 1.5 m clear of
   -- corners and 2 m clear of every port, each buried a quarter metre in its wall (no face on the wall's oblique plane).
   late = function(R)
+    if R.literal then
+      if R.literal.late then R.literal.late(R, LAYOUT) end
+      return
+    end
     if R.sky or (R.detail and R.detail.walls) then return end -- (the room detail pass lines the walls instead)
     local p = ccw(R.poly)
     local n = #p
@@ -5371,6 +5495,62 @@ local function build_join(P, gname)
   return out
 end
 
+-- A zone-frame polygon in world metres.
+local function world_poly(R, p)
+  local o = {}
+  for i, q in ipairs(p) do local x, zz = R.W(q[1], q[2]) o[i] = { x, zz } end
+  return o
+end
+
+-- A zone's ground (zone.ground "terrain" or "auto", kit.layout{ground}): kit.ground's §4.4 decision on the zone, and
+-- for terrain an Alpine terrain over its plan, through the same builder as kit.ground. The zone's slab is built as for
+-- brush ground (so every link meets it as before); the terrain rests kit.defaults.terrain_lift above it, level at the
+-- edges, the port approaches and under what stands on the slab, with worn paths (the zone palette's floor) from each
+-- port to the centre. The zone's spots (spawns, objectives) are lifted onto the terrain. Returns the zone's ground
+-- record {mode, choice, reason, inputs, uid?, cells?, holes?}.
+local function ground_zone(R, G, index)
+  local A, z = R.A, R.z
+  local outline = R.poly and ccw(R.poly) or world_poly(R, chamfered(R.x0, R.z0, R.x1, R.z1, R.c))
+  local choice, reason, inputs = I.ground_decide({ area = zone_area(z), min_side = math.min(R.w, R.d), kind = z.archetype,
+    natural = A.natural_ground == true, open = (A.open_air or A.sky) and true or false,
+    overhang = #z.levels > 1 or A.extra_levels ~= nil, rotated = (R.rot % 90) ~= 0 }, z.ground)
+  local rec = { mode = z.ground, choice = choice, reason = reason, inputs = inputs }
+  if choice ~= "terrain" then return rec end
+  local flats, paths = {}, {}
+  for _, p in ipairs(R.ports) do
+    if p.seg then flats[#flats + 1] = world_poly(R, keepout_poly(p, 3))
+    else
+      local kx0, kz0, kx1, kz1 = keepout(R, p, 3)
+      flats[#flats + 1] = world_poly(R, rect_poly(kx0, kz0, kx1, kz1))
+    end
+    if p.pt and p.nrm then
+      local px, pz = R.W(p.pt[1] - p.nrm[1], p.pt[2] - p.nrm[2])
+      local cx, cz = R.W(R.cx, R.cz)
+      paths[#paths + 1] = { { px, pz }, { cx, cz } }
+    end
+  end
+  for _, so in ipairs(R.solids) do flats[#flats + 1] = world_poly(R, rect_poly(so[1], so[2], so[3], so[4])) end
+  local x0, z0, x1, z1 = bbox(outline)
+  local tt = kit.defaults.terrain_textures
+  local terrain, info = I.ground_build("kit.build_layout", {
+    name = R.name .. "_ground", x0 = x0, z0 = z0, x1 = x1, z1 = z1, y = R.y, outline = outline, holes = {}, flats = flats, paths = paths,
+    relief = kit.defaults.terrain_relief, seed = (G.seed or 1) * 31 + index, cell = kit.defaults.terrain_cell,
+    layers = { ground = tt.ground, path = (R.textures and R.textures.floor) or tt.path, rock = tt.rock }, lift = kit.defaults.terrain_lift })
+  -- The zone's spots stand on the terrain (spawns go 1 m above them).
+  for _, s in ipairs(R.spots) do
+    local wx, wz = R.W(s[1], s[3])
+    local ty = terrain:surface_at(wx, wz)
+    if ty ~= nil and ty > s[2] then s[2] = ty end
+  end
+  if R.objective_spot == nil then
+    local cx, cz = R.W(R.cx, R.cz)
+    local ty = terrain:surface_at(cx, cz)
+    if ty ~= nil then R.objective_spot = { R.cx, ty, R.cz } end
+  end
+  rec.uid, rec.name, rec.cells, rec.cell, rec.holes, rec.top = terrain.uid, terrain.name, { info.nx - 1, info.nz - 1 }, info.cell, info.holes, info.top
+  return rec
+end
+
 -- Spots: farthest-point picks from a zone's candidates, clear of solids.
 local function pick_spots(R, count, y_pref)
   local cand = {}
@@ -5725,7 +5905,7 @@ local function detail_zone(api, R, D, DK, framed)
 
   -- 2. Ceiling structure: beams (trusses in tall wide rooms) across the short way, on the pilasters where they stand,
   -- wall to wall under a roof — never where the zone is open to the sky, never where a chord ends in an open side.
-  if D.ceilings and not open_air and not sky and DETAIL_CEILING[R.z.archetype] and R.h >= 4.4 then
+  if D.ceilings and not rocky and not open_air and not sky and DETAIL_CEILING[R.z.archetype] and R.h >= 4.4 then
     local plan = zone_plan(R)
     -- the beam frame: the zone's frame (a traced zone's: along its longest wall), turned so beams run along its x
     local rot0 = R.rot
@@ -5883,7 +6063,8 @@ local function detail_zone(api, R, D, DK, framed)
 
   -- 5. Rock formations at the walls of rock spaces (the generative fill's engine space keeps doorways, routes and
   -- the cart lane clear and holds the walk budget).
-  if D.rocks and rocky and not open_air then
+  -- (a literal zone takes rock formations only when its traced region asks for them: rock_detail)
+  if D.rocks and rocky and not open_air and not (R.literal and not R.literal.rocks) then
     local keep = {}
     for _, seg in ipairs(R.lane or {}) do
       local len = math.sqrt((seg[3] - seg[1]) ^ 2 + (seg[4] - seg[2]) ^ 2)
@@ -5894,7 +6075,7 @@ local function detail_zone(api, R, D, DK, framed)
       end
     end
     local area = R.area or (R.w * R.d)
-    local rd = DK.quietly(kit.rock_detail, { space = R.name, style = "cave", seed = D.seed, count = clamp(math.floor(area / 150 + 0.5), 2, 6),
+    local rd = DK.quietly(kit.rock_detail, { space = R.tag or R.name, style = "cave", seed = D.seed, count = clamp(math.floor(area / 150 + 0.5), 2, 6),
       keep = (#keep > 0) and keep or nil, name = R.name .. "_rocks" })
     if rd.fallback and rd.note then out.notes[#out.notes + 1] = "rocks: " .. rd.note end
     for _, e in ipairs(rd.placed) do
@@ -5923,7 +6104,7 @@ local function detail_zone(api, R, D, DK, framed)
   return out
 end
 
----@kit kit.build_layout{graph, name?, lights?, strict?, force?, populate?, detail?} → layout_report — Builds a layout graph: kit.check_layout first (errors refuse; design-rule violations warn, or refuse with strict = true), then in CSG time order the zone shells (and the open-air void), every link's air, the zones' interiors (stairs, galleries, courts, cover, ...), the links' steps, ramps, landings, lifts and bridges (outside open-air layouts a bridge's deck spans a chasm cut to the sky, link.depth metres deep, default 8), details, the room detail pass (detail: wall trims and pilasters, door frames, ceiling beams, railings, stair finishes, rock formations), lights, and the objectives: spawn groups, CTF flags, the KOTH hill (a Capture_Point_Handler with its trigger) and the payload cart (One Way mover on the track on any heading, Payload_Handler, checkpoints on its keyframes, each linking the attacker and defender spawns that are live while it is the target). A turned zone (rot) is built in its own frame and turned into place about the world origin; free links are built along their routes (one air prism per segment on shared mitre points, half a metre into each zone, the stair or ramp on the longest straight, door jambs set 1/16 m behind the wall planes); joins open the shared boundary. Every brush of a zone is tagged kit.zone = the zone's name (<name>_<zone id>), and that name works as a room name in kit.dress, kit.items and kit.spawn_points. Returns {name, zones[] (id, archetype, name, min, max (world bounds), outline (world plan), rot, floor_y, spots (world), brushes, room, detail), links[] (id, type, a, b, mode (classic, free or join), width, offset, a_side, b_side, path (a free link's route in world metres), length), spawns, objectives, warnings[], violations[], area, detail ({zones, parts, by_part, roles, fallback, notes}: what the detail pass placed)}.
+---@kit kit.build_layout{graph, name?, lights?, strict?, force?, populate?, detail?} → layout_report — Builds a layout graph: kit.check_layout first (errors refuse; design-rule violations warn, or refuse with strict = true), then in CSG time order the zone shells (and the open-air void), every link's air, the zones' interiors (stairs, galleries, courts, cover, ...), the links' steps, ramps, landings, lifts and bridges (outside open-air layouts a bridge's deck spans a chasm cut to the sky, link.depth metres deep, default 8), details, the ground (a zone whose ground is "terrain" or "auto", kit.layout{ground}, gets kit.ground's choice: an Alpine terrain over natural ground such as isles and gardens, its spots lifted onto it), the room detail pass (detail: wall trims and pilasters, door frames, ceiling beams, railings, stair finishes, rock formations), lights, and the objectives: spawn groups, CTF flags, the KOTH hill (a Capture_Point_Handler with its trigger) and the payload cart (One Way mover on the track on any heading, Payload_Handler, checkpoints on its keyframes, each linking the attacker and defender spawns that are live while it is the target). A turned zone (rot) is built in its own frame and turned into place about the world origin; free links are built along their routes (one air prism per segment on shared mitre points, half a metre into each zone, the stair or ramp on the longest straight, door jambs set 1/16 m behind the wall planes); joins open the shared boundary. Every brush of a zone is tagged kit.zone = the zone's name (<name>_<zone id>), and that name works as a room name in kit.dress, kit.items and kit.spawn_points. Returns {name, zones[] (id, archetype, name, min, max (world bounds), outline (world plan), rot, floor_y, spots (world), brushes, room, detail), links[] (id, type, a, b, mode (classic, free or join), width, offset, a_side, b_side, path (a free link's route in world metres), length), spawns, objectives, warnings[], violations[], area, detail ({zones, parts, by_part, roles, fallback, notes}: what the detail pass placed), ground ({terrain, brush}: how many zones that asked for terrain or auto got each; such a zone's report carries ground = {mode, choice, reason, inputs, uid, cells, holes})}.
 ---@opt graph: table — Required: a kit.layout graph (possibly edited).
 ---@opt name: string = "L" — Prefix of every part's name (and its kit.name tags).
 ---@opt lights: boolean = true — Place lights in every zone and link.
@@ -5948,14 +6129,16 @@ function kit.build_layout(t)
   if #rules > 0 and boolean(api, "strict", t.strict, false) then
     fail(api, "the layout breaks " .. #rules .. " design rule(s): " .. table.concat(rules, " "), "Fix the graph, or build without strict.")
   end
-  for _, m in ipairs(rules) do log.warn(api .. ": " .. m) end
+  -- (a traced plan's design-rule readings are the trace's to report: kit.trace lists them in layout_check)
+  for _, m in ipairs(rules) do if G.literal then log.info(api .. ": " .. m) else log.warn(api .. ": " .. m) end end
   local open_air = G.class == "open_air"
   local want_lights = boolean(api, "lights", t.lights, true)
   local D = detail_options(api, t.detail, G)
   local report = { kind = "layout_report", name = gname, zones = {}, links = {}, objectives = {}, warnings = {}, violations = V, spawns = 0 }
-  for _, m in ipairs(rules) do report.warnings[#report.warnings + 1] = m end
+  if not G.literal then for _, m in ipairs(rules) do report.warnings[#report.warnings + 1] = m end end
 
-  level.props:set("multiplayer", true)
+  -- (a traced plan, G.literal: kit.trace builds a level's geometry, never its game mode)
+  if not G.literal then level.props:set("multiplayer", true) end
   local Rs = {}
   for _, z in ipairs(G.zones) do
     local R = zone_ctx(gname, z, plan)
@@ -5965,7 +6148,7 @@ function kit.build_layout(t)
   -- Every brush of a zone answers to the zone's name (kit.zone), except a chasm's air, which is no floor of it.
   local function tag_zone(R)
     for _, b in ipairs(R.brushes) do
-      if not (R.untagged and R.untagged[b.uid]) then b:tag("kit.zone", R.name) end
+      if not (R.untagged and R.untagged[b.uid]) then b:tag("kit.zone", R.tag or R.name) end
     end
   end
   -- Where a zone's wall is open (a join): a point just outside it lies in another zone's world plan.
@@ -6131,7 +6314,8 @@ function kit.build_layout(t)
   for _, P in ipairs(plan.links) do
     if P.ok and P.mode == "classic" then turn_list(build_link_air(P, gname, airs, open_air), 0, zone_rot(P.za))
     elseif P.ok and P.mode == "free" then build_free_air(P, gname, open_air)
-    elseif P.ok and P.mode == "join" then build_join(P, gname) end
+    elseif P.ok and P.mode == "join" then build_join(P, gname)
+    elseif P.ok and P.mode == "literal" and P.link.literal.air then P.link.literal.air(P) end
   end
   -- The sky box (after the shells and links, so it lands beyond them).
   local needs_sky = open_air
@@ -6153,6 +6337,17 @@ function kit.build_layout(t)
   end
   -- 6. Details.
   for _, R in ipairs(Rs) do zone_step(R, RECIPES[R.z.archetype].late) end
+  -- 6a. Ground: the zones that ask for terrain or auto (kit.layout{ground}) get kit.ground's choice; a terrain is no
+  -- brush, so it stands outside the CSG time order (Alpine RED compiles it after every brush, terrain_build.cpp:607).
+  local grounds = nil
+  for i, R in ipairs(Rs) do
+    if R.z.ground == "terrain" or R.z.ground == "auto" then
+      R.ground = ground_zone(R, G, i)
+      grounds = grounds or { terrain = 0, brush = 0 }
+      grounds[R.ground.choice] = grounds[R.ground.choice] + 1
+    end
+  end
+  if grounds then report.ground = grounds end
   -- 6b. The room detail pass, once every zone and link stands (so it sees each doorway and neighbour as built) and
   -- before the lights, spawns and population that plan around it.
   if D and I.detail_kit then
@@ -6171,7 +6366,7 @@ function kit.build_layout(t)
     for _, e in ipairs(order) do
       local R = e.R
       local zd = detail_zone(api, R, D, I.detail_kit, framed)
-      for _, b in ipairs(zd.brushes) do b:tag("kit.zone", R.name) end
+      for _, b in ipairs(zd.brushes) do b:tag("kit.zone", R.tag or R.name) end
       R.detail_report = { parts = zd.parts, by_part = zd.by_part, roles = zd.roles, skipped = zd.skipped, fallback = zd.fallback, style = zd.style }
       if zd.parts > 0 then sum.zones = sum.zones + 1 end
       sum.parts = sum.parts + zd.parts
@@ -6365,9 +6560,9 @@ function kit.build_layout(t)
         room.rot = R.rot
       end
     end
-    local zr = { id = R.id, archetype = R.z.archetype, role = R.z.role, name = R.name, min = vec(bx0, R.y, bz0), max = vec(bx1, R.y + R.h, bz1),
+    local zr = { id = R.id, archetype = R.z.archetype, role = R.z.role, name = R.tag or R.name, min = vec(bx0, R.y, bz0), max = vec(bx1, R.y + R.h, bz1),
       floor_y = R.y, levels = copy_list(R.z.levels), brushes = #R.brushes, spots = spots, dress = R.z.dress, sky = R.sky or false,
-      ports = #R.ports, warnings = R.warnings, room = room, outline = outline, rot = R.rot, detail = R.detail_report }
+      ports = #R.ports, warnings = R.warnings, room = room, outline = outline, rot = R.rot, detail = R.detail_report, ground = R.ground }
     for _, w in ipairs(R.warnings) do report.warnings[#report.warnings + 1] = w end
     report.zones[#report.zones + 1] = zr
     if t.populate then t.populate(zr, R.z, G) end
@@ -6409,6 +6604,9 @@ for k, v in pairs({
   bbox_box = bbox_box, seg_inside = seg_inside, edge_dist = edge_dist,
   inside = inside, area2 = area2, bbox = bbox, ccw = ccw, simple = simple, wall_point = wall_point, zone_band = zone_band,
   mitre = mitre, wants_free = wants_free,
+  -- literal zones (kit.trace via the layout builder): the flight builder (stringers and handrails follow R.flights)
+  -- and the solid register the zone's spots and approaches keep clear of
+  flight = flight, note_solid = note_solid, ROT_SIGN = ROT_SIGN,
   -- port geometry and the walk-graph analysis the checker uses
   WALK = WALK, CART_LINK = CART_LINK, port_bands = port_bands, port_offsets = port_offsets,
   index_zones = index_zones, adjacency = adjacency, components = components, disjoint_routes = disjoint_routes,

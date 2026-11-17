@@ -50,6 +50,11 @@ public sealed class EditorDocument
         // A whole-mover Object-mode transform (any path: gizmo, nudge, scripts, automation) carries the
         // mover's member brush along with its movers-section copy in the same undo step.
         Undo.CommandRunner = new Editing.MoverObjectTransformLink(this).Run;
+
+        // RED lists every mover in the editor groups section as well as in moving_groups, byte-identical
+        // (see MovingGroupMirror). Share those instances so an edit to a mover is an edit to both copies;
+        // no bytes change, so the document stays clean.
+        Editing.MovingGroupMirror.Link(Rfl);
         RefreshObjects();
 
         // Each mover's copy was taken before the document was opened: snapshot its member brushes now,
@@ -171,6 +176,27 @@ public sealed class EditorDocument
                 foreach (GedObjectMetadataRecord rec in meta.Entries)
                 {
                     max = Math.Max(max, rec.Uid);
+                }
+            }
+            else if (section.Content is AlpineMoverPathsSection paths)
+            {
+                // Alpine's per-keyframe / per-mover path records are keyed by UID; a reissued UID must not revive
+                // a deleted keyframe's curve (editor_patch/mover_path.cpp:1571-1577).
+                foreach (AlpineMoverPathKeyframe k in paths.Keyframes)
+                {
+                    max = Math.Max(max, k.KeyframeUid);
+                }
+
+                foreach (AlpineMoverPathMover m in paths.Movers)
+                {
+                    max = Math.Max(max, m.FirstKeyframeUid);
+                }
+            }
+            else if (section.Content is AlpineLiquidEmissionSection glow)
+            {
+                foreach (AlpineLiquidEmission e in glow.Records)
+                {
+                    max = Math.Max(max, e.RoomEffectUid);
                 }
             }
         }
@@ -587,6 +613,8 @@ public sealed class EditorDocument
 
         var added = new List<(System.Collections.IList List, object Model)>();
         var newUids = new List<int>();
+        var remap = new Dictionary<int, int>();
+        var pastedRoomEffects = new List<(int From, int To)>();
         foreach (var entry in _clipboard)
         {
             if (entry.Template.OwningList is not { } list)
@@ -600,12 +628,36 @@ public sealed class EditorDocument
             _byUid[uid] = entry.Template; // reserve the UID so AllocateUid won't reuse it
             added.Add((list, clone));
             newUids.Add(uid);
+            if (ObjectUid.TryGet(entry.Model, out int fromUid))
+            {
+                remap[fromUid] = uid;
+                if (entry.Model is RoomEffect)
+                {
+                    pastedRoomEffects.Add((fromUid, uid));
+                }
+            }
         }
 
         if (added.Count == 0)
         {
             return Array.Empty<int>();
         }
+
+        // A pasted waypoint helper keeps only the links between helpers that were copied together, re-aimed at the
+        // copies (Alpine clones a helper without its links and rebuilds those between copied objects:
+        // editor_patch/waypoint_helper.cpp:362-378).
+        foreach (var (_, model) in added)
+        {
+            if (model is AlpineWaypointHelper helper)
+            {
+                List<int> kept = helper.Links.Where(remap.ContainsKey).Select(u => remap[u]).ToList();
+                helper.Links.Clear();
+                helper.Links.AddRange(kept);
+            }
+        }
+
+        // A pasted room effect carries its liquid emission with it (liquid_emission.cpp:73-83).
+        (Action Apply, Action Revert)? emissions = Editing.AlpineAttachedData.CopyEmissions(Rfl, pastedRoomEffects);
 
         var dirtySections = _clipboard.Select(e => e.Template.Section).Distinct().ToArray();
         Undo.Execute(new RelayCommand($"Paste {added.Count} object(s)",
@@ -621,10 +673,12 @@ public sealed class EditorDocument
                     s.Dirty = true;
                 }
 
+                emissions?.Apply();
                 RefreshObjects();
             },
             () =>
             {
+                emissions?.Revert();
                 foreach (var (list, model) in added)
                 {
                     list.Remove(model);
@@ -668,6 +722,7 @@ public sealed class EditorDocument
 
         Editing.MovingGroupMaintenance.Snapshot? maintenance = null;
         GedObjectMetadataService.TagDropSnapshot? droppedTags = null;
+        (Action Apply, Action Revert)? attached = null;
         Undo.Execute(new RelayCommand($"{description} {captured.Length} object(s)",
             () =>
             {
@@ -676,6 +731,11 @@ public sealed class EditorDocument
                     list.Remove(model);
                     section.Dirty = true;
                 }
+
+                // A deleted keyframe's curve / a deleted room effect's liquid emission goes with it (Alpine saves
+                // these records only for objects that exist: mover_path.cpp:1413-1440, liquid_emission.cpp:394-410).
+                attached = Editing.AlpineAttachedData.PruneDeleted(Rfl, deletedUids);
+                attached?.Apply();
 
                 maintenance = Editing.MovingGroupMaintenance.ApplyMemberDeletion(Rfl, deletedUids);
                 RefreshObjects();
@@ -697,6 +757,9 @@ public sealed class EditorDocument
                     Editing.MovingGroupMaintenance.Revert(Rfl, snap);
                     maintenance = null;
                 }
+
+                attached?.Revert();
+                attached = null;
 
                 foreach (var (list, model, index, section) in Enumerable.Reverse(captured))
                 {
@@ -751,6 +814,15 @@ public sealed class EditorDocument
         // first placement of a kind leaves the file byte-identical.
         RflSection section = Rfl.FindOrPrepareSection(bp.Section, bp.CreateSection, out bool created);
         IRflSectionContent content = section.Content!;
+
+        // An Alpine chunk kept raw (a layout Glacier cannot read exactly) is written back verbatim: a placed object
+        // would be lost on save, so placement into it is refused.
+        if (content is IRetainedChunk { IsReadOnly: true } retained)
+        {
+            throw new InvalidOperationException(
+                $"This level's {SectionIds.Describe(section.TypeId)} chunk is kept unchanged ({retained.ReadOnlyReason}), so no {bp.Kind} can be added to it.");
+        }
+
         Undo.Execute(new RelayCommand(description ?? $"Place {bp.Kind}",
             () =>
             {
@@ -1109,11 +1181,13 @@ public sealed class EditorDocument
         string? orientationNote = RepairBrushOrientation();
         SyncStaleMoverCopies();
         Editing.AlpineGeoableState.ReconcileTableFromBrushFlags(Rfl);
+        Editing.MovingGroupMirror.Reconcile(Rfl);
         Editing.LevelInfoReconciler.ReconcileHasMovers(Rfl);
         bool upgraded = Rfl.Header.Version != RflFile.AlpineSaveVersion;
-        LastSaveNotes = WithNote(Rfl.UpgradeToAlpine(), orientationNote);
+        LastSaveNotes = WithNote(WithNote(Rfl.UpgradeToAlpine(), orientationNote), SurfaceCapNote());
         Rfl.Save(path, updateTimestamp);
         Path = path;
+        NoteStalePackfile(path);
         if (upgraded)
         {
             // The header version (and, for v180 sources, the geometry sections)
@@ -1128,11 +1202,13 @@ public sealed class EditorDocument
     /// Serializes to bytes (used by autosave / tests). Pure: it does NOT refresh stale mover copies
     /// (a caller writing a file the game or a later session will read calls
     /// <see cref="SyncStaleMoverCopies"/> first), so it stays usable as a state fingerprint and from
-    /// the crash path.
+    /// the crash path. Like every save it mirrors the movers into the editor groups section
+    /// (<see cref="Editing.MovingGroupMirror.Reconcile"/>), so the bytes are what RED needs to see them.
     /// </summary>
     public byte[] SaveToBytes(bool updateTimestamp = false)
     {
         Editing.AlpineGeoableState.ReconcileTableFromBrushFlags(Rfl);
+        Editing.MovingGroupMirror.Reconcile(Rfl);
         Editing.LevelInfoReconciler.ReconcileHasMovers(Rfl);
         return Rfl.Save(updateTimestamp);
     }
@@ -1159,10 +1235,12 @@ public sealed class EditorDocument
         string? orientationNote = RepairBrushOrientation();
         SyncStaleMoverCopies();
         Editing.AlpineGeoableState.ReconcileTableFromBrushFlags(Rfl);
+        Editing.MovingGroupMirror.Reconcile(Rfl);
         Editing.LevelInfoReconciler.ReconcileHasMovers(Rfl);
-        LastSaveNotes = WithNote(Rfl.UpgradeToAlpine(), orientationNote);
+        LastSaveNotes = WithNote(WithNote(Rfl.UpgradeToAlpine(), orientationNote), SurfaceCapNote());
         Rfl.Save(path, updateTimestamp);
         Path = path;
+        NoteStalePackfile(path);
         RefreshObjects();
         MarkSaved();
     }
@@ -1178,6 +1256,38 @@ public sealed class EditorDocument
     {
         IReadOnlyList<int> repaired = Editing.BrushOrientation.RepairLevel(Rfl);
         return Editing.BrushOrientation.RepairNote(repaired);
+    }
+
+    /// <summary>
+    /// The stale-packfile note of the last <see cref="Save"/> / <see cref="SaveAs"/> (also in <see cref="LastSaveNotes"/>):
+    /// a packfile in the level's folder that still carries an older copy of the level, which the game would load instead
+    /// (<see cref="Packaging.StalePackfileCheck"/>). Null when there is none.
+    /// </summary>
+    public string? LastStalePackfileNote { get; private set; }
+
+    private void NoteStalePackfile(string path)
+    {
+        LastStalePackfileNote = Packaging.StalePackfileCheck.NoteFor(path);
+        LastSaveNotes = WithNote(LastSaveNotes, LastStalePackfileNote);
+    }
+
+    /// <summary>
+    /// The save-log warning for a level whose compiled geometry reached the lightmap surface cap (lit faces left with no
+    /// surface), or null (see <see cref="Compiler.SurfaceBudgetState"/>).
+    /// </summary>
+    private string? SurfaceCapNote()
+    {
+        Geometry? g = null;
+        foreach (RflSection s in Rfl.Sections)
+        {
+            if (s.Content is IO.Rfl.Sections.GeometrySection geo)
+            {
+                g = geo.Geometry;
+                break;
+            }
+        }
+
+        return Compiler.SurfaceBudgetState.FromGeometry(g).Message();
     }
 
     private static IReadOnlyList<string> WithNote(IReadOnlyList<string> notes, string? note) =>

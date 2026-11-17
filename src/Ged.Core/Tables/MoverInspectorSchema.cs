@@ -65,4 +65,61 @@ public static class MoverInspectorSchema
         new InspectorField("Close Volume", "CloseVol", InspectorEditor.Float),
         new InspectorField("Hold Open [Alpine]", "HoldOpen", InspectorEditor.Bool) { Virtual = true },
     };
+
+    /// <summary>
+    /// The Alpine mover-path settings of one keyframe (chunk 0x0AFBAE0E, keyed by the keyframe's UID): the segment it
+    /// starts, its tangents and easing (Alpine RED's keyframe dialog, editor_patch/mover_path.cpp:1604-1747;
+    /// enums common/include/common/mover_path.h:21-48). All virtual: the values live in the mover-path chunk.
+    /// </summary>
+    public static readonly IReadOnlyList<InspectorField> KeyframePathFields = new[]
+    {
+        new InspectorField("Path Segment", "Path.SegmentMode", InspectorEditor.Enum)
+        {
+            Virtual = true, Key = "path_segment", Options = new[] { "Straight", "Curved" },
+            Note = "The shape of the segment from this keyframe to the next (Alpine; needs Legacy Movers off).",
+        },
+        new InspectorField("Path Tangent", "Path.TangentMode", InspectorEditor.Enum)
+        {
+            Virtual = true, Key = "path_tangent", Options = new[] { "Auto", "Aligned", "Free" },
+            Note = "Auto: handles a third of the neighbouring spans. Aligned: the two handles stay opposite. Free: independent.",
+        },
+        new InspectorField("Path Ease", "Path.Ease", InspectorEditor.Enum)
+        {
+            Virtual = true, Key = "path_ease", Options = new[] { "None", "Ease In", "Ease Out", "Ease In And Out" },
+        },
+        new InspectorField("Segment Orientation", "Path.SegmentOrient", InspectorEditor.Enum)
+        {
+            Virtual = true, Key = "segment_orientation", Options = new[] { "Mover's Setting", "Follow Path", "Keyframe Rotation" },
+            Note = "How the mover turns along the segment this keyframe starts.",
+        },
+        new InspectorField("In Handle", "Path.InHandle", InspectorEditor.Vector)
+        {
+            Virtual = true, Key = "in_handle", Note = "Curve handle toward the previous keyframe, as an offset (setting it leaves Auto for Aligned).",
+        },
+        new InspectorField("Out Handle", "Path.OutHandle", InspectorEditor.Vector)
+        {
+            Virtual = true, Key = "out_handle", Note = "Curve handle toward the next keyframe, as an offset (setting it leaves Auto for Aligned).",
+        },
+    };
+
+    /// <summary>
+    /// The Alpine mover-path settings of a whole mover (chunk 0x0AFBAE0E, keyed by the mover's first keyframe UID;
+    /// mover_path.h:51-61, mover_path.cpp:652-690).
+    /// </summary>
+    public static readonly IReadOnlyList<InspectorField> MoverPathFields = new[]
+    {
+        new InspectorField("Path Orientation", "Path.OrientMode", InspectorEditor.Enum)
+        {
+            Virtual = true, Key = "path_orientation", Options = new[] { "None", "Follow Path", "Keyframe Rotation" },
+            Note = "How the mover turns as it travels (Alpine; needs Legacy Movers off).",
+        },
+        new InspectorField("Riders Turn With Mover", "Path.RiderTurn", InspectorEditor.Bool)
+        {
+            Virtual = true, Key = "riders_turn",
+        },
+        new InspectorField("Riders Detach On Leave", "Path.RiderDetach", InspectorEditor.Bool)
+        {
+            Virtual = true, Key = "riders_detach_on_leave", Note = "Once airborne, riders keep their carry instead of tracking the mover.",
+        },
+    };
 }

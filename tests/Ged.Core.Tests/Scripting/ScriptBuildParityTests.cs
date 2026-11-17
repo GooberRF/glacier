@@ -44,7 +44,7 @@ public sealed class ScriptBuildParityTests
         Assert.True(lit.BuildSurfaces);
         Assert.True(lit.FixTJoints);
         Assert.True(lit.BakeLighting);
-        Assert.True(lit.HighResLightmaps);
+        Assert.False(lit.HighResLightmaps); // Alpine lighting: the level's highres_lightmaps decides, not the method
         Assert.False(lit.Lighting.CastShadows);
         Assert.False(lit.Lighting.WarnStockLightLimit); // Alpine levels are not held to the stock 64-light cap
         Assert.Equal(2, lit.Lighting.LightBounces);
@@ -56,7 +56,19 @@ public sealed class ScriptBuildParityTests
             new CompileRequest { BakeLighting = true, ApplyLightingMethod = false });
         Assert.Equal(0, gated.Lighting.LightBounces);
         Assert.False(gated.Lighting.CrossRoomBlend);
-        Assert.True(gated.HighResLightmaps);
+        Assert.False(gated.HighResLightmaps);
+
+        // Legacy lighting keeps the method option; the level property sets Alpine's high resolution (254-texel cap).
+        Ged.Core.Lighting.Alpine.AlpineLightmapSettings.Apply(alpine, Ged.Core.Lighting.Alpine.LightmapPipeline.Legacy, null);
+        CompileOptions legacy = CompileOptionsFactory.Create(alpine, settings, new CompileRequest { BakeLighting = true });
+        Assert.True(legacy.HighResLightmaps);
+        Assert.Equal(255, legacy.HighResFragmentMax);
+        Ged.Core.Lighting.Alpine.AlpineLightmapSettings.Apply(alpine, Ged.Core.Lighting.Alpine.LightmapPipeline.Alpine, null);
+        Ged.Core.Lighting.Alpine.AlpineLightmapSettings.FindProperties(alpine)!.HighresLightmaps = 1;
+        CompileOptions levelHi = CompileOptionsFactory.Create(alpine, settings, new CompileRequest { BakeLighting = true });
+        Assert.True(levelHi.HighResLightmaps);
+        Assert.Equal(254, levelHi.HighResFragmentMax);
+        Ged.Core.Lighting.Alpine.AlpineLightmapSettings.FindProperties(alpine)!.HighresLightmaps = 0;
 
         // A preview build skips the seal and the surface stage.
         CompileOptions preview = CompileOptionsFactory.Create(alpine, settings, new CompileRequest { Sealed = false });

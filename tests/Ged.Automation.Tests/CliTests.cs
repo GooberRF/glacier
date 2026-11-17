@@ -137,6 +137,25 @@ public sealed class CliTests
     }
 
     [Fact]
+    public async Task Run_With_Out_Reads_And_Writes_Reference_Pictures_Beside_The_New_Level()
+    {
+        // A new level has no folder yet: --out's folder serves as the level's folder for ref.open / ref.grid.
+        using var dir = new TempDir();
+        var px = new byte[16 * 16 * 4];
+        Array.Fill(px, (byte)200);
+        File.WriteAllBytes(dir.File("map.png"), Ged.Core.IO.Tex.PngWriter.Encode(16, 16, px));
+        File.WriteAllText(dir.File("gen.lua"), "ref.open(\"map.png\") ref.grid{out = \"grid.png\"} level.place_box(0, 2, 0, 6, 4, 6):set_air(true)");
+        (int code, string o, string e) = await Cli(Env(), "run", dir.File("gen.lua"), "--out", dir.File("gen.rfl"), "--json");
+        Assert.True(code == 0, e + o);
+        Assert.True(File.Exists(dir.File("grid.png")));
+
+        // new <path> is new --out <path>.
+        (code, o, e) = await Cli(Env(), "new", dir.File("blank.rfl"), "--json");
+        Assert.True(code == 0, e + o);
+        Assert.True(File.Exists(dir.File("blank.rfl")));
+    }
+
+    [Fact]
     public async Task Script_Errors_Exit_1_With_Located_Diagnostics()
     {
         using var dir = new TempDir();

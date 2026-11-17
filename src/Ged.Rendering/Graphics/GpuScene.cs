@@ -25,6 +25,16 @@ internal sealed class GpuBatch
     public bool PickOnly;
 }
 
+/// <summary>An uploaded Alpine terrain top: its grid buffers, the 16 textures the terrain shader reads and its constants.</summary>
+internal sealed class GpuTerrain
+{
+    public IGpuBuffer VertexBuffer = null!;
+    public IGpuBuffer IndexBuffer = null!;
+    public int IndexCount;
+    public readonly IGpuTexture[] Textures = new IGpuTexture[16];
+    public TerrainConstants Constants;
+}
+
 /// <summary>The blend/pass a mesh draw uses (VFX effects map onto Alpha/Additive; V3M stays Opaque).</summary>
 internal enum MeshDrawBlend
 {
@@ -106,9 +116,192 @@ public sealed class GpuScene : IDisposable
 
         UploadLightmaps(scene);
         UploadBatches(scene, vfs);
+        UploadTerrains(scene, vfs);
         UploadBillboards(scene, vfs);
         UploadLines(scene);
         UploadMeshes(scene, vfs);
+        UploadDecorations(scene, vfs);
+    }
+
+    private readonly List<GpuTerrain> _terrains = new();
+
+    internal List<GpuTerrain> Terrains => _terrains;
+
+    /// <summary>
+    /// Each terrain top: its grid, the layer textures (a missing one shows white, as other faces do), the two weight maps,
+    /// the light chart (RGB expanded to RGBA), the overlays and their coverage map.
+    /// </summary>
+    private void UploadTerrains(RenderScene scene, AssetVfs? vfs)
+    {
+        foreach (TerrainDraw t in scene.Terrains)
+        {
+            if (t.Indices.Count == 0)
+            {
+                continue;
+            }
+
+            var g = new GpuTerrain
+            {
+                VertexBuffer = _gd.CreateVertexBuffer<WorldVertex>(t.Vertices.ToArray()),
+                IndexBuffer = _gd.CreateIndexBuffer(t.Indices.ToArray()),
+                IndexCount = t.Indices.Count,
+            };
+            for (int l = 0; l < 8; l++)
+            {
+                g.Textures[l] = ResolveTexture(t.Layers[l], vfs);
+            }
+
+            g.Textures[8] = Owned(_gd.CreateTexture(Math.Max(1, t.WeightWidth), Math.Max(1, t.WeightHeight), t.Weights0));
+            g.Textures[9] = Owned(_gd.CreateTexture(Math.Max(1, t.WeightWidth), Math.Max(1, t.WeightHeight), t.Weights1));
+            g.Textures[10] = t.Chart is { } chart && t.ChartWidth > 0 && t.ChartHeight > 0
+                ? Owned(_gd.CreateTexture(t.ChartWidth, t.ChartHeight, ExpandRgbToRgba(chart, t.ChartWidth, t.ChartHeight)))
+                : _gd.Textures.NeutralLightmap;
+            for (int o = 0; o < 4; o++)
+            {
+                g.Textures[11 + o] = o < t.Overlays.Count ? ResolveTexture(t.Overlays[o], vfs) : _gd.Textures.White;
+            }
+
+            g.Textures[15] = t.OverlayCoverage is { } cov
+                ? Owned(_gd.CreateTexture(Math.Max(1, t.WeightWidth), Math.Max(1, t.WeightHeight), cov))
+                : _gd.Textures.White;
+
+            static float F(bool b) => b ? 1f : 0f;
+            g.Constants = new TerrainConstants
+            {
+                Origin = new Vector4(t.Origin, t.LayerCount),
+                Extent = new Vector4(Math.Max(t.Extent.X, 1e-3f), Math.Max(t.Extent.Y, 1e-3f), t.WeightWidth, t.WeightHeight),
+                Uv0 = new Vector4(t.LayerUvScale[0], t.LayerUvScale[1], t.LayerUvScale[2], t.LayerUvScale[3]),
+                Uv1 = new Vector4(t.LayerUvScale[4], t.LayerUvScale[5], t.LayerUvScale[6], t.LayerUvScale[7]),
+                Tri0 = new Vector4(F(t.LayerTriplanar[0]), F(t.LayerTriplanar[1]), F(t.LayerTriplanar[2]), F(t.LayerTriplanar[3])),
+                Tri1 = new Vector4(F(t.LayerTriplanar[4]), F(t.LayerTriplanar[5]), F(t.LayerTriplanar[6]), F(t.LayerTriplanar[7])),
+                OverlayUv = new Vector4(Math.Max(t.OverlayUvScale[0], 1e-3f), Math.Max(t.OverlayUvScale[1], 1e-3f), Math.Max(t.OverlayUvScale[2], 1e-3f), Math.Max(t.OverlayUvScale[3], 1e-3f)),
+                OverlayTri = new Vector4(F(t.OverlayTriplanar[0]), F(t.OverlayTriplanar[1]), F(t.OverlayTriplanar[2]), F(t.OverlayTriplanar[3])),
+                OverlayOn = new Vector4(F(t.Overlays.Count > 0), F(t.Overlays.Count > 1), F(t.Overlays.Count > 2), F(t.Overlays.Count > 3)),
+                Chart = new Vector4(t.ChartOrigin.X, t.ChartOrigin.Y, t.ChartTexelSize, F(t.Chart is not null)),
+                ChartSize = new Vector4(Math.Max(t.ChartWidth, 1), Math.Max(t.ChartHeight, 1), F(t.Fullbright), 0f),
+            };
+            _terrains.Add(g);
+        }
+    }
+
+    private IGpuTexture Owned(IGpuTexture t)
+    {
+        _ownedTextures.Add(t);
+        return t;
+    }
+
+    /// <summary>
+    /// Terrain decorations: each mesh's LOD0 batches with every instance's transform applied, merged into one draw per
+    /// batch (capped at 4 million vertices per mesh), so a field of grass costs a draw, not a draw per instance.
+    /// </summary>
+    private void UploadDecorations(RenderScene scene, AssetVfs? vfs)
+    {
+        if (vfs is null)
+        {
+            return;
+        }
+
+        const int maxVertices = 4_000_000;
+        foreach (DecorationDraw d in scene.Decorations)
+        {
+            V3dFile? file;
+            try
+            {
+                file = vfs.LoadMesh(d.MeshFilename);
+            }
+            catch (Exception)
+            {
+                file = null;
+            }
+
+            if (file is null || d.Worlds.Count == 0)
+            {
+                continue;
+            }
+
+            uint pick = d.PickId.Encode();
+            foreach (V3dSubmesh submesh in file.Submeshes)
+            {
+                if (submesh.Lods.Count == 0)
+                {
+                    continue;
+                }
+
+                Vec3 offset = file.ModelOffset(submesh);
+                V3dLod lod = submesh.Lods[0];
+                foreach (V3dBatch batch in lod.Batches)
+                {
+                    int vc = batch.Positions.Length;
+                    int tris = Math.Min(batch.NumTriangles, batch.Triangles.Length);
+                    if (vc == 0 || tris == 0)
+                    {
+                        continue;
+                    }
+
+                    var verts = new List<MeshVertex>();
+                    var single = new List<uint>();
+                    var both = new List<uint>();
+                    foreach (Matrix4x4 w in d.Worlds)
+                    {
+                        if (verts.Count + vc > maxVertices)
+                        {
+                            break;
+                        }
+
+                        Matrix4x4 world = Matrix4x4.CreateTranslation(offset.X, offset.Y, offset.Z) * w;
+                        uint b0 = (uint)verts.Count;
+                        for (int i = 0; i < vc; i++)
+                        {
+                            Vec3 p = batch.Positions[i];
+                            Vec3 n = i < batch.Normals.Length ? batch.Normals[i] : new Vec3(0f, 1f, 0f);
+                            Uv uv = i < batch.TexCoords.Length ? batch.TexCoords[i] : default;
+                            Vector3 nn = Vector3.TransformNormal(new Vector3(n.X, n.Y, n.Z), world);
+                            verts.Add(new MeshVertex
+                            {
+                                Position = Vector3.Transform(new Vector3(p.X, p.Y, p.Z), world),
+                                Normal = nn.LengthSquared() > 0 ? Vector3.Normalize(nn) : Vector3.UnitY,
+                                TexCoord = new Vector2(uv.U, uv.V),
+                            });
+                        }
+
+                        for (int t = 0; t < tris; t++)
+                        {
+                            V3dTriangle tri = batch.Triangles[t];
+                            if (tri.I0 >= vc || tri.I1 >= vc || tri.I2 >= vc)
+                            {
+                                continue;
+                            }
+
+                            List<uint> target = (tri.Flags & V3dTriangle.DoubleSided) != 0 ? both : single;
+                            target.Add(b0 + tri.I0);
+                            target.Add(b0 + tri.I1);
+                            target.Add(b0 + tri.I2);
+                        }
+                    }
+
+                    IGpuTexture diffuse = ResolveTexture(submesh.ResolveBatchTexture(lod, batch), vfs);
+                    MeshVertex[] array = verts.ToArray();
+                    foreach ((List<uint> list, bool doubleSided) in new[] { (single, false), (both, true) })
+                    {
+                        if (list.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        _meshes.Add(new GpuMesh
+                        {
+                            VertexBuffer = _gd.CreateVertexBuffer<MeshVertex>(array),
+                            IndexBuffer = _gd.CreateIndexBuffer(list.ToArray()),
+                            IndexCount = list.Count,
+                            Diffuse = diffuse,
+                            World = Matrix4x4.Identity,
+                            PickId = pick,
+                            DoubleSided = doubleSided,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     // Exposed as the concrete List (not IReadOnlyList) so the per-frame SceneRenderer foreach uses
@@ -509,6 +702,11 @@ public sealed class GpuScene : IDisposable
 
     private IGpuTexture ResolveTexture(string? name, AssetVfs? vfs)
     {
+        if (!string.IsNullOrEmpty(name) && _inline is not null && _inline.ContainsKey(name))
+        {
+            return TryResolveTexture(name, vfs) ?? _gd.Textures.White;
+        }
+
         if (string.IsNullOrEmpty(name) || vfs is null)
         {
             return _gd.Textures.White;
@@ -624,6 +822,12 @@ public sealed class GpuScene : IDisposable
         {
             m.VertexBuffer.Dispose();
             m.IndexBuffer.Dispose();
+        }
+
+        foreach (GpuTerrain t in _terrains)
+        {
+            t.VertexBuffer.Dispose();
+            t.IndexBuffer.Dispose();
         }
 
         foreach (IGpuTexture t in _ownedTextures)

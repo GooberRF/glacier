@@ -11,6 +11,7 @@ namespace Ged.Automation;
 /// the editor bridge). It keeps the host's operations (the editor's viewport-adopting builds, the
 /// headless Core pipeline) and adds what automation needs:
 /// <list type="bullet">
+/// <item><c>ops.package</c> saves unsaved changes through the host save first (it packs the saved level file);</item>
 /// <item><c>ops.save</c> / <c>ops.package</c> targets are confined to the path allow-list —
 /// a script cannot write outside the level's folder, <c>user_maps</c>, or the scripts library;</item>
 /// <item>a headless <c>ops.save</c> goes through the host's save semantics (seal guard, timestamp rule,
@@ -60,7 +61,9 @@ public sealed class AutomationScriptOperations : IScriptOperations
 
     public IReadOnlyList<Vec3> CheckHoles() => _inner.CheckHoles();
 
-    public void Save(string? path)
+    public void Save(string? path) => SaveInternal(path, packaging: false);
+
+    private void SaveInternal(string? path, bool packaging)
     {
         string target = path ?? _doc.Path
             ?? throw new ScriptApiException("No save path.", "Pass ops.save(\"path.rfl\") or open a file first.");
@@ -84,7 +87,12 @@ public sealed class AutomationScriptOperations : IScriptOperations
         _ctx.Log.Info($"Saved {Path.GetFileName(full)}.");
         foreach (string note in _doc.LastSaveNotes)
         {
-            _ctx.Log.Info(note); // the save log: upgrade notes, a dropped Alpine lightmap chunk
+            // The save log: upgrade notes, a dropped Alpine lightmap chunk, a stale packfile (not when packaging, which
+            // is about to rebuild that packfile).
+            if (!packaging || !string.Equals(note, _doc.LastStalePackfileNote, StringComparison.Ordinal))
+            {
+                _ctx.Log.Info(note);
+            }
         }
     }
 
@@ -95,6 +103,13 @@ public sealed class AutomationScriptOperations : IScriptOperations
         if (path is not null)
         {
             path = Allowed(path, "write a package to");
+        }
+
+        // The packfile carries the saved level file, so unsaved changes are saved first through the host's own save
+        // (seal guard, timestamp rule, sidecar) — the same save ops.save performs.
+        if (_save is not null && _doc.IsDirty && _doc.Path is not null)
+        {
+            SaveInternal(null, packaging: true);
         }
 
         return _inner.Package(path, multiplayer);

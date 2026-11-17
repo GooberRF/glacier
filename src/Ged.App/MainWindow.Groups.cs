@@ -31,8 +31,6 @@ public sealed partial class MainWindow
     private GroupService? _groups;
     private MoverService? _movers;
     private CutsceneService? _cutscenes;
-    private float _moverTransportT = 0.5f;
-    private bool _showMoverGhost = true;
 
     private void RefreshGroupPanelIfActive()
     {
@@ -63,10 +61,10 @@ public sealed partial class MainWindow
         root.Children.Add(Header("Groups"));
         root.Children.Add(BuildGroupTree());
 
-        // Mover / keyframe inspector for a single selected mover.
+        // Movers are edited in the Properties panel's Keyframe panel (select a keyframe or a mover member).
         if (SelectedMoverGroup() is { } moverGroup)
         {
-            root.Children.Add(BuildMoverInspector(moverGroup));
+            root.Children.Add(Note($"Mover \"{moverGroup.Name}\": edit its keyframes, sounds, path and preview in the Properties panel."));
         }
 
         // Cutscene path editor.
@@ -186,7 +184,6 @@ public sealed partial class MainWindow
         if (ReferenceEquals(_selectedMover, grp))
         {
             _selectedMover = null;
-            _editKeyframeIndex = -1;
         }
 
         AfterMutation();
@@ -198,28 +195,6 @@ public sealed partial class MainWindow
 
         RefreshGroupPanelIfActive();
         _dispatcher.ShowMessage($"Dissolved mover \"{grp.Name}\" — its brushes are static world geometry again.");
-    }
-
-    /// <summary>
-    /// Deletes one keyframe through the mover service's floor-aware path: the member brush is never
-    /// touched, and removing the LAST keyframe dissolves the mover back to static (RED keeps ≥1
-    /// keyframe for a live mover — see <see cref="MoverService.RemoveKeyframe"/>).
-    /// </summary>
-    private void DeleteKeyframe(Group group, Keyframe keyframe)
-    {
-        bool wasLast = (group.MovingData?.Keyframes.Count ?? 0) <= 1;
-        _movers!.RemoveKeyframe(group, keyframe);
-        if (wasLast && ReferenceEquals(_selectedMover, group))
-        {
-            _selectedMover = null;
-        }
-
-        _editKeyframeIndex = -1;
-        AfterMutation();
-        RefreshGroupPanelIfActive();
-        _dispatcher.ShowMessage(wasLast
-            ? "Last keyframe removed — mover dissolved back to static."
-            : "Keyframe removed.");
     }
 
     /// <summary>
@@ -303,112 +278,6 @@ public sealed partial class MainWindow
         }
 
         return null;
-    }
-
-    private Control BuildMoverInspector(Group group)
-    {
-        MovingGroupData data = group.MovingData ??= new MovingGroupData();
-        var root = new StackPanel { Spacing = 4 };
-        root.Children.Add(Header($"Mover: {group.Name}"));
-
-        // Keyframe list.
-        for (int i = 0; i < data.Keyframes.Count; i++)
-        {
-            Keyframe k = data.Keyframes[i];
-            int idx = i;
-            string star = i == data.StartingKeyframe ? "★ " : string.Empty;
-            var kfRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-            var pick = new Button { Content = $"{star}KF{i}", MinWidth = 56 };
-            pick.Click += (_, _) => { _editKeyframeIndex = idx; RefreshGroupPanelIfActive(); };
-            kfRow.Children.Add(pick);
-            kfRow.Children.Add(new TextBlock { Text = $"pos {k.Position.X:0.#},{k.Position.Y:0.#},{k.Position.Z:0.#}", VerticalAlignment = VerticalAlignment.Center, FontSize = 11 });
-            Keyframe capturedKf = k;
-            var delKf = new Button { Content = "✕", MinWidth = 24, Foreground = Brushes.IndianRed };
-            ToolTip.SetTip(delKf, "Delete this keyframe (never the brush; deleting the last one dissolves the mover)");
-            delKf.Click += (_, _) => DeleteKeyframe(group, capturedKf);
-            kfRow.Children.Add(delKf);
-            root.Children.Add(kfRow);
-        }
-
-        root.Children.Add(Row(
-            Btn("Add Keyframe", () => AddKeyframeAtRest(group)),
-            Btn("Add @ Cam", () => AddKeyframeAtCamera(group)),
-            Btn("Set Start", () => SetStartKeyframe(group))));
-
-        // Selected keyframe properties — every RED Keyframe-Properties field (red-stock-inventory §8),
-        // rendered data-driven from MoverInspectorSchema so the inspector and its coverage test stay in
-        // lockstep. Undo routes through MoverService.EditKeyframe.
-        if (_editKeyframeIndex >= 0 && _editKeyframeIndex < data.Keyframes.Count)
-        {
-            Keyframe k = data.Keyframes[_editKeyframeIndex];
-            root.Children.Add(Header($"Keyframe {_editKeyframeIndex} Properties"));
-            foreach (InspectorField f in MoverInspectorSchema.KeyframeFields)
-            {
-                root.Children.Add(BuildKeyframeField(k, f));
-            }
-        }
-
-        // Motion / mover fields — the full moving_group_data field set incl. RED's "No Player Collide"
-        // (previously stored but never surfaced), starts-backwards, use-travel-as-speed, force-orient,
-        // and every sound + volume. Undo routes through MoverService.EditMover.
-        root.Children.Add(Header("Motion"));
-        foreach (InspectorField f in MoverInspectorSchema.MoverFields)
-        {
-            root.Children.Add(BuildMoverField(group, data, f));
-        }
-
-        // Path preview transport.
-        root.Children.Add(Header("Path Preview"));
-        root.Children.Add(Check("Show Ghost", _showMoverGhost, v => { _showMoverGhost = v; RefreshSelectionOverlay(); }));
-        var slider = new Slider { Minimum = 0, Maximum = 1, Value = _moverTransportT, SmallChange = 0.02, LargeChange = 0.1 };
-        slider.ValueChanged += (_, _) => { _moverTransportT = (float)slider.Value; RefreshSelectionOverlay(); };
-        root.Children.Add(Labeled("Transport (scrub ghost)", slider));
-        return root;
-    }
-
-    private int _editKeyframeIndex = -1;
-
-    /// <summary>
-    /// RED's default Keyframe action: the new keyframe is seeded at the mover's rest-pose centre — the
-    /// SAME point RED seeds every keyframe at (FUN_00416000 copies the recomputed member-bounds centre
-    /// this+0x234 into the keyframe) — so it starts lined up with the mover and you drag it out from
-    /// there to build the path.
-    /// </summary>
-    private void AddKeyframeAtRest(Group group)
-    {
-        Keyframe kf = _movers!.AddKeyframe(group, _movers.MemberBoundsCenter(group), Mat3.Identity);
-        SelectNewKeyframe(kf);
-        _dispatcher.ShowMessage("Keyframe added at the mover origin — selected; drag it out to shape the path.");
-    }
-
-    /// <summary>Secondary convenience: drop the keyframe at the camera/placement point instead of the mover origin.</summary>
-    private void AddKeyframeAtCamera(Group group)
-    {
-        Keyframe kf = _movers!.AddKeyframe(group, PlacementPoint, Mat3.Identity);
-        SelectNewKeyframe(kf);
-        _dispatcher.ShowMessage("Keyframe added at camera — selected; drag to position.");
-    }
-
-    private void SelectNewKeyframe(Keyframe kf)
-    {
-        AfterMutation();
-
-        // The keyframe is a first-class object now (RefreshObjects ran): select it so it can be
-        // repositioned by drag straight away (RED: select + morph), not left as an inert billboard.
-        if (Document?.FindByUid(kf.Uid) is { } o)
-        {
-            _session.Selection.SelectObject(o);
-        }
-    }
-
-    private void SetStartKeyframe(Group group)
-    {
-        if (group.MovingData is { } data && _editKeyframeIndex >= 0)
-        {
-            int idx = _editKeyframeIndex;
-            _movers!.EditMover(data, "Set start keyframe", d => d.StartingKeyframe = idx, d => d.StartingKeyframe = data.StartingKeyframe);
-            AfterMutation();
-        }
     }
 
     // ---- Cutscene editor ------------------------------------------------------
@@ -666,23 +535,11 @@ public sealed partial class MainWindow
             return lines;
         }
 
-        // Mover path + ghost for the selected mover.
-        if (SelectedMoverGroup() is { MovingData: { } data } group && data.Keyframes.Count > 0)
-        {
-            var points = data.Keyframes.Select(k => k.Position).ToList();
-            lines.AddRange(OverlayBuilder.Path(points, Math.Clamp(data.StartingKeyframe, 0, points.Count - 1)));
-            if (_showMoverGhost && _movers is not null)
-            {
-                // The members' CURRENT shape (the brushes-section brush the author edits), not the movers-
-                // section copy, which lags an edit until the next save/build refreshes it.
-                IReadOnlyList<Ged.Core.Model.Brush> moverBrushes = _movers.CurrentMemberShapes(group);
-                if (moverBrushes.Count > 0)
-                {
-                    CoreVec3 sampled = OverlayBuilder.SamplePath(points, _moverTransportT);
-                    lines.AddRange(OverlayBuilder.MoverGhost(moverBrushes, points[Math.Clamp(data.StartingKeyframe, 0, points.Count - 1)], sampled));
-                }
-            }
-        }
+        // The mover preview ghost, its timing ticks and the hovered / dragged curve handle.
+        lines.AddRange(BuildMoverOverlays());
+
+        // The Terrain Tools' brush cursor (rings, mirror lines, geoable chunk outlines).
+        lines.AddRange(BuildTerrainToolOverlays());
 
         // Cutscene path polyline for the selected path.
         if (_selectedPath is { } path && _cutscenes is not null && _cutscenes.Paths.Contains(path))
@@ -724,101 +581,5 @@ public sealed partial class MainWindow
 
         Vector3 f = cam.Forward, r = cam.Right, u = cam.Up;
         return new Mat3(new CoreVec3(f.X, f.Y, f.Z), new CoreVec3(r.X, r.Y, r.Z), new CoreVec3(u.X, u.Y, u.Z));
-    }
-
-    // ---- small helpers --------------------------------------------------------
-
-    private static Control IntNum2(string label, int value, Action<int> set)
-    {
-        var box = new NumericUpDown { Value = value, Increment = 1m, Minimum = -1m, Maximum = 1000000m, HorizontalAlignment = HorizontalAlignment.Stretch };
-        box.ValueChanged += (_, _) => set((int)(box.Value ?? 0));
-        return Labeled(label, box);
-    }
-
-    /// <summary>Builds one keyframe-inspector control from a schema field, wiring undo through the mover service.</summary>
-    private Control BuildKeyframeField(Keyframe k, InspectorField f)
-    {
-        switch (f.Editor)
-        {
-            case InspectorEditor.Float:
-            {
-                float old = f.Get(k) is float x ? x : 0f;
-                return Num(f.Label, old, v => _movers!.EditKeyframe(k, f.Label, m => f.Set(m, v), m => f.Set(m, old)));
-            }
-
-            case InspectorEditor.Uid:
-            case InspectorEditor.Int:
-            {
-                int old = f.Get(k) is int x ? x : 0;
-                return IntNum2(f.Label, old, v => _movers!.EditKeyframe(k, f.Label, m => f.Set(m, v), m => f.Set(m, old)));
-            }
-
-            default:
-            {
-                string old = f.Get(k) as string ?? string.Empty;
-                return TextField(f.Label, old, v => _movers!.EditKeyframe(k, f.Label, m => f.Set(m, v), m => f.Set(m, old)));
-            }
-        }
-    }
-
-    /// <summary>Builds one mover-inspector control from a schema field. Movement Type and Hold Open are virtual.</summary>
-    private Control BuildMoverField(Group group, MovingGroupData data, InspectorField f)
-    {
-        if (f.Virtual)
-        {
-            if (f.Path == "MovementType")
-            {
-                var move = new ComboBox
-                {
-                    ItemsSource = MoverInspectorSchema.MovementTypes,
-                    SelectedIndex = Math.Clamp(data.MovementType - 1, 0, MoverInspectorSchema.MovementTypes.Count - 1),
-                    HorizontalAlignment = HorizontalAlignment.Stretch,
-                };
-                move.SelectionChanged += (_, _) =>
-                {
-                    int t = move.SelectedIndex + 1;
-                    int old = data.MovementType;
-                    _movers!.EditMover(data, f.Label, d => d.MovementType = t, d => d.MovementType = old);
-                };
-                return Labeled(f.Label, move);
-            }
-
-            // Hold Open [Alpine]: persisted in alpine_level_properties, not on the group.
-            return Check(f.Label, _movers!.IsHoldOpen(group), v => { _movers.SetHoldOpen(group, v); AfterMutation(); });
-        }
-
-        switch (f.Editor)
-        {
-            case InspectorEditor.Bool:
-            {
-                bool old = f.Get(data) is bool x && x;
-                return Check(f.Label, old, v => _movers!.EditMover(data, f.Label, d => f.Set(d, v), d => f.Set(d, old)));
-            }
-
-            case InspectorEditor.Float:
-            {
-                float old = f.Get(data) is float x ? x : 0f;
-                return Num(f.Label, old, v => _movers!.EditMover(data, f.Label, d => f.Set(d, v), d => f.Set(d, old)));
-            }
-
-            case InspectorEditor.Int:
-            {
-                int old = f.Get(data) is int x ? x : 0;
-                return IntNum2(f.Label, old, v => _movers!.EditMover(data, f.Label, d => f.Set(d, v), d => f.Set(d, old)));
-            }
-
-            default:
-            {
-                string old = f.Get(data) as string ?? string.Empty;
-                return TextField(f.Label, old, v => _movers!.EditMover(data, f.Label, d => f.Set(d, v), d => f.Set(d, old)));
-            }
-        }
-    }
-
-    private static Control TextField(string label, string value, Action<string> set)
-    {
-        var box = new TextBox { Text = value };
-        box.LostFocus += (_, _) => set(box.Text ?? string.Empty);
-        return Labeled(label, box);
     }
 }

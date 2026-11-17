@@ -82,7 +82,7 @@ public sealed class PackfileBuildPlan
 
     public string LevelFileName { get; }
 
-    /// <summary>Destination VPP path; defaults to <c>user_maps\&lt;mode&gt;\&lt;level&gt;.vpp</c>.</summary>
+    /// <summary>Destination VPP path; Create Level Packfile uses <see cref="LevelFolderOutputPath"/>.</summary>
     public string OutputPath { get; set; }
 
     /// <summary>When true (default), the build is blocked while any dependency is missing.</summary>
@@ -116,8 +116,19 @@ public sealed class PackfileBuildPlan
     }
 
     /// <summary>
-    /// The default output path for a level: <c>&lt;install&gt;\user_maps\&lt;mode&gt;\&lt;level&gt;.vpp</c>
-    /// where mode is <c>multi</c> for a multiplayer level, otherwise <c>single</c>.
+    /// The default packfile of a saved level, used by Create Level Packfile and <c>ops.package</c>:
+    /// <c>&lt;level folder&gt;\&lt;level name without extension&gt;.vpp</c>, rewritten in place when it exists.
+    /// </summary>
+    public static string LevelFolderOutputPath(string levelPath)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(levelPath);
+        string full = Path.GetFullPath(levelPath);
+        return Path.Combine(Path.GetDirectoryName(full)!, Path.GetFileNameWithoutExtension(full) + ".vpp");
+    }
+
+    /// <summary>
+    /// The install's user-maps location for a level: <c>&lt;install&gt;\user_maps\&lt;mode&gt;\&lt;level&gt;.vpp</c>
+    /// where mode is <c>multi</c> for a multiplayer level, otherwise <c>single</c> (the fallback for a never-saved level).
     /// </summary>
     public static string DefaultOutputPath(string installDir, string levelFileName, bool multiplayer)
     {

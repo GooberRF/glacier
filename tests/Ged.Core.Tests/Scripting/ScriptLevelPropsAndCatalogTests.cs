@@ -110,8 +110,8 @@ public sealed class ScriptLevelPropsAndCatalogTests
             "level.alpine:set('payload_push_speed', 1.5) " +
             "return tostring(a.legacy_movers) .. ',' .. tostring(a.starts_with_headlamp) .. ',' .. a.static_mesh_ambient .. ',' .. #level.alpine:fields()");
         Assert.True(r.Success, r.Error?.ToDisplayString());
-        // 18 editable fields (6 level flags + 12 payload rules) + 27 read-only Alpine 1.5 fields (Alpine15Fields).
-        Assert.Equal("true,true,2,45", r.ReturnValue);
+        // 18 fields (6 level flags + 12 payload rules) + 34 Alpine 1.5 fields (Alpine15Fields).
+        Assert.Equal("true,true,2,52", r.ReturnValue);
         Assert.Equal(0, r.UndoNodesAdded);
         Assert.DoesNotContain(doc.Rfl.Sections, s => s.Content is AlpineLevelPropertiesSection);
         Assert.True(before.AsSpan().SequenceEqual(doc.SaveToBytes(updateTimestamp: false)));

@@ -42,8 +42,8 @@ public enum LevelObjectKind
     BagObject,
     PlayerStart,
 
-    // Alpine Faction 1.5 (RFL 306) objects. Read-only in the editor for now: they load, list and inspect, and
-    // round-trip byte for byte, but cannot yet be placed, moved or edited.
+    // Alpine Faction 1.5 (RFL 306) objects. Placed, moved, rotated and edited like every other object; a chunk
+    // Glacier cannot read exactly (a newer or pre-release layout) keeps its objects read-only and is saved unchanged.
 
     /// <summary>An Alpine weather region (0x0AFBAE06).</summary>
     WeatherRegion,
@@ -63,6 +63,6 @@ public enum LevelObjectKind
     /// <summary>An Alpine vehicle waypoint helper (0x0AFBAE0D).</summary>
     WaypointHelper,
 
-    /// <summary>An Alpine terrain (0x0AFBAE0B); its position is the grid origin.</summary>
+    /// <summary>An Alpine terrain (0x0AFBAE0B); its position is the centre of its footprint at the origin's height.</summary>
     Terrain,
 }

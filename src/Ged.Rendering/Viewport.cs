@@ -149,7 +149,7 @@ public sealed class Viewport : IDisposable
         _renderer.DrawOverlayLines(Camera, _gizmoOverlayVb, _gizmoOverlayVertexCount, onTop: true);
         if (_overlayScene is not null)
         {
-            _renderer.DrawOverlayBillboards(Camera, _overlayScene);
+            _renderer.DrawOverlayScene(Camera, Mode, _overlayScene);
         }
 
         _surface.Present(VSync);

@@ -321,6 +321,7 @@ public sealed partial class AutomationCommands
             AutoTags = autoTags,
             LabelPrefix = prefix,
             Label = label,
+            SaveTarget = saveTarget,
         };
 
         var log = new List<LogLineDto>();
@@ -416,8 +417,53 @@ public sealed partial class AutomationCommands
         string? outPath = Str(r, "out");
         bool save = Bool(r, "save") || outPath is not null;
         await EnsureLevelAsync(r, ct);
-        RequireDocument();
+        EditorDocument doc = RequireDocument();
         string? saveTarget = save ? ResolveSaveTarget(outPath, AllowDestructive(r)) : null;
+
+        // The level's lightmap pipeline (Alpine level properties, as ops.lightmaps / the editor store them): set before
+        // the bake when given, so the build compiles with the same options a GUI build of the level would.
+        Ged.Core.Lighting.Alpine.LightmapPipeline? pipeline = null;
+        if (Str(r, "pipeline") is { } pipelineName)
+        {
+            pipeline = Ged.Core.Lighting.Alpine.AlpineLightmapSettings.Parse(pipelineName)
+                ?? throw new AutomationException(AutomationErrorCodes.Usage, $"Unknown lightmap pipeline '{pipelineName}': use alpine or legacy.");
+        }
+
+        int? density = Int(r, "density");
+        if (density is < 0 or > 255)
+        {
+            throw new AutomationException(AutomationErrorCodes.Usage, "density must be 0 (default, 8 texels per unit), 1-128, or 255 (Alpine charts off).");
+        }
+
+        // The layer codec the bake writes (bc7, or raw like Alpine RED's -rawlightmaps); not stored in the level.
+        Ged.Core.Lighting.Alpine.AlpineLightmapCodec? codec = null;
+        if (Str(r, "codec") is { } codecName)
+        {
+            codec = Ged.Core.Lighting.Alpine.AlpineLightmapSettings.ParseCodec(codecName)
+                ?? throw new AutomationException(AutomationErrorCodes.Usage, $"Unknown lightmap codec '{codecName}': use bc7 or raw.");
+        }
+
+        if (codec is { } chosen)
+        {
+            await _host.RunOnDocumentThreadAsync(() =>
+            {
+                doc.Rfl.AlpineLightmapCodec = chosen;
+                return Task.FromResult(true);
+            }, ct);
+        }
+
+        if (pipeline is not null || density is not null)
+        {
+            await _host.RunOnDocumentThreadAsync(() =>
+            {
+                if (Ged.Core.Lighting.Alpine.AlpineLightmapSettings.Apply(doc, pipeline, density))
+                {
+                    doc.MarkDirty();
+                }
+
+                return Task.FromResult(true);
+            }, ct);
+        }
 
         CompiledLevel result = await _host.BuildAsync(sealedBuild, light, shadows, ct, progress);
         BuildReport rep = result.Report;
@@ -458,6 +504,7 @@ public sealed partial class AutomationCommands
             ElapsedMs = Math.Round(rep.ElapsedMs, 1),
             HasErrors = rep.HasErrors,
             Repair = BuildRepairDto.From(rep.Repair),
+            Lightmaps = light ? LightmapBakeDto.From(result.BakeStats) : null,
             Messages = rep.Messages.Select(m => new BuildMessageDto
             {
                 Severity = Dto.Camel(m.Severity.ToString()),
@@ -492,7 +539,8 @@ public sealed partial class AutomationCommands
     /// <summary>
     /// <c>lint</c> — args: <c>level?</c>, <c>minSeverity?</c> (info | warning | error: list only findings at or
     /// above it; the counts stay totals), <c>norms?</c> (default true: out-of-norm Info hints from the shipped corpus
-    /// norms, at most 6; skipped with a note on preview geometry).
+    /// norms, at most 6; skipped with a note on preview geometry), <c>craft?</c> (default false: true adds the craft audit's warnings,
+    /// <see cref="CraftAudit"/>; skipped with a note on preview geometry).
     /// </summary>
     private async Task<AutomationResponse> LintAsync(AutomationRequest r, CancellationToken ct)
     {
@@ -504,7 +552,7 @@ public sealed partial class AutomationCommands
             string other => throw new AutomationException(AutomationErrorCodes.Usage, $"Unknown minSeverity '{other}' (use info, warning, or error)."),
         };
         await EnsureLevelAsync(r, ct);
-        (LintReport report, List<string> notes) = LevelLint.Run(_host, checkNorms: BoolOr(r, "norms", true));
+        (LintReport report, List<string> notes) = LevelLint.Run(_host, checkNorms: BoolOr(r, "norms", true), checkCraft: BoolOr(r, "craft", false));
         _host.ReportActivity($"{Prefix(r)} lint — {report.Summary()}");
         return Ok(r.Command, new LintResult
         {

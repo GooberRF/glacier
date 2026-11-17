@@ -71,6 +71,21 @@ public sealed class OrganicBuilderTests
     }
 
     [Fact]
+    public void A_Cave_Given_Texture_And_Textures_Takes_The_Named_Roles_From_Textures_And_The_Rest_From_Texture()
+    {
+        KitRun run = Run("local c = kit.cave{name = 'c', seed = 1, path = {{0, 0, 0}, {0, 0, 20}}, texture = 'rck_canyon_rock02.tga', textures = {floor = 'rck_cavernflr01.tga'}}\n" +
+            "assert(#c.brushes > 0, 'the cave is built')");
+        List<Brush> brushes = Brushes(run);
+        Assert.NotEmpty(brushes);
+        string Tex(Brush b, Face f) => b.Geometry.Textures[f.Texture].ToLowerInvariant();
+        var floors = brushes.SelectMany(b => b.Geometry.Faces.Where(f => f.Plane.Normal.Y > 0.95f).Select(f => Tex(b, f))).ToHashSet();
+        var others = brushes.SelectMany(b => b.Geometry.Faces.Where(f => f.Plane.Normal.Y <= 0.95f).Select(f => Tex(b, f))).ToHashSet();
+        Assert.Equal(new[] { "rck_cavernflr01.tga" }, floors);
+        Assert.Contains("rck_canyon_rock02.tga", others);
+        Assert.DoesNotContain(others, t => t != "rck_canyon_rock02.tga" && t != "rck_cavernflr01.tga");
+    }
+
+    [Fact]
     public void A_Level_Leg_Has_One_Horizontal_Floor_And_A_Sloped_Leg_One_Exact_Plane()
     {
         KitRun run = Run("geo.tube{path = {{0,0,0}, {0,0,20}, {0,3,40}, {0,3,52}}, radius = 3, seed = 2}");
@@ -395,11 +410,11 @@ public sealed class OrganicBuilderTests
     public void The_Run_Counts_Facade_Calls_But_Not_Property_Reads()
     {
         KitRun run = Run("local b = level.brush{pos = {0,2,0}, size = 4, air = true}\nlocal x = b.uid + b.uid + b.uid\nb:tag('a', 'b')\nreturn x");
-        // ged.import("kit") (harness) plus the kit's own imports of its extension modules (kit_struct, kit_space,
+        // ged.import("kit") (harness) plus the kit's own imports of its extension modules (kit_struct, kit_space, kit_ground,
         // kit_layout, kit_compose, kit_compose_payload, kit_compose_open, kit_dress, kit_probe, kit_core from kit_probe,
         // kit_core again from kit_dress, kit_items, kit_probe and kit_core again from kit_items, kit_uv, kit_modules,
-        // kit_probe again from kit_modules), level.brush, b:tag.
-        Assert.Equal(19, run.Result.FacadeCalls);
+        // kit_probe again from kit_modules, kit_rock, kit_trace, kit_trace_dress), level.brush, b:tag.
+        Assert.Equal(23, run.Result.FacadeCalls);
         Assert.True(run.Result.ScriptTime > TimeSpan.Zero);
     }
 

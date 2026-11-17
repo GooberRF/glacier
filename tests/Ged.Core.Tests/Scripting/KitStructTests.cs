@@ -312,7 +312,7 @@ public sealed class KitStructTests
             "local s = kit.ground_at{x = -6, z = -6}\n" +
             "local reg = kit.ground_region{min = {-8, 0, -8}, max = {-2, 0, -2}, step = 2, y = 7}\n" +
             "return table.concat({ g(0, 0), g(0, 0, 7), g(6, 6, 7), g(-6, 6, 7), g(40, 40), string.format('%.1f', kit.ground_at{x = -6, z = -6, y = 7}.slope),\n" +
-            "  reg.count .. '/' .. reg.found .. '/' .. string.format('%.2f', reg.min_y) .. '/' .. reg.provider, kit.ground.at(0, 0).provider }, ' ')");
+            "  reg.count .. '/' .. reg.found .. '/' .. string.format('%.2f', reg.min_y) .. '/' .. reg.provider, kit.ground_at{x = 0, z = 0}.provider }, ' ')");
         Assert.Equal("8.500/brush 2.000/brush 3.000/brush 4.000/detail nil/void 26.6 16/16/2.00/brush brush", v);
     }
 

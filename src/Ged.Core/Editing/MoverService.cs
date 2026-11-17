@@ -27,6 +27,9 @@ public sealed class MoverService
     /// <summary>Every moving group in the level, in file order.</summary>
     public IReadOnlyList<Group> Movers => MovingGroupsContent()?.Groups ?? (IReadOnlyList<Group>)Array.Empty<Group>();
 
+    /// <summary>The document this service edits.</summary>
+    public EditorDocument Document => _doc;
+
     /// <summary>The mover brushes (movers section), in file order.</summary>
     public IReadOnlyList<Brush> MoverBrushes => MoversContent()?.Movers ?? (IReadOnlyList<Brush>)Array.Empty<Brush>();
 
@@ -77,6 +80,10 @@ public sealed class MoverService
         // (removed again on undo), so undoing the first mover on a level leaves the file byte-identical.
         (MoversSection movers, RflSection moversHost, bool moversCreated) = PrepareMovers();
         (GroupsSection groups, RflSection groupsHost, bool groupsCreated) = PrepareMovingGroups();
+
+        // RED lists every mover in the editor groups section too, and only that copy tells RED the brushes
+        // are a mover's (see MovingGroupMirror): the same instance goes into both lists.
+        (GroupsSection editorGroups, RflSection editorHost, bool editorCreated) = PrepareEditorGroups();
 
         // The member brushes: they stay in the brushes section; independent copies go into movers.
         var movingBrushes = brushes?.Brushes.Where(b => brushUids.Contains(b.Uid)).ToList() ?? new List<Brush>();
@@ -146,6 +153,7 @@ public sealed class MoverService
             {
                 EnsureSectionPresent(moversHost);
                 EnsureSectionPresent(groupsHost);
+                EnsureSectionPresent(editorHost);
                 foreach (Brush copy in moverCopies)
                 {
                     if (!movers.Movers.Contains(copy))
@@ -155,20 +163,26 @@ public sealed class MoverService
                 }
 
                 groups.Groups.Add(group);
+                if (!editorGroups.Groups.Contains(group))
+                {
+                    editorGroups.Groups.Add(group);
+                }
+
                 taken.Apply(_doc.MoverCopies);
-                MarkDirty(moversHost, groupsHost);
+                MarkDirty(moversHost, groupsHost, editorHost);
                 _doc.RefreshObjects();
             },
             () =>
             {
                 taken.Revert(_doc.MoverCopies);
                 groups.Groups.Remove(group);
+                editorGroups.Groups.Remove(group);
                 foreach (Brush copy in moverCopies)
                 {
                     movers.Movers.Remove(copy);
                 }
 
-                MarkDirty(moversHost, groupsHost);
+                MarkDirty(moversHost, groupsHost, editorHost);
                 if (moversCreated)
                 {
                     _doc.Rfl.Sections.Remove(moversHost);
@@ -177,6 +191,11 @@ public sealed class MoverService
                 if (groupsCreated)
                 {
                     _doc.Rfl.Sections.Remove(groupsHost);
+                }
+
+                if (editorCreated)
+                {
+                    _doc.Rfl.Sections.Remove(editorHost);
                 }
 
                 _doc.RefreshObjects();
@@ -602,6 +621,7 @@ public sealed class MoverService
         Uid = uid,
         Position = position,
         Rotation = rotation,
+        ScriptName = "Keyframe", // FUN_00452770 names every new keyframe "Keyframe" (s_Keyframe_005793b8 @0x005793b8)
         DepartTravelTime = 1f,
         ReturnTravelTime = 1f,
         EventUid = -1,
@@ -707,6 +727,11 @@ public sealed class MoverService
         List<Brush> movers = (moversHost?.Content as MoversSection)?.Movers ?? new List<Brush>();
         RflSection movingHost = MovingGroupsHost();
         int groupIndex = mg.Groups.IndexOf(group);
+
+        // The mover's editor-groups copy goes with it (see MovingGroupMirror), or RED would keep the mover.
+        RflSection? editorHost = FindHost(SectionType.Groups);
+        List<Group>? editorList = (editorHost?.Content as GroupsSection)?.Groups;
+        int editorIndex = editorList?.IndexOf(group) ?? -1;
         var memberUids = new HashSet<int>(group.Brushes);
         var removedMovers = movers
             .Select((m, i) => (Brush: m, Index: i))
@@ -723,6 +748,12 @@ public sealed class MoverService
                 }
 
                 mg.Groups.Remove(group);
+                if (editorIndex >= 0)
+                {
+                    editorList!.Remove(group);
+                    editorHost!.Dirty = true;
+                }
+
                 MarkDirty(movingHost);
                 if (moversHost is not null)
                 {
@@ -735,6 +766,12 @@ public sealed class MoverService
             () =>
             {
                 mg.Groups.Insert(Math.Clamp(groupIndex, 0, mg.Groups.Count), group);
+                if (editorIndex >= 0)
+                {
+                    editorList!.Insert(Math.Clamp(editorIndex, 0, editorList.Count), group);
+                    editorHost!.Dirty = true;
+                }
+
                 foreach (var (b, index) in Enumerable.Reverse(removedMovers))
                 {
                     movers.Insert(Math.Clamp(index, 0, movers.Count), b);
@@ -791,6 +828,28 @@ public sealed class MoverService
         // The restored members ARE their copies: snapshot them so only a later edit marks them stale.
         _doc.MoverCopies.TrackUntracked(_doc.Rfl);
         return missing.Count;
+    }
+
+    /// <summary>
+    /// Repairs a level whose movers are missing from (or out of date in) the editor <c>groups</c> section —
+    /// every level an earlier Glacier saved with a mover, and any RED level whose mover Glacier then edited
+    /// — by rewriting that copy from <c>moving_groups</c> (<see cref="MovingGroupMirror.Reconcile"/>).
+    /// Without it RED and Alpine RED do not see the mover and rebuild its brushes into the static world.
+    /// Not undoable (a load-time data fix, like <see cref="RepairStoredTwiceInvariant"/>); marks the
+    /// document dirty so a resave persists it. A RED-authored level already mirrors its movers, so nothing
+    /// changes and the file stays byte-identical. Returns the number of movers repaired.
+    /// </summary>
+    public int RepairEditorGroupMirror()
+    {
+        if (!MovingGroupMirror.NeedsRepair(_doc.Rfl))
+        {
+            return 0;
+        }
+
+        int repaired = MovingGroupMirror.Reconcile(_doc.Rfl);
+        _doc.MarkDirty();
+        _doc.RefreshObjects();
+        return repaired;
     }
 
     /// <summary>Applies a reversible edit to a keyframe's fields (used by the Keyframe Properties inspector).</summary>
@@ -923,6 +982,13 @@ public sealed class MoverService
     private (GroupsSection Content, RflSection Host, bool Created) PrepareMovingGroups()
     {
         RflSection host = _doc.Rfl.FindOrPrepareSection(SectionType.MovingGroups, () => new GroupsSection(SectionType.MovingGroups), out bool created);
+        return ((GroupsSection)host.Content!, host, created);
+    }
+
+    /// <summary>The editor groups section (0x3000000), or a new DETACHED one (<c>Created</c>) the caller's command inserts.</summary>
+    private (GroupsSection Content, RflSection Host, bool Created) PrepareEditorGroups()
+    {
+        RflSection host = _doc.Rfl.FindOrPrepareSection(SectionType.Groups, () => new GroupsSection(SectionType.Groups), out bool created);
         return ((GroupsSection)host.Content!, host, created);
     }
 

@@ -136,8 +136,26 @@ public sealed record ScriptServices
     /// </summary>
     public Func<string, string>? MeshWriteAccess { get; init; }
 
+    /// <summary>
+    /// The read policy for script file imports other than meshes (<c>terrain:import_heightmap</c>): given a fully resolved path
+    /// and the calling function's name, returns the path to read or throws a <see cref="ScriptApiException"/>. Null ⇒ not available.
+    /// </summary>
+    public Func<string, string, string>? FileReadAccess { get; init; }
+
+    /// <summary>
+    /// The write policy for script file exports (<c>terrain:export_heightmap</c>): given a fully resolved target path and the
+    /// calling function's name, returns it or throws. Null ⇒ not available. The destructive-op gate applies on top.
+    /// </summary>
+    public Func<string, string, string>? FileWriteAccess { get; init; }
+
     /// <summary>The RF install directory (for package output defaults + playtest). Optional.</summary>
     public string? InstallDirectory { get; init; }
+
+    /// <summary>
+    /// The folder relative script paths resolve against while the document has no file yet (a new level a headless run
+    /// saves with <c>--out</c>: that file's folder). Null = the document's folder, else the current directory.
+    /// </summary>
+    public string? PendingLevelFolder { get; init; }
 
     /// <summary>Builds dependency-scan options (catalogs) for packaging. Optional.</summary>
     public Func<DependencyScanOptions>? ScanOptionsFactory { get; init; }
@@ -156,4 +174,15 @@ public sealed record ScriptServices
 
     /// <summary>See <see cref="DefaultFloorTexture"/>.</summary>
     public string? DefaultCeilingTexture { get; init; }
+
+    /// <summary>
+    /// Renders the level's compiled geometry from an eye-level camera as the game would show it (lit, textured) and
+    /// returns RGBA pixels, or null when no renderer is available. Used by ref.shot_compare; null (tests, hosts without
+    /// a GPU renderer) falls back to a ray-cast grey shading.
+    /// </summary>
+    public Func<ShotRenderRequest, byte[]?>? ShotRender { get; init; }
 }
+
+/// <summary>A camera render request for <see cref="ScriptServices.ShotRender"/>: eye position, heading (0 = +Z, 90 = +X),
+/// pitch (up positive) and horizontal field of view in degrees, the image size, and the render mode (lit | textured).</summary>
+public sealed record ShotRenderRequest(double X, double Y, double Z, double Yaw, double Pitch, double Hfov, int Width, int Height, string Mode);

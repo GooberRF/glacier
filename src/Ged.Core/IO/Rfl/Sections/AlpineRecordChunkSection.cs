@@ -25,7 +25,7 @@ namespace Ged.Core.IO.Rfl.Sections;
 /// </para>
 /// </summary>
 /// <typeparam name="T">The record model.</typeparam>
-public abstract class AlpineRecordChunkSection<T> : IRflSectionContent
+public abstract class AlpineRecordChunkSection<T> : IRflSectionContent, IRetainedChunk
     where T : class
 {
     private byte[]? _retained;

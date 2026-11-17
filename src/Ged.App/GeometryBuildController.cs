@@ -945,6 +945,13 @@ public sealed class GeometryBuildController
         var opts = new LightingOptions { CastShadows = shadows };
         ApplyMethod(opts, preview);
 
+        // A manual relight is Calculate Lighting: with the level's Alpine pipeline it also bakes the Alpine charts (a
+        // full relight). The debounced preview relight stays stock-only and fast; its pages leave the charts stale.
+        if (!preview)
+        {
+            opts.AlpineCharts = Ged.Core.Lighting.Alpine.AlpineLightmapSettings.FromLevel(doc.Rfl);
+        }
+
         _status(region is null ? "Relighting…" : "Relighting changed area…");
 
         // Item 3: overlay for a manual relight; the debounced Preview-Lighting relight stays seamless.
@@ -978,7 +985,11 @@ public sealed class GeometryBuildController
             StateChanged?.Invoke();
             _refreshScene();
             string relit = $"Relit {stats.Surfaces} surface(s), {stats.Lights} lights in {stats.ElapsedMs:0} ms" +
-                (region is null ? " (full)." : " (changed area).");
+                (region is null || opts.AlpineCharts is not null ? " (full)." : " (changed area).") +
+                (stats.AlpineLightmaps is { } alpine
+                    ? $" Alpine lightmaps: {alpine.ChartedSurfaces} charts on {alpine.Pages.Length} pages at density {alpine.Density}, {(alpine.Codec == Ged.Core.Lighting.Alpine.AlpineLightmapCodec.Bc7 ? "BC7" : "raw RGB8")}" +
+                      (alpine.DensityHalvings > 0 ? $" (halved from {alpine.RequestedDensity} to fit)." : ".")
+                    : stats.AlpineSkipped is { } skipped && !preview ? " " + skipped : string.Empty);
             _status(relit);
             Log?.Invoke("Lighting", relit);
         }

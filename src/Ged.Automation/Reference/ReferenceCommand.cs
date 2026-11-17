@@ -344,6 +344,44 @@ public static class ReferenceCommand
 
         RasterImage sheet;
         var result = new JsonObject { ["op"] = "view" };
+        int? step = Int(args, "step");
+        double? zoom = Num(args, "zoom");
+        if (step is not null || zoom is not null)
+        {
+            // The coordinate grid the Lua ref.grid draws: crop enlarged with crisp pixels, every line labelled.
+            if (image is null)
+            {
+                throw Usage("step and zoom apply to a concept image (image), not a stored reference.");
+            }
+
+            if (step is < 1 or > 5000 || zoom is < 0.25 or > 32)
+            {
+                throw Usage("step is 1-5000 source pixels; zoom is 0.25-32.");
+            }
+
+            string source = io.RequireRead(image);
+            Ged.Core.Analysis.Recreation.RefImage picture = Ged.Core.Analysis.Recreation.RefImage.Load(source);
+            int[]? crop = Ints(args, "crop", 4);
+            if (crop is not null && (crop[2] < 4 || crop[3] < 4 || crop[0] < 0 || crop[1] < 0 || crop[0] + crop[2] > picture.Width || crop[1] + crop[3] > picture.Height))
+            {
+                throw Usage($"crop [x, y, w, h] = [{string.Join(", ", crop)}] must lie inside the {picture.Width}x{picture.Height} image.");
+            }
+
+            Ged.Core.Analysis.Recreation.ReferenceGrid.Result grid = Ged.Core.Analysis.Recreation.ReferenceGrid.Render(picture, crop, zoom ?? 0, step ?? 0, null);
+            File.WriteAllBytes(io.RequireWrite(outPath), grid.Png);
+            result["kind"] = "grid";
+            result["image"] = source;
+            result["imageSize"] = Arr(new[] { picture.Width, picture.Height });
+            result["crop"] = Arr(grid.Crop);
+            result["step"] = grid.Step;
+            result["zoom"] = Math.Round(grid.Zoom, 4);
+            result["read"] = "Labels are the source image's pixels: read corners off the lines (x,y at crossings); zoom into a crop for detail.";
+            result["path"] = outPath;
+            result["width"] = grid.Width;
+            result["height"] = grid.Height;
+            return result;
+        }
+
         if (image is not null)
         {
             string source = io.RequireRead(image);

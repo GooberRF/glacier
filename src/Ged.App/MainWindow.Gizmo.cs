@@ -151,7 +151,8 @@ public sealed partial class MainWindow
             _hoverHandle = GizmoHandle.None;
         }
 
-        bool avail = GizmoAvailable();
+        // Curve handles of a selected keyframe are grabbed through the same press path (mover_path.cpp:1749-1785).
+        bool avail = GizmoAvailable() || MoverHandlesAvailable() || TerrainToolsArmed();
         bool marquee = Document is not null;
         _viewportGrid.ForEachSurface(s => { s.GizmoActive = avail; s.MarqueeEnabled = marquee; });
         UpdateGizmoToolButtons();
@@ -197,7 +198,8 @@ public sealed partial class MainWindow
             }
         }
 
-        // Read-only (Alpine Faction 1.5) objects get no gizmo: a selection of only those cannot be transformed.
+        // Read-only objects (those of an Alpine chunk kept unchanged) get no gizmo: a selection of only
+        // those cannot be transformed.
         return Document is { } doc && doc.Selection.Any(o => !o.IsReadOnly) ? GizmoSelKind.Object : GizmoSelKind.None;
     }
 
@@ -206,7 +208,8 @@ public sealed partial class MainWindow
         GizmoSelKind.Brush => true,
         // A prefab unit moves/rotates rigidly (no scale — a rigid body has no meaningful scale here).
         GizmoSelKind.PrefabUnit => t != GizmoTool.Scale,
-        GizmoSelKind.Object => t != GizmoTool.Scale,
+        // A terrain only moves: it is axis-aligned by definition (editor_patch/terrain.cpp:3205-3206).
+        GizmoSelKind.Object => t == GizmoTool.Move || (t == GizmoTool.Rotate && Document is { } d && !d.Selection.All(o => o.Model is Ged.Core.Model.AlpineTerrain)),
         // Edge sub-geometry supports full Move/Rotate/Scale (about the selection pivot);
         // Vertex/Face sub-geometry stays Move-only.
         GizmoSelKind.SubGeometry => t == GizmoTool.Move || BrushEd?.Mode == EditMode.Edge,
@@ -376,6 +379,21 @@ public sealed partial class MainWindow
 
     private bool GizmoHitTest(IViewportSurface s, int x, int y)
     {
+        // A press on a keyframe's curve handle drags the handle, ahead of the manipulator.
+        if (MoverHandleHitTest(s, x, y))
+        {
+            _dragHandle = GizmoHandle.None;
+            return true;
+        }
+
+        // Armed Terrain Tools own a press on the selected terrain unless it lands on a lit manipulator handle.
+        if (_hoverHandle == GizmoHandle.None && TerrainToolHitTest(s, x, y))
+        {
+            _dragHandle = GizmoHandle.None;
+            _pendingTerrainStroke = true;
+            return true;
+        }
+
         if (!GizmoAvailable() || s.PixelRay(x, y) is not (Vector3 ro, Vector3 rd))
         {
             return false;
@@ -401,6 +419,8 @@ public sealed partial class MainWindow
 
     private void OnGizmoHover(IViewportSurface s, int x, int y)
     {
+        OnMoverHandleHover(s, x, y);
+        OnTerrainToolHover(s, x, y);
         if (!GizmoAvailable() || _gizmoDragging)
         {
             return;
@@ -425,6 +445,19 @@ public sealed partial class MainWindow
     private void OnGizmoDragStarted(int x, int y)
     {
         IViewportSurface s = _viewportGrid.ActiveSurface;
+        if (_pendingMoverHandle is not null)
+        {
+            BeginMoverHandleDrag(s, x, y);
+            return;
+        }
+
+        if (_pendingTerrainStroke)
+        {
+            _pendingTerrainStroke = false;
+            BeginTerrainStroke(s, x, y);
+            return;
+        }
+
         if (!GizmoAvailable() || _dragHandle == GizmoHandle.None || s.PixelRay(x, y) is not (Vector3 ro, Vector3 rd))
         {
             return;
@@ -479,6 +512,18 @@ public sealed partial class MainWindow
 
     private void OnGizmoDragMovedTo(int x, int y)
     {
+        if (MoverHandleDragging)
+        {
+            MoveMoverHandleDrag(x, y);
+            return;
+        }
+
+        if (TerrainStrokeActive)
+        {
+            MoveTerrainStroke(x, y);
+            return;
+        }
+
         if (!_gizmoDragging || _dragSurface is not { } s || s.PixelRay(x, y) is not (Vector3 ro, Vector3 rd))
         {
             return;
@@ -497,6 +542,18 @@ public sealed partial class MainWindow
 
     private void OnGizmoDragEnded()
     {
+        if (MoverHandleDragging)
+        {
+            EndMoverHandleDrag();
+            return;
+        }
+
+        if (TerrainStrokeActive)
+        {
+            EndTerrainStroke();
+            return;
+        }
+
         // RED-parity: a vertex/edge/face transform is applied to the model per-frame (the ghost shows
         // the bent face mid-drag), and any face bent off-plane is triangulated ONCE on release — joined
         // to the drag's open undo transaction, so a single undo restores the pre-drag brush exactly.
@@ -512,6 +569,18 @@ public sealed partial class MainWindow
 
     private void OnGizmoDragCancelled()
     {
+        if (MoverHandleDragging)
+        {
+            CancelMoverHandleDrag();
+            return;
+        }
+
+        if (TerrainStrokeActive)
+        {
+            CancelTerrainStroke();
+            return;
+        }
+
         _gizmoTx?.Rollback();
         _gizmoTx = null;
         _gizmoDragging = false;

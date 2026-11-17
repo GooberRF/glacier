@@ -67,6 +67,9 @@ public sealed class CsgFace
     /// </summary>
     public bool RepairFill { get; set; }
 
+    /// <summary>A face of an Alpine terrain chunk: no lightmap surface (editor_patch/terrain_build.cpp:770-780).</summary>
+    public bool IsTerrain { get; set; }
+
     /// <summary>A shallow copy that shares nothing mutable except the attribute values.</summary>
     public CsgFace CloneAttributes() => new()
     {
@@ -84,6 +87,7 @@ public sealed class CsgFace
         RoomIndex = RoomIndex,
         PortalIndexPlus2 = PortalIndexPlus2,
         RepairFill = RepairFill,
+        IsTerrain = IsTerrain,
     };
 
     public CsgFace With(List<CsgVertex> verts)

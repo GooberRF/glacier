@@ -48,7 +48,19 @@ public sealed class EntityDef
         CoronaGlareNames = FirstTokens(record, "Corona (Glare)");
         ThrusterVfxNames = FirstTokens(record, "Thruster VFX");
         StandAnim = ParseStandAnim(record);
+        UseFunction = record.GetString("Use");
     }
+
+    /// <summary>The class's <c>$Use:</c> function (e.g. "vehicle", "turret"), or null.</summary>
+    public string? UseFunction { get; }
+
+    /// <summary>
+    /// True for a class Alpine's vehicle factories can spawn: an entity.tbl <c>$Use</c> of vehicle or turret
+    /// (editor_patch/vehicle_factory.cpp:438-447 lists those; game_patch/multi/vehicles/vehicle_spawn.cpp:496-505 refuses others).
+    /// </summary>
+    public bool IsVehicleOrTurret =>
+        string.Equals(UseFunction, "vehicle", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(UseFunction, "turret", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Second flag list (Alpine <c>$Flags2:</c>), e.g. <c>collide_player</c>.</summary>
     public IReadOnlyList<string> Flags2 { get; } = Array.Empty<string>();

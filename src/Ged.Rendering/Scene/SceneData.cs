@@ -50,11 +50,92 @@ public sealed class GeometryBatch
     /// (texture dropped) marking faces flagged <c>show_sky</c>, drawn with a "SHOW SKY" label.</summary>
     public bool IsSky { get; set; }
 
+    /// <summary>The UID of the object this batch draws (an Alpine terrain surface), or 0 for level geometry: hiding the object culls it.</summary>
+    public int OwnerUid { get; set; }
+
     public List<WorldVertex> Vertices { get; } = new();
 
     public List<uint> Indices { get; } = new();
 
     public bool HasLightmap => LightmapIndex >= 0;
+}
+
+/// <summary>
+/// An Alpine terrain's top surface drawn with the layer blend (the terrain shader): an indexed grid of its non-hole cells,
+/// the two RGBA8 weight maps, up to 8 layer textures with their UV scales and triplanar flags, up to 4 overlays with their
+/// coverage map, and the baked light chart when one applies. Mirrors what Alpine Faction's Direct3D 11 terrain renderer
+/// binds (common/src/gr_d3d11/gr_d3d11_terrain.cpp:231-419) and samples (resources/shaders/standard_ps.hlsl:1169-1560).
+/// </summary>
+public sealed class TerrainDraw
+{
+    /// <summary>The terrain's UID (hiding the object culls it).</summary>
+    public int Uid { get; init; }
+
+    /// <summary>Grid vertices: position on the heightfield, the heightmap normal, the room colour and the terrain's pick id.</summary>
+    public List<WorldVertex> Vertices { get; } = new();
+
+    public List<uint> Indices { get; } = new();
+
+    /// <summary>The min-X / min-Z grid corner.</summary>
+    public Vector3 Origin { get; init; }
+
+    /// <summary>The footprint along X and Z.</summary>
+    public Vector2 Extent { get; init; }
+
+    /// <summary>The layer count (1..8): weights of layers past it do not count.</summary>
+    public int LayerCount { get; init; }
+
+    /// <summary>Layer textures (8 entries; unused ones repeat layer 0, as the game binds a missing layer).</summary>
+    public string[] Layers { get; } = new string[8];
+
+    public float[] LayerUvScale { get; } = new float[8];
+
+    public bool[] LayerTriplanar { get; } = new bool[8];
+
+    /// <summary>Weight texels across X and Z.</summary>
+    public int WeightWidth { get; init; }
+
+    public int WeightHeight { get; init; }
+
+    /// <summary>Weight map 0 (layers 0-3) and 1 (layers 4-7), RGBA8.</summary>
+    public byte[] Weights0 { get; init; } = Array.Empty<byte>();
+
+    public byte[] Weights1 { get; init; } = Array.Empty<byte>();
+
+    /// <summary>Overlay textures (0..4).</summary>
+    public List<string> Overlays { get; } = new();
+
+    public float[] OverlayUvScale { get; } = new float[4];
+
+    public bool[] OverlayTriplanar { get; } = new bool[4];
+
+    /// <summary>Overlay coverage (RGBA8 laid out as a weight map), or null without overlays.</summary>
+    public byte[]? OverlayCoverage { get; init; }
+
+    /// <summary>The terrain's baked light chart, RGB8 <see cref="ChartWidth"/> x <see cref="ChartHeight"/>, or null.</summary>
+    public byte[]? Chart { get; set; }
+
+    public int ChartWidth { get; set; }
+
+    public int ChartHeight { get; set; }
+
+    /// <summary>World X / Z of chart texel (0, 0)'s corner.</summary>
+    public Vector2 ChartOrigin { get; set; }
+
+    public float ChartTexelSize { get; set; } = 1f;
+
+    /// <summary>Drawn at full brightness, with no light.</summary>
+    public bool Fullbright { get; init; }
+}
+
+/// <summary>Every placed instance of one terrain decoration mesh (instance world matrices), drawn as one merged mesh.</summary>
+public sealed class DecorationDraw
+{
+    public required string MeshFilename { get; init; }
+
+    public required PickId PickId { get; init; }
+
+    public List<Matrix4x4> Worlds { get; } = new();
 }
 
 /// <summary>A placed V3M/V3C mesh (Alpine mesh object, entity, clutter or item).</summary>
@@ -116,6 +197,12 @@ public sealed class RenderScene
 
     public List<MeshInstance> Meshes { get; } = new();
 
+    /// <summary>Alpine terrain top surfaces, drawn with the layer blend.</summary>
+    public List<TerrainDraw> Terrains { get; } = new();
+
+    /// <summary>Alpine terrain decorations, one merged draw per terrain and mesh.</summary>
+    public List<DecorationDraw> Decorations { get; } = new();
+
     public List<Billboard> Billboards { get; } = new();
 
     public List<LineSegment> Lines { get; } = new();
@@ -134,7 +221,7 @@ public sealed class RenderScene
 
     public Vector3 SuggestedCameraTarget { get; set; }
 
-    public int TotalVertexCount => Batches.Sum(b => b.Vertices.Count);
+    public int TotalVertexCount => Batches.Sum(b => b.Vertices.Count) + Terrains.Sum(t => t.Vertices.Count);
 
-    public int TotalTriangleCount => Batches.Sum(b => b.Indices.Count) / 3;
+    public int TotalTriangleCount => (Batches.Sum(b => b.Indices.Count) + Terrains.Sum(t => t.Indices.Count)) / 3;
 }

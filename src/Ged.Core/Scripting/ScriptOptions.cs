@@ -294,7 +294,8 @@ public static partial class ScriptOptionSets
         new("name", "string", "none", "The script name."),
         new("props", "{field = value}", "the blueprint values", "Field values (keys as listed by catalog.describe(kind [, class])), applied in schema order."),
         new("links", UidList, "none", "Objects (or movers) to link to."),
-        new("tags", "{key = value}", "none", "Provenance tags written on the new object."));
+        new("tags", "{key = value}", "none", "Provenance tags written on the new object."),
+        new("seat", "boolean", "false", "Clutter, items and mesh objects: treat pos as the floor point and lift the object so the bottom of its mesh (as rotated) rests on it. Stock clutter meshes have their origin at their centre, so without seat they sink half their height (an Ultor crate about 0.46 m). Needs an RF install for the meshes."));
 
     public static readonly ScriptOptionSet PlayerStart = new("level.player_start",
         new("pos", "vec", "unchanged (required to create one)", "The Player Start position in metres."),
@@ -321,7 +322,7 @@ public static partial class ScriptOptionSets
         new("pos", "vec", null, "The keyframe's world position (give pos or offset, exactly one)."),
         new("offset", "vec", null, "The keyframe's position relative to the start keyframe."),
         new("rot", Rotation, "no rotation", "The keyframe's orientation in degrees."),
-        new("props", "{field = value}", "RED's keyframe defaults", "Keyframe fields (pause_time, travel_time_to_next, return_travel, name…). A new keyframe starts with travel_time_to_next = 1 and return_travel = 1 second (RED's defaults) and 0 pause, accel and decel."));
+        new("props", "{field = value}", "RED's keyframe defaults", "Keyframe fields (pause_time, travel_time_to_next, return_travel, name…). A new keyframe starts with RED's defaults: name \"Keyframe\", travel_time_to_next = 1 and return_travel = 1 second, and 0 pause, accel and decel."));
 
     public static readonly ScriptOptionSet GroupMembers = new("group:add",
         new("brushes", UidList, "none", "Brushes to add (existing members are skipped)."),

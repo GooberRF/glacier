@@ -15,7 +15,8 @@ namespace Ged.Automation.Tests;
 /// <summary>
 /// Clean in-game views from <c>glacier-cli render</c>: camera and iso views draw no editor object icons by default (and
 /// none with overlays none), show-sky faces show the level's sky room drawn from its centre (a flat sky without one), the
-/// sky room is never framed or drawn as part of the level, and iso and orthographic views frame the drawn geometry.
+/// sky room is never framed or drawn as part of the level, a lit view draws the sky room full-bright (as the game does),
+/// and iso and orthographic views frame the drawn geometry.
 /// Images are written to tests/artifacts/render for inspection.
 /// </summary>
 [Collection(GpuRenderCollection.Name)]
@@ -212,6 +213,77 @@ public sealed class RenderCleanViewTests
             ["camera"] = "0,1.7,0", ["look"] = "0,0,0.5", ["width"] = 160, ["height"] = 160, ["mode"] = "rooms", ["fov"] = 30,
         }, "clean_sky_none_floor.png");
         Assert.Null(floor.Sky);
+    }
+
+    [Fact]
+    public async Task Lit_Views_Draw_The_Sky_Room_Full_Bright_Not_At_The_Level_Ambient()
+    {
+        using GraphicsDevice? gd = TryDevice();
+        if (gd is null)
+        {
+            return;
+        }
+
+        // A dusk level: dark ambient, one light in the yard and none in the sky box, so the bake leaves the sky box at
+        // the ambient (about 20,18,26). The game draws the sky room full-bright (its texture alone, no lightmap), so the
+        // lit view shows the sky through the show-sky ceiling exactly as the textured view does, not near-black.
+        using HeadlessAutomationHost host = await Build("level.props:set_many{ ambient_color = {20, 18, 26} }\n" + SkyYard);
+        await host.BuildAsync(sealedBuild: true, bakeLighting: true, shadows: true, CancellationToken.None);
+        int skyRoom = SkySurfaceCheck(host.Document!);
+
+        JsonObject Up(string mode) => new() { ["camera"] = "0,1.7,0", ["look"] = "0,9,0.5", ["width"] = 320, ["height"] = 320, ["mode"] = mode };
+        (byte[] lit, RenderResult rl) = Render(gd, host.Document!, Up("lit"), "clean_sky_room_lit.png");
+        (byte[] tex, RenderResult rt) = Render(gd, host.Document!, Up("textured"), "clean_sky_room_textured.png");
+        Assert.Equal("lit", rl.ModeUsed);
+        Assert.Equal($"sky room {skyRoom}", rl.Sky);
+        Assert.Equal($"sky room {skyRoom}", rt.Sky);
+
+        // The ceiling's sky pixels: in the lit view as bright as in the textured view (no ambient-dark sky).
+        int dark = 0, differ = 0, sky = 0;
+        for (int y = rl.Height / 4; y < rl.Height * 3 / 4; y++)
+        {
+            for (int x = rl.Width / 4; x < rl.Width * 3 / 4; x++)
+            {
+                (byte R, byte G, byte B) l = Px(lit, rl.Width, x, y), t = Px(tex, rt.Width, x, y);
+                sky++;
+                if ((l.R + l.G + l.B) / 3 < 96)
+                {
+                    dark++;
+                }
+
+                if (Math.Abs(l.R - t.R) > 4 || Math.Abs(l.G - t.G) > 4 || Math.Abs(l.B - t.B) > 4)
+                {
+                    differ++;
+                }
+            }
+        }
+
+        Assert.True(dark == 0, $"{dark} of {sky} sky pixels are near-black in the lit view");
+        Assert.True(differ <= sky / 100, $"{differ} of {sky} sky pixels differ between the lit and textured views");
+
+        // The playable yard is still lit by its lightmaps: a floor corner out of the light's range shows the dark
+        // ambient in the lit view.
+        JsonObject Down(string mode) => new() { ["camera"] = "0,1.7,0", ["look"] = "-6,0,-6", ["width"] = 160, ["height"] = 160, ["mode"] = mode, ["fov"] = 20 };
+        (byte[] litFloor, RenderResult rf) = Render(gd, host.Document!, Down("lit"), "clean_sky_room_lit_floor.png");
+        (byte[] texFloor, _) = Render(gd, host.Document!, Down("textured"), "clean_sky_room_textured_floor.png");
+        Assert.NotEqual(Px(texFloor, rf.Width, rf.Width / 2, rf.Height / 2), Px(litFloor, rf.Width, rf.Width / 2, rf.Height / 2));
+    }
+
+    /// <summary>The sky room's index, after checking the bake left its faces at the dark ambient (what the fix is about).</summary>
+    private static int SkySurfaceCheck(EditorDocument doc)
+    {
+        Ged.Core.Model.Geometry geo = LevelOperations.CompiledGeometry(doc)!;
+        int skyRoom = Enumerable.Range(0, geo.Rooms.Count).Single(i => geo.Rooms[i].IsSkyroom != 0);
+        var lightmaps = doc.Rfl.Sections.Select(s => s.Content).OfType<Ged.Core.IO.Rfl.Sections.LightmapsSection>().Single().Lightmaps;
+        foreach (Ged.Core.Model.Surface s in geo.Surfaces.Where(s => s.RoomIndex == skyRoom))
+        {
+            Ged.Core.Model.Lightmap page = lightmaps[s.LightmapIndex];
+            int i = (((s.Y + (s.H / 2)) * page.Width) + s.X + (s.W / 2)) * 3;
+            Assert.True(page.Pixels[i] < 40 && page.Pixels[i + 1] < 40 && page.Pixels[i + 2] < 40,
+                $"the sky box's lightmap is not the dark ambient ({page.Pixels[i]},{page.Pixels[i + 1]},{page.Pixels[i + 2]})");
+        }
+
+        return skyRoom;
     }
 
     [Fact]

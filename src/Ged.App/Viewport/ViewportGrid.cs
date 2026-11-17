@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.VisualTree;
@@ -249,6 +250,13 @@ public sealed class ViewportGrid : UserControl
 
     private void Rebuild()
     {
+        // Re-composing detaches every pane subtree, and Avalonia drops keyboard focus from a
+        // detached element (it focuses nothing). Remember a focus that sits inside one of our
+        // panes and hand it back once that pane is re-attached; otherwise a TAB maximize/restore
+        // strands focus on nothing: the composited GL pane stops receiving its camera/transform
+        // keys, and its hover re-focus never fires because the pointer never left the pane.
+        InputElement? focusToRestore = FocusedElementInPanes();
+
         // Detach panes from any current parent before re-composing. A maximized (or
         // 1-pane) layout makes a pane THIS control's Content directly, so its parent is
         // the ContentControl — not a Panel/Grid. Clearing Content first releases it;
@@ -271,6 +279,24 @@ public sealed class ViewportGrid : UserControl
         {
             p.IsActivePane = ReferenceEquals(p.Surface, _active);
         }
+
+        // Only when the element is part of the new layout (a pane hidden by maximize stays unfocused).
+        if (focusToRestore is not null && TopLevel.GetTopLevel(focusToRestore) is not null)
+        {
+            focusToRestore.Focus();
+        }
+    }
+
+    /// <summary>The focused element when it lives inside one of this grid's panes, else null.</summary>
+    private InputElement? FocusedElementInPanes()
+    {
+        if (TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is not InputElement focused)
+        {
+            return null;
+        }
+
+        ViewportPane? pane = focused.FindAncestorOfType<ViewportPane>(includeSelf: true);
+        return pane is not null && Array.IndexOf(_panes, pane) >= 0 ? focused : null;
     }
 
     private ViewportPane ActivePaneOf()

@@ -26,7 +26,7 @@ internal static class RefCli
         ("--refs", "refs"), ("--id", "id"), ("--image", "image"), ("--crop", "crop"), ("--area", "area"), ("--notes", "notes"),
         ("--heading", "heading"), ("--pitch", "pitch"), ("--move", "move"), ("--turn", "turn"), ("--horizon", "horizon"),
         ("--vp", "vp"), ("--vp-dir", "vpDir"), ("--object", "object"), ("--measure", "measure"), ("--ignore", "ignore"),
-        ("--panel", "panel"), ("--side", "size"), ("--count", "count"), ("--unit", "unit"),
+        ("--panel", "panel"), ("--side", "size"), ("--count", "count"), ("--unit", "unit"), ("--step", "step"), ("--zoom", "zoom"),
     };
 
     private static readonly (string Flag, string Arg)[] Switches =

@@ -40,7 +40,7 @@ public static class InspectorAccess
     public static string? Unavailable(object model, InspectorField field)
     {
         ArgumentNullException.ThrowIfNull(field);
-        return field.Virtual ? null : InspectorPresence.UnavailableHint(model, field.Path);
+        return field.Virtual ? AlpineVirtualFields.Unavailable(model, field.EffectiveKey) : InspectorPresence.UnavailableHint(model, field.Path);
     }
 
     /// <summary>
@@ -104,7 +104,7 @@ public static class InspectorAccess
         object model = obj.Model;
         if (field.Virtual)
         {
-            return GetVirtual(obj, field);
+            return GetVirtual(doc, obj, field);
         }
 
         return Unavailable(model, field) is not null ? null : Canonical(field, field.Get(model));
@@ -215,6 +215,7 @@ public static class InspectorAccess
             "locked" => b.State == BrushState.Locked,
             "material" => BrushBreakableProps.GetMaterial(doc, uid),
             "no_debris" => BrushBreakableProps.GetNoDebris(doc, uid),
+            "no_shadow_cast" => BrushShadowProps.GetNoShadowCast(doc, uid),
             "uid" => b.Uid,
             "time_index" => brushes.TimeIndex(uid),
             _ => null,
@@ -263,6 +264,16 @@ public static class InspectorAccess
                 }
 
                 return;
+            case "no_shadow_cast":
+                using (doc.Undo.BeginTransaction("Edit " + field.Label))
+                {
+                    foreach (int u in targets)
+                    {
+                        BrushShadowProps.SetNoShadowCast(doc, u, value is true);
+                    }
+                }
+
+                return;
             case null:
                 OpResult r = brushes.EditBrushes(targets, "Edit " + field.Label, b =>
                 {
@@ -295,6 +306,11 @@ public static class InspectorAccess
             return null;
         }
 
+        if (field.Virtual && AlpineVirtualFields.IsMoverPathKey(field.EffectiveKey))
+        {
+            return AlpineVirtualFields.GetMoverPath(movers.Document, mover, field.EffectiveKey);
+        }
+
         return field.EffectiveKey switch
         {
             "movement_type" when field.Virtual => data.MovementType - 1,
@@ -316,6 +332,12 @@ public static class InspectorAccess
         }
 
         string description = "Edit " + field.Label;
+        if (field.Virtual && AlpineVirtualFields.IsMoverPathKey(field.EffectiveKey))
+        {
+            AlpineVirtualFields.SetMoverPath(movers.Document, mover, field, value);
+            return;
+        }
+
         switch (field.Virtual ? field.EffectiveKey : null)
         {
             case "movement_type":
@@ -368,7 +390,7 @@ public static class InspectorAccess
             });
     }
 
-    private static object? GetVirtual(LevelObject obj, InspectorField field)
+    private static object? GetVirtual(EditorDocument doc, LevelObject obj, InspectorField field)
     {
         switch (obj.Model)
         {
@@ -376,6 +398,14 @@ public static class InspectorAccess
                 return t.IsPureFactionEncoded && (t.ScriptName[1] & bit) != 0;
             case Light when field.EffectiveKey == "editor_only":
                 return obj.Section.TypeId == (uint)SectionType.EditorOnlyLights;
+            case AlpineRopeEmitter rope:
+                return AlpineVirtualFields.GetRope(rope, field.EffectiveKey);
+            case RoomEffect fx:
+                return AlpineVirtualFields.GetEmission(doc, fx.Header.Uid, field.EffectiveKey);
+            case Keyframe kf:
+                return AlpineVirtualFields.GetKeyframePath(doc, kf.Uid, field.EffectiveKey);
+            case AlpineTerrain terrain when field.EffectiveKey == "layer_textures":
+                return string.Join(";", terrain.Layers.Select(l => l.Texture));
             default:
                 return null;
         }
@@ -383,6 +413,36 @@ public static class InspectorAccess
 
     private static void SetVirtual(EditorDocument doc, LevelObject obj, InspectorField field, object? value)
     {
+        switch (obj.Model)
+        {
+            case AlpineRopeEmitter rope when AlpineVirtualFields.IsRopeKey(field.EffectiveKey):
+                AlpineVirtualFields.SetRope(doc, obj, rope, field, value);
+                return;
+            case RoomEffect fx when AlpineVirtualFields.IsEmissionKey(field.EffectiveKey):
+                AlpineVirtualFields.SetEmission(doc, fx.Header.Uid, field, value);
+                return;
+            case Keyframe kf when AlpineVirtualFields.IsKeyframePathKey(field.EffectiveKey):
+                AlpineVirtualFields.SetKeyframePath(doc, kf.Uid, field, value);
+                return;
+            case AlpineTerrain when field.EffectiveKey == "layer_textures":
+                // Up to 8 names separated by ';' (the first is the base): one undoable terrain edit (TerrainOps.SetLayers).
+                string[] names = (value as string ?? string.Empty).Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (names.Length is < 1 or > AlpineTerrainRules.MaxLayers)
+                {
+                    throw new InvalidOperationException($"Field 'layer_textures' takes 1 to {AlpineTerrainRules.MaxLayers} texture names separated by ';'.");
+                }
+
+                try
+                {
+                    Editing.TerrainOps.Apply(doc, obj, "Edit " + field.Label, t => Editing.TerrainOps.SetLayers(t, names));
+                }
+                catch (ArgumentException ex)
+                {
+                    throw new InvalidOperationException(ex.Message, ex);
+                }
+                return;
+        }
+
         if (obj.Model is Trigger t && TriggerFlagBit(field) is int bit)
         {
             int flags = t.IsPureFactionEncoded ? t.ScriptName[1] : 0;

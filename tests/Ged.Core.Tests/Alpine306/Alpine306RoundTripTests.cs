@@ -59,11 +59,13 @@ public sealed class Alpine306RoundTripTests
 
     /// <summary>
     /// The corpus holds pre-release layouts of some 1.5 chunks (rope emitters without the decoration block or with a
-    /// "ZIPL" block, an older waypoint helper record, a liquid emission chunk with a leading version, a terrain
-    /// decoration record) that Alpine 1.5 itself cannot read cleanly. Those chunks are kept raw and read-only (§10
-    /// rule 3); this ratchet keeps their number from growing, i.e. a current-layout chunk must always parse typed.
+    /// "ZIPL" block, an older waypoint helper record, a liquid emission chunk with a leading version, terrain records
+    /// with an older decoration layout or a blob longer than their header implies) that Alpine 1.5 itself cannot read
+    /// cleanly. Those chunks are kept raw and read-only (§10 rule 3); this ratchet keeps their number from growing, i.e. a
+    /// current-layout chunk must always parse typed. The terrain reader validates whole records, blob included, as
+    /// Alpine's does, which finds 4 such terrain chunks (a structure-only pass found 2).
     /// </summary>
-    private const int MaxPreReleaseRawChunks = 19;
+    private const int MaxPreReleaseRawChunks = 21;
 
     [Fact]
     [Trait("Category", "DeepGate")]

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 
 namespace Ged.Core.Lighting;
@@ -133,6 +134,43 @@ public sealed class LightingOptions
         return this;
     }
 
+    /// <summary>
+    /// The level's Alpine lightmap settings when this bake should also produce Alpine Faction's surface charts (RFL
+    /// chunk 0x0AFBAE09), or null for a stock-only bake. With the Alpine pipeline the stock fragments become the box
+    /// mean of their charts (<see cref="Alpine.AlpineChartBaker"/>); with Legacy lighting (or density Off) nothing
+    /// changes and no charts are written. Null — the default, and what every parity gate runs — keeps the stock bake
+    /// byte-identical. Builds and relights set it from the level (<see cref="Alpine.AlpineLightmapSettings.FromLevel"/>).
+    /// </summary>
+    public Alpine.AlpineLightmapSettings? AlpineCharts { get; set; }
+
+    /// <summary>
+    /// Alpine Faction's directional lights to bake — the level sun and the Directional Light objects that start on
+    /// (<see cref="Alpine.AlpineDirectionalLights.FromLevel"/>). Alpine RED bakes them with either pipeline
+    /// (editor_patch/lightmap.cpp:5307-5309). Empty (the default, and every stock level) adds nothing.
+    /// </summary>
+    public IReadOnlyList<EngineLight> DirectionalLights { get; set; } = Array.Empty<EngineLight>();
+
+    /// <summary>
+    /// The level's liquid emission records (RFL chunk 0x0AFBAE0F), by room effect: with the Alpine pipeline each liquid
+    /// room whose effect emits lights the bake from its surface (editor_patch/lightmap.cpp:2152-2225). Empty = none.
+    /// </summary>
+    public IReadOnlyList<Model.AlpineLiquidEmission> LiquidEmission { get; set; } = Array.Empty<Model.AlpineLiquidEmission>();
+
+    /// <summary>
+    /// The Alpine mesh objects' world-space LOD0 triangles when the level sets "meshes block light" (Alpine pipeline
+    /// only; <see cref="Compiler.CompileOptionsFactory.ResolveAlpineLighting"/>). Empty = none.
+    /// </summary>
+    public IReadOnlyList<Alpine.AlpineMeshOccluder> MeshOccluders { get; set; } = Array.Empty<Alpine.AlpineMeshOccluder>();
+
+    /// <summary>Texture alpha lookups for the Alpine occluder rules (null: no texture has alpha, no mask can be read).</summary>
+    public Alpine.IAlpineTextureAlpha? AlpineTextures { get; set; }
+
+    /// <summary>
+    /// Resolves a compiled face of an already-built level to its "No shadow cast" brush (face id + bounds, as Alpine RED
+    /// resolves it — lightmap.cpp:151-236), for a relight; a build knows each face's brush directly. Null = none.
+    /// </summary>
+    public Alpine.AlpineNoShadowCastFilter? NoShadowCast { get; set; }
+
     /// <summary>Stock-target level: warn in the build report when a face is lit by more than 64 lights.</summary>
     public bool WarnStockLightLimit { get; set; }
 
@@ -176,4 +214,22 @@ public sealed class BakeStats
 
     /// <summary>Edge-texel pairs blended by the cross-surface seam blend (0 on the RED-Classic path).</summary>
     public int SeamTexelsBlended { get; set; }
+
+    /// <summary>The pipeline this bake ran (null when the bake was not asked for Alpine charts at all).</summary>
+    public Alpine.LightmapPipeline? Pipeline { get; set; }
+
+    /// <summary>The Alpine charts this bake produced, or null (Legacy lighting, density Off, or nothing qualified).</summary>
+    public Alpine.AlpineLightmapBake? AlpineLightmaps { get; set; }
+
+    /// <summary>Why no Alpine charts were produced, when the bake was asked for them.</summary>
+    public string? AlpineSkipped { get; set; }
+
+    /// <summary>Directional lights (Alpine sun / Directional Light objects) the bake included.</summary>
+    public int DirectionalLights { get; set; }
+
+    /// <summary>Liquid rooms whose emission lit the bake (Alpine pipeline).</summary>
+    public int LiquidEmitters { get; set; }
+
+    /// <summary>Notes from the Alpine fixed pipeline's setup (liquid emitters, occluders) for the bake log.</summary>
+    public List<string> AlpineLog { get; } = new();
 }

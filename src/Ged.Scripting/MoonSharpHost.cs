@@ -81,7 +81,7 @@ internal sealed class MoonSharpSession : IScriptSession, IScriptModuleHost
     /// </summary>
     public object? Import(string name, string source, string chunkName)
     {
-        DynValue chunk = _script.LoadString(source ?? string.Empty, null, chunkName);
+        DynValue chunk = _script.LoadString(LuaLocalInit.Apply(source ?? string.Empty), null, chunkName);
         DynValue result = _exec is null ? _script.Call(chunk) : RunBudgeted(chunk);
         if (result.Type == DataType.Tuple)
         {
@@ -97,7 +97,7 @@ internal sealed class MoonSharpSession : IScriptSession, IScriptModuleHost
         DynValue chunk;
         try
         {
-            chunk = _script.LoadString(source, null, chunkName);
+            chunk = _script.LoadString(LuaLocalInit.Apply(source), null, chunkName);
         }
         catch (SyntaxErrorException se)
         {

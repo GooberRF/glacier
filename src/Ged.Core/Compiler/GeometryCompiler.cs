@@ -45,7 +45,11 @@ public sealed class GeometryCompiler
         var result = new CompiledLevel { Report = _report };
 
         // Pre-build validation (red-status style warnings; never blocks the build).
-        BrushValidator.Validate(_brushes, _report);
+        // Terrain chunk brushes are open sheets or skirted shells by design (Alpine RED checks them by its own rules,
+        // reported by the terrain lints), so only authored brushes are validated.
+        BrushValidator.Validate(
+            _options.TerrainBrushUids.Count == 0 ? _brushes : _brushes.Where(b => !_options.TerrainBrushUids.Contains(b.Uid)).ToList(),
+            _report);
 
         // Phase 1: classify brushes, assign stable sequential face ids, convert to world space.
         var detailFaces = new List<CsgFace>();
@@ -95,6 +99,17 @@ public sealed class GeometryCompiler
             bool detailBrush = (flags & BrushFlags.Portal) == 0
                 && (flags & (BrushFlags.Detail | BrushFlags.Geoable)) != 0;
             ApplyTextureTraits(faces, traitCache, detailBrush);
+
+            // [ALPINE] A terrain chunk: its faces get no stock lightmap surface and are never see-through or holed, as the
+            // terrain shader blends its layers opaquely (editor_patch/level.cpp:1329-1338, terrain_build.cpp:770-780).
+            if (_options.TerrainBrushUids.Count > 0 && _options.TerrainBrushUids.Contains(b.Uid))
+            {
+                foreach (CsgFace f in faces)
+                {
+                    f.IsTerrain = true;
+                    f.Flags = (ushort)(f.Flags & ~(ushort)(FaceFlags.HasAlpha | FaceFlags.HasHoles));
+                }
+            }
 
             if ((flags & BrushFlags.Portal) != 0)
             {
@@ -368,9 +383,32 @@ public sealed class GeometryCompiler
         if (_options.BuildSurfaces)
         {
             _options.Progress?.Invoke(new CompileProgress("Calculating lightmap UVs", 0, 1));
-            surfaceResult = new SurfaceBuilder(_options.HighResLightmaps)
-                .Build(allFaces, rooms, result, _options.GroupSurfaces, _options.LevelAmbient);
+            // Past the surface cap the faces nobody can see give theirs up first (see EnclosedFaceProbe).
+            Func<Func<CsgFace, bool>> enclosed = () =>
+            {
+                var seeThrough = new HashSet<int>();
+                foreach (CsgFace f in allFaces)
+                {
+                    if ((f.Flags & (ushort)FaceFlags.IsDetail) != 0
+                        && (f.Flags & (ushort)(FaceFlags.HasAlpha | FaceFlags.HasHoles | FaceFlags.IsInvisible)) != 0)
+                    {
+                        seeThrough.Add(f.SourceBrushUid);
+                    }
+                }
+
+                var probe = new EnclosedFaceProbe(_brushes, seeThrough, _options.TerrainBrushUids.Count > 0 ? new HashSet<int>(_options.TerrainBrushUids) : null);
+                return probe.Enclosed;
+            };
+            surfaceResult = new SurfaceBuilder(_options.HighResLightmaps, _options.HighResFragmentMax, _options.SurfaceCap)
+                .Build(allFaces, rooms, result, _options.GroupSurfaces, _options.LevelAmbient, enclosed);
             surfaces = surfaceResult.Surfaces;
+            SurfaceBudgetState budget = SurfaceBudgetState.FromBuild(allFaces.Count, surfaceResult, _options.SurfaceCap);
+            _report.SurfaceBudget = budget;
+            // (A preview gives every face its own surface, so only a full build's count is the level's.)
+            if (_options.GroupSurfaces && budget.Message() is { } capMessage)
+            {
+                _report.Add(BuildSeverity.Warning, capMessage, budget.Location, budget.TopBrushes.Count > 0 ? budget.TopBrushes[0].Uid : 0);
+            }
         }
 
         // Phase 7b: bake real lighting into the atlas (opt-in).
@@ -387,6 +425,12 @@ public sealed class GeometryCompiler
         var assembler = new GeometryAssembler();
         result.Geometry = assembler.Assemble(
             allFaces, facePoolIndices, welder.Vertices, rooms, portalPass.Portals, surfaces, scroll);
+
+        // The Alpine charts baked above are positional over these surfaces: bind them to the assembled geometry.
+        if (result.BakeStats?.AlpineLightmaps is { } alpineCharts)
+        {
+            alpineCharts.Geometry = result.Geometry;
+        }
 
         // Alpine geoable/breakable brush → compiled-room-uid map (recomputed every build so
         // the alpine_level_properties tables the game reads track the rebuilt room UIDs).

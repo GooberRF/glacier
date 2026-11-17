@@ -87,13 +87,33 @@ public sealed class ScriptKitCore
 
     internal string? KitTag(int uid) => _ctx.Metadata.Tags(uid).GetValueOrDefault("kit");
 
-    private static long[] Signatures(IReadOnlyList<Brush> list)
+    // The signatures of the brushes as they stood at a change stamp (a level of ten thousand brushes is not re-read on
+    // every probe call while nothing changed).
+    private long[]? _sigCache;
+    private long _sigStamp = -1;
+    private IReadOnlyList<Brush>? _sigList;
+
+    private long[] Signatures(IReadOnlyList<Brush> list)
+    {
+        if (_sigCache is not null && ReferenceEquals(list, _sigList) && _sigCache.Length == list.Count && _sigStamp == _ctx.Brushes.ChangeStamp)
+        {
+            return _sigCache;
+        }
+
+        long[] made = SignaturesOf(list);
+        _sigCache = made;
+        _sigList = list;
+        _sigStamp = _ctx.Brushes.ChangeStamp;
+        return made;
+    }
+
+    private long[] SignaturesOf(IReadOnlyList<Brush> list)
     {
         var s = new long[list.Count];
         for (int i = 0; i < list.Count; i++)
         {
             Brush b = list[i];
-            ScriptAabb bb = ScriptBrushHandle.WorldBounds(b);
+            ScriptAabb bb = _ctx.BrushIndex.BoundsOf(b);
             var h = new HashCode();
             h.Add(b.Uid);
             h.Add(b.Flags & (uint)(BrushFlags.Air | BrushFlags.Portal | BrushFlags.Detail));
@@ -117,6 +137,40 @@ public sealed class ScriptKitCore
     /// <summary>The node test of the space named <paramref name="name"/> (see <see cref="Zone"/>), or null for no zone.</summary>
     internal Func<double, double, double, bool>? ZoneFilter(KitProbe probe, string name) =>
         _zones.TryGetValue(name, out int[]? uids) ? probe.InsideAny(uids) : null;
+
+    /// <summary>
+    /// The organic rock budget's ledger (kit_rock.lua): the faces of the level's detail brushes whose <c>kit</c> tag is
+    /// one of <paramref name="kits"/> (the organic builders), counted natively over the whole level so the budget holds
+    /// across runs. Returns {faces, brushes}.
+    /// </summary>
+    public Dictionary<string, object?> OrganicFaces(ScriptArgs kits)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (object? o in kits.Items)
+        {
+            if (o is string s)
+            {
+                names.Add(s);
+            }
+        }
+
+        int faces = 0, brushes = 0;
+        foreach (Brush b in _ctx.Brushes.Brushes)
+        {
+            if ((b.Flags & (uint)BrushFlags.Detail) == 0)
+            {
+                continue;
+            }
+
+            if (_ctx.Metadata.Tags(b.Uid).TryGetValue("kit", out string? k) && names.Contains(k))
+            {
+                faces += b.Geometry.Faces.Count;
+                brushes++;
+            }
+        }
+
+        return new Dictionary<string, object?>(StringComparer.Ordinal) { ["faces"] = (double)faces, ["brushes"] = (double)brushes };
+    }
 
     /// <summary>Plans kit.spawn_points (see kit_items.lua): positions, headings and the report.</summary>
     public Dictionary<string, object?> SpawnPlan(ScriptArgs args)

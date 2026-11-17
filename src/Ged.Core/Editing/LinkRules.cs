@@ -14,7 +14,7 @@ namespace Ged.Core.Editing;
 public static class LinkRules
 {
     public const string OriginatorMessage =
-        "Links can only be created from Triggers, Events, Clutter, and Nav Points.";
+        "Links can only be created from Triggers, Events, Clutter, Nav Points, and Waypoint Helpers.";
 
     public static LinkResult Validate(LevelObject origin, LevelObject target)
     {
@@ -31,6 +31,18 @@ public static class LinkRules
         if (links.Contains(target.Uid))
         {
             return LinkResult.Reject($"Already linked to UID {target.Uid}.");
+        }
+
+        // A waypoint helper links only to other waypoint helpers (its routes; editor_patch/waypoint_helper.cpp:384-388).
+        if (origin.Model is AlpineWaypointHelper && target.Model is not AlpineWaypointHelper)
+        {
+            return LinkResult.Reject("A Waypoint Helper links only to other Waypoint Helpers.");
+        }
+
+        // Alpine saves at most 64 links per helper and drops the rest (waypoint_helper.cpp:270-292).
+        if (origin.Model is AlpineWaypointHelper && links.Count >= AlpineWaypointHelperLimits.MaxLinks)
+        {
+            return LinkResult.Reject($"A Waypoint Helper keeps at most {AlpineWaypointHelperLimits.MaxLinks} links.");
         }
 
         // Event originators constrain their target kind via the catalog.

@@ -30,6 +30,16 @@ public static class SceneBuilder
         scene.Lightmaps = lm?.Lightmaps ?? (IReadOnlyList<Lightmap>)Array.Empty<Lightmap>();
         int lightmapCount = scene.Lightmaps.Count;
 
+        // Alpine surface charts, drawn from display pages appended after the stock pages (static geometry only;
+        // movers keep their stock lightmaps, as the game draws them without a mover chart table).
+        AlpineChartDisplay? alpine = options.AlpineLightmaps && options.IncludeStaticGeometry
+            ? AlpineChartDisplay.For(file)
+            : null;
+        if (alpine is not null)
+        {
+            scene.Lightmaps = scene.Lightmaps.Concat(alpine.Pages).ToList();
+        }
+
         var batches = new Dictionary<(string Tex, int Lm, RenderPass Pass, float SU, float SV, bool Portal), GeometryBatch>();
         var uidPositions = new Dictionary<int, Vector3>();
         bool anyBounds = false;
@@ -47,8 +57,24 @@ public static class SceneBuilder
         GeometrySection? staticGeo = options.IncludeStaticGeometry ? FirstContent<GeometrySection>(file) : null;
         if (staticGeo is not null)
         {
+            // An Alpine terrain draws from its own data with the layer blend (as the game re-skins its compiled rooms,
+            // game_patch/misc/alpine_terrain.cpp:63-87), so the compiled rooms of a built terrain are left out here.
+            HashSet<int>? excluded = options.ExcludedRooms;
+            if (options.IncludeObjects && TerrainRooms(file, staticGeo.Geometry) is { Count: > 0 } terrainRooms)
+            {
+                var merged = new HashSet<int>(terrainRooms);
+                if (excluded is not null)
+                {
+                    merged.UnionWith(excluded);
+                }
+
+                options.ExcludedRooms = merged;
+            }
+
             EmitGeometry(scene, staticGeo.Geometry, Matrix4x4.Identity, isMover: false, moverUid: 0,
-                lightmapCount, options, batches, Grow, options.VisibleRooms);
+                lightmapCount, options, batches, Grow, options.VisibleRooms,
+                alpine is not null && ReferenceEquals(alpine.Atlas.Geometry, staticGeo.Geometry) ? alpine : null);
+            options.ExcludedRooms = excluded;
         }
 
         // 2. Movers, at keyframe-0 transform.
@@ -143,13 +169,22 @@ public static class SceneBuilder
         SceneBuildOptions options,
         Dictionary<(string, int, RenderPass, float, float, bool), GeometryBatch> batches,
         Action<Vector3> grow,
-        HashSet<int>? visibleRooms)
+        HashSet<int>? visibleRooms,
+        AlpineChartDisplay? alpine = null)
     {
         bool identity = world.IsIdentity;
 
         // Per-face UV scroll velocities (liquid conveyor etc.), keyed by compiled face
         // id. Prefer the modern face_scroll_data; fall back to the legacy table.
         Dictionary<int, (float U, float V)>? scroll = BuildScrollLookup(g);
+
+        // The sky room (and the detail rooms only it holds) draws full-bright: RF's sky-room pass binds the face's
+        // texture alone (COLOR_SOURCE_TEXTURE, no lightmap, no fog; RF.exe FUN_005536c0 builds its two modes with
+        // gr_mode(WRAP, TEXTURE, TEXTURE, ALPHA, FULL|READ, FOG_NOT_ALLOWED) and sets the bitmap with lightmap -1),
+        // and Alpine's Direct3D 11 renderer does the same (common/src/gr_d3d11/gr_d3d11_solid.cpp:29-45, 106-113,
+        // and :546 which never binds a surface lightmap to a sky face). A sky box therefore shows its texture at
+        // full strength whatever its baked lightmap holds (an unlit sky box bakes to the level ambient).
+        HashSet<int>? skyRooms = isMover ? null : SkyRoomIndices(g);
 
         for (int faceIndex = 0; faceIndex < g.Faces.Count; faceIndex++)
         {
@@ -205,7 +240,17 @@ public static class SceneBuilder
             RenderPass pass = isPortal
                 ? (options.PortalFaces == PortalFaceDrawMode.SeeThru ? RenderPass.Alpha : RenderPass.Opaque)
                 : skyAid ? RenderPass.Alpha : ClassifyPass(flags);
-            int lmIndex = isPortal || skyAid ? -1 : LightmapIndexForFace(g, f, lightmapCount);
+            bool skyRoomFace = skyRooms is not null && skyRooms.Contains(f.RoomIndex);
+            int lmIndex = isPortal || skyAid || skyRoomFace ? -1 : LightmapIndexForFace(g, f, lightmapCount);
+
+            // A face whose surface has an Alpine chart samples the chart's display page instead.
+            bool charted = lmIndex >= 0 && alpine is not null && alpine.HasChart(f.SurfaceIndex);
+            Surface? chartSurface = charted ? g.Surfaces[f.SurfaceIndex] : null;
+            if (charted && f.Vertices.Count > 0
+                && alpine!.TryMap(f.SurfaceIndex, chartSurface!, Vector2.Zero, out int displayPage, out _))
+            {
+                lmIndex = lightmapCount + displayPage;
+            }
 
             // Portal faces drop their texture (flat tinted quad); sky faces bind the baked
             // "SHOW SKY" diffuse; normal faces keep their wall texture.
@@ -263,12 +308,18 @@ public static class SceneBuilder
                 grow(pos);
 
                 Uv lmUv = fv.LightmapCoords ?? default;
+                var lmCoord = new Vector2(lmUv.U, lmUv.V);
+                if (chartSurface is not null && alpine!.TryMap(f.SurfaceIndex, chartSurface, lmCoord, out _, out Vector2 chartUv))
+                {
+                    lmCoord = chartUv;
+                }
+
                 batch.Vertices.Add(new WorldVertex
                 {
                     Position = pos,
                     Normal = normal,
                     TexCoord = new Vector2(fv.TextureCoords.U, fv.TextureCoords.V),
-                    LightmapCoord = new Vector2(lmUv.U, lmUv.V),
+                    LightmapCoord = lmCoord,
                     Color = color,
                     PickId = pickId,
                 });
@@ -281,6 +332,91 @@ public static class SceneBuilder
                 batch.Indices.Add((uint)(baseVertex + i + 1));
             }
         }
+    }
+
+    /// <summary>
+    /// The compiled rooms the game draws in its sky-room pass: every room flagged as a sky room plus the detail rooms
+    /// listed only under sky rooms (RF draws a sky room's detail rooms with it; Alpine's render cache adds them with
+    /// the sky flag still set, gr_d3d11_solid.cpp:479-511). A detail room a playable room also lists stays a level
+    /// room. Null when the level has no sky room.
+    /// </summary>
+    public static HashSet<int>? SkyRoomIndices(Geometry g)
+    {
+        ArgumentNullException.ThrowIfNull(g);
+        HashSet<int>? sky = null;
+        for (int i = 0; i < g.Rooms.Count; i++)
+        {
+            if (g.Rooms[i].IsSkyroom != 0)
+            {
+                (sky ??= new HashSet<int>()).Add(i);
+            }
+        }
+
+        if (sky is null)
+        {
+            return null;
+        }
+
+        // Each listed detail room: true while every room listing it is a sky room.
+        var onlySky = new Dictionary<int, bool>();
+        foreach (SubroomList list in g.SubroomLists)
+        {
+            bool parentSky = sky.Contains(list.RoomIndex);
+            foreach (int sub in list.SubroomIndices)
+            {
+                onlySky[sub] = onlySky.TryGetValue(sub, out bool so) ? so && parentSky : parentSky;
+            }
+        }
+
+        foreach ((int sub, bool only) in onlySky)
+        {
+            if (only)
+            {
+                sky.Add(sub);
+            }
+        }
+
+        return sky;
+    }
+
+    /// <summary>
+    /// The room indices of <paramref name="g"/> that a terrain's build mapping names (an editable terrain chunk only):
+    /// the compiled chunk rooms the terrain's own drawing replaces.
+    /// </summary>
+    private static HashSet<int>? TerrainRooms(RflFile file, Geometry g)
+    {
+        if (FirstContent<AlpineTerrainSection>(file) is not { IsReadOnly: false, Terrains.Count: > 0 } terrains)
+        {
+            return null;
+        }
+
+        var uids = new HashSet<int>();
+        foreach (AlpineTerrain t in terrains.Terrains)
+        {
+            foreach (AlpineTerrainChunkMapping m in t.BuildMapping)
+            {
+                if (m.RoomUid != AlpineTerrainRules.NoRoomUid)
+                {
+                    uids.Add(m.RoomUid);
+                }
+            }
+        }
+
+        if (uids.Count == 0)
+        {
+            return null;
+        }
+
+        var rooms = new HashSet<int>();
+        for (int i = 0; i < g.Rooms.Count; i++)
+        {
+            if (uids.Contains(g.Rooms[i].Id))
+            {
+                rooms.Add(i);
+            }
+        }
+
+        return rooms;
     }
 
     private static Vector3 VertexAt(Geometry g, int index)
@@ -420,6 +556,7 @@ public static class SceneBuilder
                 new PickId(PickKind.Object, uid & 0x0FFFFFFF), (int)icon, Aspect: 1f / hOverW, OnTop: onTop));
         }
 
+        var pendingRopes = new List<AlpineRopeEmitter>();
         foreach (RflSection section in file.Sections)
         {
             switch (section.Content)
@@ -677,13 +814,114 @@ public static class SceneBuilder
 
                     break;
 
+                // Alpine Faction 1.5 objects (AlpineObjectGizmos): an icon each, the glyphs Alpine RED always draws, and
+                // the range volumes behind the three-way range gate (selected / Always Show Range / Show all ranges).
+                case AlpineWeatherRegionsSection weather:
+                    foreach (AlpineWeatherRegion w in weather.Records)
+                    {
+                        Add(BillboardKind.WeatherRegion, w.Uid, w.Position);
+                        if (options.IncludeRegionOutlines && ShowRange(options, w.Uid, w.AlwaysShowRange != 0))
+                        {
+                            AlpineObjectGizmos.AddWeatherVolume(scene.Lines, w);
+                        }
+                    }
+
+                    break;
+
+                case AlpineVehicleFactoriesSection factories:
+                    foreach (AlpineVehicleFactory vf in factories.Records)
+                    {
+                        Add(BillboardKind.VehicleFactory, vf.Uid, vf.Position);
+                        if (options.EventFacingArrows && options.ObjectIcons)
+                        {
+                            AlpineObjectGizmos.AddVehicleFactory(scene.Lines, vf, options.Entities);
+                        }
+                    }
+
+                    break;
+
+                case AlpineProjectionCamerasSection cameras:
+                    foreach (AlpineProjectionCamera cam in cameras.Records)
+                    {
+                        Add(BillboardKind.ProjectionCamera, cam.Uid, cam.Position);
+                        if (options.EventFacingArrows && options.ObjectIcons)
+                        {
+                            AlpineObjectGizmos.AddProjectionCamera(scene.Lines, cam, file);
+                        }
+                    }
+
+                    break;
+
+                case AlpineRopeEmittersSection ropes:
+                    foreach (AlpineRopeEmitter rope in ropes.Records)
+                    {
+                        Add(BillboardKind.RopeEmitter, rope.Uid, rope.Position);
+                        pendingRopes.Add(rope); // drawn once every target position is known
+                    }
+
+                    break;
+
+                case AlpineDirectionalLightsSection dirLights:
+                    foreach (AlpineDirectionalLight l in dirLights.Records)
+                    {
+                        Add(BillboardKind.DirectionalLight, l.Uid, l.Position);
+                        if (options.ObjectIcons)
+                        {
+                            AlpineObjectGizmos.AddDirectionalLightArrow(scene.Lines, l);
+                        }
+
+                        if (options.IncludeLightRanges && ShowRange(options, l.Uid, l.AlwaysShowRange != 0))
+                        {
+                            AlpineObjectGizmos.AddDirectionalLightVolume(scene.Lines, l);
+                        }
+                    }
+
+                    break;
+
+                case AlpineWaypointHelpersSection helpers:
+                    foreach (AlpineWaypointHelper h in helpers.Records)
+                    {
+                        Add(BillboardKind.WaypointHelper, h.Uid, h.Position);
+                        if (options.ObjectIcons)
+                        {
+                            AlpineObjectGizmos.AddWaypointHelper(scene.Lines, h);
+                        }
+                    }
+
+                    break;
+
+                // Alpine terrains: an icon at the centre of the footprint, and the surface itself drawn from the terrain
+                // with Alpine's layer blend, overlays and its baked light chart (the compiled chunk rooms are left out of
+                // the static geometry), plus its decorations.
+                case AlpineTerrainSection terrains:
+                    var decorationBudget = new AlpineTerrainSurface.Budget();
+                    int decorationsLeft = TerrainSurface.MaxViewportDecorations;
+                    foreach (AlpineTerrain t in terrains.Terrains)
+                    {
+                        Add(BillboardKind.Terrain, t.Uid, TerrainSurface.IconPosition(t));
+                        if (t.Grid.Heights.Length != t.Grid.Nx * t.Grid.Nz)
+                        {
+                            continue;
+                        }
+
+                        TerrainSurface.Append(scene, t, Palette.Rgba(255, 255, 255, 255),
+                            options.AlpineLightmaps ? Ged.Core.Lighting.Alpine.AlpineTerrainLight.For(file, t) : null);
+                        if (options.TerrainDecorations)
+                        {
+                            TerrainSurface.AppendDecorations(scene, t, decorationBudget, ref decorationsLeft);
+                        }
+                    }
+
+                    break;
                 case GroupsSection groups:
                     // Mover keyframes (in a moving group's data) render as billboards like any
                     // other object: pickable by their own UID, populating uidPositions so the
-                    // keyframe/mover link lines can resolve their endpoints.
+                    // keyframe/mover link lines can resolve their endpoints. The editor groups section's
+                    // movers are copies of moving_groups (MovingGroupMirror) and are drawn once, from there.
+                    bool editorCopy = Ged.Core.Editing.MovingGroupMirror.IsEditorCopy(file, section);
                     foreach (Group grp in groups.Groups)
                     {
-                        if (grp.IsMoving == 0 || grp.MovingData is not { } data || data.Keyframes.Count == 0)
+                        if (grp.IsMoving == 0 || grp.MovingData is not { } data || data.Keyframes.Count == 0 || editorCopy)
                         {
                             continue;
                         }
@@ -707,6 +945,16 @@ public static class SceneBuilder
                     }
 
                     break;
+            }
+        }
+
+        // Ropes last: a rope hangs to its target, which may be any object (rope_emitter.cpp:1725-1736).
+        if (options.ObjectIcons)
+        {
+            foreach (AlpineRopeEmitter rope in pendingRopes)
+            {
+                AlpineObjectGizmos.AddRope(scene.Lines, rope,
+                    uid => uidPositions.TryGetValue(uid, out Vector3 p) ? new Vec3(p.X, p.Y, p.Z) : null);
             }
         }
     }
@@ -751,6 +999,13 @@ public static class SceneBuilder
         BillboardKind.Corona => EditorIcon.Corona,
         BillboardKind.Note => EditorIcon.Note,
         BillboardKind.Bag => EditorIcon.Bag,
+        BillboardKind.WeatherRegion => EditorIcon.WeatherRegion,
+        BillboardKind.VehicleFactory => EditorIcon.VehicleFactory,
+        BillboardKind.ProjectionCamera => EditorIcon.ProjectionCamera,
+        BillboardKind.RopeEmitter => EditorIcon.RopeEmitter,
+        BillboardKind.DirectionalLight => EditorIcon.DirectionalLight,
+        BillboardKind.WaypointHelper => EditorIcon.WaypointHelper,
+        BillboardKind.Terrain => EditorIcon.Terrain,
         _ => EditorIcon.Generic,
     };
 
@@ -887,9 +1142,31 @@ public static class SceneBuilder
                     // near-zero-length line at rest (the start keyframe now sits AT the member centre)
                     // and reads as an auto-created trigger link if a member is a trigger, so it is
                     // surfaced only in the Link Graph, not here (see MovingGroupLinks.SequenceEdges).
+                    // Alpine mover paths replace a curved segment's straight link with the curve and add a loop's
+                    // closing segment (editor_patch/mover_path.cpp:441-480).
+                    if (Ged.Core.Editing.MovingGroupMirror.IsEditorCopy(file, section))
+                    {
+                        break; // the editor copies of moving_groups: their links are drawn from there
+                    }
+
+                    HashSet<(int From, int To)> curvedEdges = groups.Type == SectionType.MovingGroups
+                        ? AlpineObjectGizmos.AddMoverPaths(scene.Lines, file, groups.Groups, keyframeLinkColor)
+                        : new HashSet<(int From, int To)>();
                     foreach ((int from, int to) in Ged.Core.Editing.MovingGroupLinks.SequenceEdges(groups.Groups))
                     {
-                        Edge(from, to, keyframeLinkColor);
+                        if (!curvedEdges.Contains((from, to)))
+                        {
+                            Edge(from, to, keyframeLinkColor);
+                        }
+                    }
+
+                    break;
+
+                case AlpineWaypointHelpersSection helpers:
+                    // A helper's links are its routes to other helpers (alpine_waypoint_helper.h:44-56).
+                    foreach (AlpineWaypointHelper h in helpers.Records)
+                    {
+                        Link(h.Uid, h.Links);
                     }
 
                     break;

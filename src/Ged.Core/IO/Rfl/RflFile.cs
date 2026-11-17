@@ -56,8 +56,26 @@ public sealed class RflFile
     /// </summary>
     public GlacierLightingChange GlacierLightingChanges { get; private set; }
 
-    /// <summary>Records that Glacier rebuilt the geometry and/or recalculated the lighting of this level.</summary>
-    public void NoteGlacierLightingChange(GlacierLightingChange change) => GlacierLightingChanges |= change;
+    /// <summary>
+    /// Records that Glacier rebuilt the geometry and/or recalculated the lighting of this level. Any Alpine charts a
+    /// previous bake attached no longer match and are discarded; the operation attaches its own with
+    /// <see cref="AttachAlpineLightmaps"/> when it baked them.
+    /// </summary>
+    public void NoteGlacierLightingChange(GlacierLightingChange change)
+    {
+        GlacierLightingChanges |= change;
+        AlpineLightmaps = null;
+    }
+
+    /// <summary>
+    /// The Alpine lightmaps (RFL chunk 0x0AFBAE09) Glacier baked for this level's current geometry and lightmaps, or
+    /// null. A save writes them as the level's Alpine lightmap chunk while they still match what is saved
+    /// (<see cref="ReconcileAlpineLightmaps"/>); any later rebuild or relight discards them.
+    /// </summary>
+    public Ged.Core.Lighting.Alpine.AlpineLightmapBake? AlpineLightmaps { get; private set; }
+
+    /// <summary>Attaches the Alpine charts the bake just applied to this level produced (null for none).</summary>
+    public void AttachAlpineLightmaps(Ged.Core.Lighting.Alpine.AlpineLightmapBake? bake) => AlpineLightmaps = bake;
 
     /// <summary>
     /// Applies the Alpine lightmap save rule (<see cref="AlpineLightmapSavePolicy"/>): once Glacier has rebuilt the
@@ -180,11 +198,15 @@ public sealed class RflFile
         }
 
         // Materialize every section body first so the layout (and thus the
-        // recomputed header offsets) is exact.
-        var bodies = new byte[Sections.Count][];
-        for (int i = 0; i < Sections.Count; i++)
+        // recomputed header offsets) is exact. A D3D11-only Alpine save leaves the stock lightmaps section out and
+        // writes every surface record with lightmap index −1 (StockLightmapsSuppressed).
+        List<RflSection> sections = StockLightmapsSuppressed
+            ? Sections.FindAll(s => s.TypeId != (uint)SectionType.Lightmaps)
+            : Sections;
+        var bodies = new byte[sections.Count][];
+        for (int i = 0; i < sections.Count; i++)
         {
-            bodies[i] = Sections[i].GetBodyBytes(context);
+            bodies[i] = StockLightmapsSuppressed ? BodyWithoutLightmapIndices(sections[i], context) : sections[i].GetBodyBytes(context);
         }
 
         int headerSize = FixedHeaderSize
@@ -198,9 +220,9 @@ public sealed class RflFile
         int playerStartOffset = Header.PlayerStartOffset;
         int levelInfoOffset = Header.LevelInfoOffset;
         int cursor = headerSize;
-        for (int i = 0; i < Sections.Count; i++)
+        for (int i = 0; i < sections.Count; i++)
         {
-            RflSection section = Sections[i];
+            RflSection section = sections[i];
             if (!section.IsEnd)
             {
                 numSections++;
@@ -233,9 +255,9 @@ public sealed class RflFile
             writer.WriteVString(Header.ModName ?? string.Empty);
         }
 
-        for (int i = 0; i < Sections.Count; i++)
+        for (int i = 0; i < sections.Count; i++)
         {
-            writer.WriteU32(Sections[i].TypeId);
+            writer.WriteU32(sections[i].TypeId);
             writer.WriteI32(bodies[i].Length);
             writer.WriteBytes(bodies[i]);
         }
@@ -253,6 +275,61 @@ public sealed class RflFile
 
     public void Save(string path, bool updateTimestamp = false) =>
         File.WriteAllBytes(path, Save(updateTimestamp));
+
+    /// <summary>
+    /// Set by the Alpine lightmap save rule when the level's fresh Alpine charts stand in for the stock lightmaps
+    /// ("D3D11-only lightmaps", <see cref="AlpineLightmapSavePolicy"/>): <see cref="Save(bool)"/> then omits the stock
+    /// lightmaps section (0x1200) and writes every static and mover surface record with lightmap index −1, as Alpine RED
+    /// does (editor_patch/alpine_lightmaps.cpp:1849-1865, 2015-2049). The document keeps its stock lightmaps in memory.
+    /// </summary>
+    public bool StockLightmapsSuppressed { get; internal set; }
+
+    /// <summary>
+    /// The layer codec this level's next Alpine chart bake writes: BC7 (the default, Alpine RED's shipping codec) or raw
+    /// RGB8, the comparison form Alpine RED's <c>-rawlightmaps</c> switch writes (headless_bake.cpp). Not stored in the
+    /// level; set by <c>ops.lightmaps</c>, the command line and MCP.
+    /// </summary>
+    public Ged.Core.Lighting.Alpine.AlpineLightmapCodec AlpineLightmapCodec { get; set; } = Ged.Core.Lighting.Alpine.AlpineLightmapCodec.Bc7;
+
+    /// <summary>A section's body with every surface record's lightmap index written −1 (geometry and movers only).</summary>
+    private static byte[] BodyWithoutLightmapIndices(RflSection section, RflContext context)
+    {
+        List<Geometry>? geometries = section.Content switch
+        {
+            GeometrySection g when section.TypeId == (uint)SectionType.StaticGeometry => new List<Geometry> { g.Geometry },
+            MoversSection m => m.Movers.ConvertAll(b => b.Geometry),
+            _ => null,
+        };
+        if (geometries is null)
+        {
+            return section.GetBodyBytes(context);
+        }
+
+        var saved = new List<(Surface S, int Index)>();
+        foreach (Geometry g in geometries)
+        {
+            foreach (Surface s in g.Surfaces)
+            {
+                saved.Add((s, s.LightmapIndex));
+                s.LightmapIndex = -1;
+            }
+        }
+
+        bool dirty = section.Dirty;
+        try
+        {
+            section.Dirty = true;
+            return section.GetBodyBytes(context);
+        }
+        finally
+        {
+            section.Dirty = dirty;
+            foreach ((Surface s, int index) in saved)
+            {
+                s.LightmapIndex = index;
+            }
+        }
+    }
 
     /// <summary>
     /// Sets the level_info DATE string to the current local date/time in RED's format
@@ -334,6 +411,7 @@ public sealed class RflFile
         var notes = new List<string>();
         int source = Header.Version;
         RewritePreReleaseProperties(notes);
+        notes.AddRange(AlpineTerrainSavePolicy.Reconcile(this));
         notes.AddRange(ReconcileAlpineLightmaps());
         if (source == AlpineSaveVersion)
         {
@@ -723,6 +801,7 @@ public sealed class RflFile
         AlpineWaypointHelpersSection s => s.ReadOnlyReason,
         AlpineLiquidEmissionSection s => s.ReadOnlyReason,
         AlpineMoverPathsSection s => s.ReadOnlyReason,
+        AlpineTerrainSection s => s.ReadOnlyReason,
         _ => null,
     };
 }

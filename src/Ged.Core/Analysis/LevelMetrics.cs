@@ -303,7 +303,7 @@ public static class LevelMetrics
 
             try
             {
-                _sampler = SpaceSampler.Build(_geo!, _ct, _o.SamplerProbe);
+                _sampler = SpaceSampler.Build(_geo!, _ct, _o.SamplerProbe, Spatial.TerrainGround.Of(_rfl));
                 _sampler.Measure(_o.LatticePitch, _o.MaxFloorSamples);
                 double g2 = _sampler.Pitch * _sampler.Pitch;
                 _floorArea = _sampler.Samples.Count(s => s.Valid) * g2;

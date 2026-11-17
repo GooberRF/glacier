@@ -30,7 +30,7 @@ public sealed class ScriptOps
     }
 
     /// <summary>Lua: <c>ops.light(shadows?)</c> — compiles geometry and bakes lightmaps.</summary>
-    [ScriptDoc("Compiles geometry and bakes lightmaps (shadows default true) with the editor's lightmap method. Returns op_report. Not in Dry-Run.", Example = "ops.light(true)")]
+    [ScriptDoc("Compiles and bakes lightmaps (shadows default true) with the lightmap method and the level's pipeline (ops.lightmaps). Returns op_report (lightmaps = lightmap_report). Not in Dry-Run.", Example = "local r = ops.light(true); log.info(r.lightmaps.pipeline)")]
     public ScriptOpReport Light(bool shadows = true)
     {
         GuardDryRun("light");
@@ -39,6 +39,51 @@ public sealed class ScriptOps
         {
             return _ctx.Operations.Build(bakeLighting: true, shadows: shadows);
         }
+    }
+
+    /// <summary>
+    /// Lua: <c>ops.lightmaps(pipeline?, density?, codec?)</c> — reads, or sets, the level's lightmap pipeline as Alpine RED
+    /// stores it (level properties <c>legacy_lighting</c> / <c>lightmap_density</c>, editor_patch/level.h:992-1005), and
+    /// the layer codec the next bake writes ("bc7", or "raw" like Alpine RED's <c>-rawlightmaps</c>; not stored).
+    /// The next ops.light bakes with it, exactly as Calculate Lighting in the editor does.
+    /// </summary>
+    [ScriptDoc("Reads or sets the lightmap pipeline (\"alpine\" or \"legacy\"), density (0 = 8 per unit, 1-128, 255 = off, -1 keeps) and bake codec (\"bc7\" or \"raw\"; not saved). Returns lightmap_settings.", Example = "ops.lightmaps(\"alpine\", 16); ops.light()", Since = 2)]
+    public ScriptLightmapSettings Lightmaps(string? pipeline = null, double density = -1, string? codec = null)
+    {
+        if (codec is not null)
+        {
+            _ctx.Document.Rfl.AlpineLightmapCodec = Lighting.Alpine.AlpineLightmapSettings.ParseCodec(codec)
+                ?? throw new ScriptApiException($"Unknown lightmap codec '{codec}'.", "Use \"bc7\" or \"raw\".");
+        }
+
+        Lighting.Alpine.LightmapPipeline? p = null;
+        if (pipeline is not null)
+        {
+            p = Lighting.Alpine.AlpineLightmapSettings.Parse(pipeline)
+                ?? throw new ScriptApiException($"Unknown lightmap pipeline '{pipeline}'.", "Use \"alpine\" or \"legacy\".");
+        }
+
+        int? d = null;
+        if (density >= 0)
+        {
+            if (density != System.Math.Floor(density) || density > 255)
+            {
+                throw new ScriptApiException($"Lightmap density {density} is not a whole number from 0 to 255.", "0 = default (8), 1-128 texels per unit, 255 = Alpine charts off.");
+            }
+
+            d = (int)density;
+        }
+
+        if (p is not null || d is not null)
+        {
+            GuardDryRun("lightmaps");
+            if (Lighting.Alpine.AlpineLightmapSettings.Apply(_ctx.Document, p, d))
+            {
+                _ctx.Document.MarkDirty();
+            }
+        }
+
+        return new ScriptLightmapSettings(Lighting.Alpine.AlpineLightmapSettings.FromLevel(_ctx.Document.Rfl));
     }
 
     /// <summary>Lua: <c>ops.check_holes()</c> — returns the number of leaks (positions logged).
@@ -84,8 +129,12 @@ public sealed class ScriptOps
         }
     }
 
-    /// <summary>Lua: <c>ops.package([path], multiplayer?)</c> — builds a .vpp (destructive).</summary>
-    [ScriptDoc("Builds a .vpp package of the level and its custom assets (destructive), optionally to path and as multiplayer. Returns op_report.", Example = "ops.package(nil, true)")]
+    /// <summary>
+    /// Lua: <c>ops.package([path], multiplayer?)</c> — builds <c>&lt;level&gt;.vpp</c> next to the saved level (or at
+    /// <c>path</c>), replacing an existing one in place (destructive). It packs the saved level file, so unsaved changes
+    /// are saved first; <c>multiplayer</c> has no effect.
+    /// </summary>
+    [ScriptDoc("Builds <level>.vpp beside the saved level (or at path) from the level file and its custom assets, saving unsaved changes first (destructive). multiplayer has no effect. Returns op_report.", Example = "ops.package()")]
     public ScriptOpReport Package(string? path = null, bool multiplayer = false)
     {
         GuardDryRun("package");

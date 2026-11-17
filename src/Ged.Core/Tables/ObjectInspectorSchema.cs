@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
+using Ged.Core.Model;
 
 namespace Ged.Core.Tables;
 
@@ -46,6 +47,13 @@ public sealed class InspectorField
     public int Shift { get; init; }
 
     public IReadOnlyList<string>? Options { get; init; }
+
+    /// <summary>
+    /// For an <see cref="InspectorEditor.Enum"/> whose stored values are not the option indices: the stored value of
+    /// each option (e.g. a vehicle factory's team, stored 0xFF / 0 / 1 for None / Red / Blue). The editor value stays
+    /// the option index; a stored value not in the list reads as -1.
+    /// </summary>
+    public IReadOnlyList<int>? OptionValues { get; init; }
 
     public bool EditorOnly { get; init; }
 
@@ -122,6 +130,20 @@ public sealed class InspectorField
             return b != 0;
         }
 
+        if (Editor == InspectorEditor.Enum && OptionValues is { } values && raw is not null)
+        {
+            long stored = Convert.ToInt64(raw, CultureInfo.InvariantCulture);
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (values[i] == stored)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
         return raw;
     }
 
@@ -173,6 +195,18 @@ public sealed class InspectorField
         if (Editor == InspectorEditor.Bool && target == typeof(byte))
         {
             prop.SetValue(owner, (byte)(ToBool(value) ? 1 : 0));
+            return;
+        }
+
+        // An option index maps to its stored value; an index outside the options leaves the field unchanged.
+        if (Editor == InspectorEditor.Enum && OptionValues is { } values && value is not null)
+        {
+            int index = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+            if (index >= 0 && index < values.Count && TryConvert(values[index], target, out object? mapped))
+            {
+                prop.SetValue(owner, mapped);
+            }
+
             return;
         }
 
@@ -292,6 +326,34 @@ public static class ObjectInspectorCatalog
         new(l, p, InspectorEditor.Enum) { Mask = mask, Shift = shift, Options = opts };
 
     private static IReadOnlyList<InspectorField> L(params InspectorField[] fields) => fields;
+
+    /// <summary>A float field with an inclusive range (null = unbounded on that side) and an optional note.</summary>
+    private static InspectorField FR(string l, string p, double? min, double? max, string? note) =>
+        new(l, p, InspectorEditor.Float) { Min = min, Max = max, Note = note };
+
+    /// <summary>An int field with an inclusive range.</summary>
+    private static InspectorField IR(string l, string p, double min, double max) =>
+        new(l, p, InspectorEditor.Int) { Min = min, Max = max };
+
+    /// <summary>A virtual field (its value lives outside the model's own properties; <see cref="InspectorAccess"/> maps it).</summary>
+    private static InspectorField Virt(string l, InspectorEditor editor, string key, string? note) =>
+        new(l, "Virtual." + key, editor) { Virtual = true, Key = key, Note = note };
+
+    /// <summary>A copy of <paramref name="f"/> with an explicit script key and / or note.</summary>
+    private static InspectorField KN(InspectorField f, string? key, string? note) => new(f.Label, f.Path, f.Editor)
+    {
+        Mask = f.Mask,
+        Shift = f.Shift,
+        Options = f.Options,
+        OptionValues = f.OptionValues,
+        EditorOnly = f.EditorOnly,
+        Virtual = f.Virtual,
+        Note = note ?? f.Note,
+        Key = key ?? f.Key,
+        Min = f.Min,
+        Max = f.Max,
+        ReadOnly = f.ReadOnly,
+    };
 
     /// <summary>A display-only schema: every field read-only (objects the editor cannot author yet).</summary>
     private static IReadOnlyList<InspectorField> RO(params InspectorField[] fields) =>
@@ -439,49 +501,134 @@ public static class ObjectInspectorCatalog
 
         m[Editor.LevelObjectKind.BagObject] = L();
 
-        // Alpine Faction 1.5 objects: read-only until their authoring lands (values as stored in the file).
-        m[Editor.LevelObjectKind.WeatherRegion] = RO(
-            T("Script", "ScriptName"), E("Shape", "Shape", "Box", "Cylinder"), E("Weather", "WeatherType", "Rain", "Snow"),
-            F("Width", "Width"), F("Height", "Height"), F("Depth", "Depth"), F("Radius", "Radius"), F("Density Scale", "DensityScale"),
+        // Alpine Faction 1.5 objects: Alpine RED's property dialogs, field for field, with its ranges and choices
+        // (editor_patch/weather_region.cpp:284-292 + resources.rc:850-940, vehicle_factory.cpp:60-70 + :290-340,
+        // rope_emitter.cpp:125-160 + common/include/common/rope_curve.h:83-116, dir_light.cpp + alpine_dir_light.h:17-50,
+        // waypoint_helper.cpp:95-200 + alpine_waypoint_helper.h:17-45). Ranges are what Alpine's dialogs clamp to
+        // and its readers sanitise to; values outside them load unchanged and are reported by the linter.
+        m[Editor.LevelObjectKind.WeatherRegion] = L(
+            T("Script", "ScriptName"),
+            E("Weather", "WeatherType", "Rain", "Snow"),
+            E("Shape", "Shape", "Box", "Sphere"),
+            FR("Width", "Width", 0, AlpineWeatherRegionLimits.MaxDimension, "Box size along the region's right axis."),
+            FR("Height", "Height", 0, AlpineWeatherRegionLimits.MaxDimension, "Box size along the region's up axis."),
+            FR("Depth", "Depth", 0, AlpineWeatherRegionLimits.MaxDimension, "Box size along the region's forward axis."),
+            FR("Radius", "Radius", 0, AlpineWeatherRegionLimits.MaxDimension, "Sphere radius."),
+            FR("Density Scale", "DensityScale", AlpineWeatherRegionLimits.MinDensityScale, AlpineWeatherRegionLimits.MaxDensityScale, null),
+            FR("Active Distance", "ActiveDistance", 0, null, "0 = automatic (the visible distance plus the game's activity margin)."),
+            FR("Visible Distance", "VisibleDistance", 0, null, "0 = automatic (the weather type's own simulation box)."),
+            B("Always Show Range", "AlwaysShowRange"), B("Initially Enabled", "InitiallyEnabled"),
+            KN(B("Blocked By Geometry", "BlockByGeometry"), "block_by_geometry", null),
+            FR("Column Width", "ColumnWidth", AlpineWeatherRegionLimits.MinColumnWidth, AlpineWeatherRegionLimits.MaxColumnWidth, "Occlusion column size when Blocked By Geometry is on."),
             C("Rain Color", "RainColor"), F("Rain Fall Speed", "RainFallSpeed"), F("Rain Wind X", "RainWindX"), F("Rain Wind Z", "RainWindZ"),
-            F("Rain Streak Seconds", "RainStreakSeconds"), C("Snow Color", "SnowColor"), F("Snow Fall Speed", "SnowFallSpeed"),
-            F("Snow Sway Amplitude", "SnowSwayAmplitude"), F("Snow Sway Speed", "SnowSwaySpeed"), F("Snow Sprite Radius", "SnowSpriteRadius"),
-            T("Snow Bitmap", "SnowBitmap"), B("Always Show Range", "AlwaysShowRange"), B("Initially Enabled", "InitiallyEnabled"),
-            F("Active Distance", "ActiveDistance"), F("Visible Distance", "VisibleDistance"), B("Block By Geometry", "BlockByGeometry"),
-            F("Column Width", "ColumnWidth"));
+            F("Rain Streak Seconds", "RainStreakSeconds"),
+            C("Snow Color", "SnowColor"), F("Snow Fall Speed", "SnowFallSpeed"), F("Snow Sway Amplitude", "SnowSwayAmplitude"),
+            F("Snow Sway Speed", "SnowSwaySpeed"), F("Snow Sprite Radius", "SnowSpriteRadius"), T("Snow Bitmap", "SnowBitmap"));
 
-        m[Editor.LevelObjectKind.VehicleFactory] = RO(
-            T("Script", "ScriptName"), T("Vehicle Class", "VehicleClass"), F("Respawn Delay", "RespawnDelaySeconds"),
-            I("Team (0 red, 1 blue, 255 none)", "Team"), I("Turret Yaw Limit", "TurretYawLimitDegrees"),
-            B("Lock To Team", "LockToTeam"), B("Active By Default", "ActiveByDefault"));
+        m[Editor.LevelObjectKind.VehicleFactory] = L(
+            T("Script", "ScriptName"),
+            KN(T("Vehicle Class", "VehicleClass"), null, "An entity.tbl vehicle or turret class (e.g. Jeep01, APC, Fighter01, sub, Driller01, Stationary Turret_Plain)."),
+            KN(FR("Respawn Delay (s)", "RespawnDelaySeconds", 0, AlpineVehicleFactoryLimits.MaxRespawnDelaySeconds, null), "respawn_delay", null),
+            new InspectorField("Team", "Team", InspectorEditor.Enum) { Options = new[] { "None", "Red", "Blue" }, OptionValues = new[] { 0xFF, 0, 1 } },
+            B("Lock To Team", "LockToTeam"), KN(B("Spawn At Level Start", "ActiveByDefault"), "active_by_default", null),
+            new InspectorField("Turret Yaw Limit (deg)", "TurretYawLimitDegrees", InspectorEditor.Int)
+            {
+                Key = "turret_yaw_limit", Min = 0, Max = AlpineVehicleFactoryLimits.MaxTurretYawLimitDegrees,
+                Note = "Turret classes only: degrees the turret may yaw either side of its spawn facing; 0 = unrestricted.",
+            });
 
-        m[Editor.LevelObjectKind.ProjectionCamera] = RO(T("Script", "ScriptName"));
+        m[Editor.LevelObjectKind.ProjectionCamera] = L(
+            KN(T("Script", "ScriptName"), null, "The view a Display_Projection event linked to this camera renders (its FOV and size live on the event)."));
 
-        m[Editor.LevelObjectKind.RopeEmitter] = RO(
-            T("Script", "ScriptName"), U("Target", "TargetUid"), F("Dangle Length", "DangleLength"), F("Slack", "Slack"),
-            F("Weight", "Weight"), F("Thickness", "Thickness"), I("Segments", "Segments"), F("UV Tiles Per Meter", "UvTilesPerMeter"),
-            I("Packed Color (RGBA)", "PackedColor"), T("Bitmap", "Bitmap"), F("Sway Amplitude", "SwayAmplitude"), F("Sway Speed", "SwaySpeed"),
-            Flag("Zipline", "Flags", 0x8), B("Initially On", "InitiallyOn"), F("Zip Down Speed", "ZipDownSpeed"),
-            F("Zip Up Speed", "ZipUpSpeed"), I("Zip Direction", "ZipDirection"));
+        m[Editor.LevelObjectKind.RopeEmitter] = L(
+            T("Script", "ScriptName"),
+            KN(U("Target UID", "TargetUid"), "target", "The object the rope hangs to; -1 = a free-hanging dangle."),
+            KN(FR("Slack (m)", "Slack", 0, AlpineRopeLimits.MaxSlack, "Extra length over the span to the target."), "slack", null),
+            KN(FR("Dangle Length (m)", "DangleLength", AlpineRopeLimits.MinDangle, AlpineRopeLimits.MaxDangle, "Length of a rope with no target."), "dangle_length", null),
+            IR("Segments", "Segments", AlpineRopeLimits.MinSegments, AlpineRopeLimits.MaxSegments),
+            FR("Thickness", "Thickness", AlpineRopeLimits.MinThickness, AlpineRopeLimits.MaxThickness, null),
+            C("Color", "Color"), T("Bitmap", "Bitmap"),
+            FR("UV Tiles Per Meter", "UvTilesPerMeter", 0, AlpineRopeLimits.MaxUvTiles, "0 = stretch the texture once over the whole rope."),
+            Flag("Glow", "Flags", AlpineRopeLimits.FlagGlow), Flag("Dynamic", "Flags", AlpineRopeLimits.FlagDynamic),
+            Flag("Sway", "Flags", AlpineRopeLimits.FlagSway),
+            KN(FR("Mass", "Weight", AlpineRopeLimits.MinWeight, AlpineRopeLimits.MaxWeight, null), "weight", null),
+            KN(FR("Sway Amplitude (m)", "SwayAmplitude", 0, AlpineRopeLimits.MaxSwayAmplitude, null), "sway_amplitude", null),
+            FR("Sway Speed", "SwaySpeed", 0, AlpineRopeLimits.MaxSwaySpeed, null),
+            KN(Flag("Zip Line", "Flags", AlpineRopeLimits.FlagZipline), "zipline", null),
+            KN(FR("Zip Down Speed (m/s)", "ZipDownSpeed", AlpineRopeLimits.MinZipSpeed, AlpineRopeLimits.MaxZipSpeed, "Cruise speed toward the lower anchor."), "zip_down_speed", null),
+            KN(FR("Zip Up Speed (m/s)", "ZipUpSpeed", AlpineRopeLimits.MinZipSpeed, AlpineRopeLimits.MaxZipSpeed, null), "zip_up_speed", null),
+            E("Zip Direction", "ZipDirection", "Two Way", "Emitter To Target", "Target To Emitter"),
+            B("Initially On", "InitiallyOn"),
+            Virt("Decorations", InspectorEditor.Bool, "decorations", "Duplicate the decoration meshes along the rope."),
+            Virt("Decoration Meshes", InspectorEditor.Text, "decoration_meshes", "Up to 6 mesh file names separated by ';'. An empty list removes the decorations."),
+            new InspectorField("Decoration Spacing Mode", "Rope.DecorationSpacingMode", InspectorEditor.Enum)
+            {
+                Virtual = true, Key = "decoration_spacing_mode",
+                Options = new[] { "Fixed Count", "Every N Meters", "Both Ends", "Only Start", "Only Target" },
+            },
+            new InspectorField("Decoration Count", "Rope.DecorationCount", InspectorEditor.Int)
+            {
+                Virtual = true, Key = "decoration_count", Min = AlpineRopeLimits.MinDecorationCount, Max = AlpineRopeLimits.MaxDecorationCount,
+            },
+            new InspectorField("Decoration Spacing (m)", "Rope.DecorationSpacing", InspectorEditor.Float)
+            {
+                Virtual = true, Key = "decoration_spacing", Min = AlpineRopeLimits.MinDecorationSpacing, Max = AlpineRopeLimits.MaxDecorationSpacing,
+            },
+            Virt("Decoration Random Order", InspectorEditor.Bool, "decoration_random_order", "Randomly sort the meshes along the rope."),
+            new InspectorField("Decoration Orientation", "Rope.DecorationOrient", InspectorEditor.Enum)
+            {
+                Virtual = true, Key = "decoration_orientation", Options = new[] { "Follow Curve", "Upright" },
+            });
 
-        m[Editor.LevelObjectKind.DirectionalLight] = RO(
-            T("Script", "ScriptName"), C("Color", "Color"), F("Intensity", "Intensity"), B("Initially On", "InitiallyOn"),
-            E("Shape", "Shape", "None", "Box", "Sphere", "Cylinder"), F("Extent X", "ExtentX"), F("Extent Y", "ExtentY"),
-            F("Extent Z", "ExtentZ"), F("Box Yaw", "BoxYaw"), F("Feather", "Feather"), F("Spread", "Spread"),
-            B("Cast Baked Shadows", "CastBakedShadows"), B("Liquid Occludes", "LiquidOccludes"), B("Sky Passes", "SkyPasses"),
-            B("Outside Casts", "OutsideCasts"), B("Affects Meshes", "AffectsMeshes"),
-            E("Mesh Mode", "MeshMode", "Scaled By Lightmap", "Everywhere"), B("Always Show Range", "AlwaysShowRange"));
+        m[Editor.LevelObjectKind.DirectionalLight] = L(
+            T("Script", "ScriptName"), B("Initially On", "InitiallyOn"), C("Color", "Color"),
+            FR("Intensity", "Intensity", 0, AlpineDirectionalLightLimits.MaxIntensity, null),
+            KN(FR("Spread (deg)", "Spread", 0, AlpineDirectionalLightLimits.MaxSpread, "Baked penumbra angle."), "spread", null),
+            KN(B("Casts Shadows", "CastBakedShadows"), "cast_baked_shadows", "Casts shadows in the baked lightmaps."),
+            KN(B("Water Blocks Light", "LiquidOccludes"), "liquid_occludes", null),
+            KN(B("Sky Faces Let Light Through", "SkyPasses"), "sky_passes", null),
+            KN(E("Shape", "Shape", "None", "Box", "Sphere", "Cylinder"), null, "The volume the light is bounded to: box centred on the light (world-aligned after Box Yaw), sphere, or cylinder along the light's travel direction."),
+            KN(FR("Width / Radius", "ExtentX", 0, AlpineDirectionalLightLimits.MaxExtent, "Box width, or sphere / cylinder radius."), "extent_x", null),
+            KN(FR("Height / Length", "ExtentY", 0, AlpineDirectionalLightLimits.MaxExtent, "Box height, or cylinder length."), "extent_y", null),
+            KN(FR("Depth", "ExtentZ", 0, AlpineDirectionalLightLimits.MaxExtent, "Box depth."), "extent_z", null),
+            KN(FR("Box Yaw (deg)", "BoxYaw", 0, 360, "Box rotation about world up."), "box_yaw", null),
+            KN(FR("Feather (m)", "Feather", 0, AlpineDirectionalLightLimits.MaxFeather, "Fade width at the volume's edge."), "feather", null),
+            KN(B("Outside Geometry Casts Shadows", "OutsideCasts"), "outside_casts", null),
+            B("Always Show Range", "AlwaysShowRange"),
+            KN(B("Affects Mesh Lighting", "AffectsMeshes"), "affects_meshes", null),
+            E("Mesh Mode", "MeshMode", "Scaled By Lightmap", "Everywhere"));
 
-        m[Editor.LevelObjectKind.WaypointHelper] = RO(
-            E("Helper Type", "HelperType", "Air", "Water", "Ground"), Flag("Landing", "Flags", 0x1),
-            E("Size Class", "SizeClass", "Jeep", "APC", "Driller"), F("Radius", "Radius"));
+        m[Editor.LevelObjectKind.WaypointHelper] = L(
+            KN(E("Type", "HelperType", "Air", "Water", "Ground"), "helper_type", null),
+            KN(E("Largest Vehicle", "SizeClass", "Jeep", "APC", "Driller"), "size_class", "Ground helpers: the largest hull the road takes."),
+            FR("Radius", "Radius", AlpineWaypointHelperLimits.MinRadius, AlpineWaypointHelperLimits.MaxRadius, null),
+            KN(Flag("Landing / Exit Spot", "Flags", 0x1), "landing", null));
 
-        m[Editor.LevelObjectKind.Terrain] = RO(
-            T("Script", "ScriptName"), F("Cell Size", "CellSize"), I("Vertices X", "Nx"), I("Vertices Z", "Nz"),
-            F("Height Min", "HeightMin"), F("Height Range", "HeightRange"), I("Chunk Cells", "ChunkCells"),
-            I("Weight Resolution", "WeightResolutionMultiplier"), I("Lightmap Density", "LightmapDensity"), I("Terrain Flags", "Flags"),
-            F("Thickness", "Thickness"), F("Skirt Depth", "SkirtDepth"), T("Underside Texture", "UndersideTexture"),
-            T("Crater Texture", "CraterTexture"));
+        // Alpine terrain (0x0AFBAE0B): the header fields Alpine RED's Terrain Properties dialog edits, with its ranges
+        // (common/include/common/terrain/alpine_terrain.h:38-73, editor_patch/terrain.cpp:385-431). The grid size and
+        // weight resolution resample the heightfield, so they change through the script / MCP terrain API.
+        m[Editor.LevelObjectKind.Terrain] = L(
+            T("Script", "ScriptName"),
+            KN(FR("Cell Size (m)", "CellSize", AlpineTerrainRules.MinCellSize, AlpineTerrainRules.MaxCellSize, "Distance between height samples."), "cell_size", null),
+            new InspectorField("Vertices X", "Nx", InspectorEditor.Int) { ReadOnly = true, Key = "nx", Note = "Change with terrain:resize{...}." },
+            new InspectorField("Vertices Z", "Nz", InspectorEditor.Int) { ReadOnly = true, Key = "nz", Note = "Change with terrain:resize{...}." },
+            KN(FR("Height Min (m)", "HeightMin", -AlpineTerrainRules.MaxCoord, AlpineTerrainRules.MaxCoord, "World height above the origin that the lowest sample maps to."), "height_min", null),
+            KN(FR("Height Range (m)", "HeightRange", AlpineTerrainRules.MinHeightRange, AlpineTerrainRules.MaxHeightRange, "World height the 0..65535 samples span."), "height_range", null),
+            new InspectorField("Chunk Size (cells)", "ChunkCells", InspectorEditor.Enum)
+            {
+                Key = "chunk_cells", Options = new[] { "16", "32", "64", "128" }, OptionValues = new[] { 16, 32, 64, 128 },
+                Note = "Cells per chunk edge; each chunk compiles to its own detail room. Capped at 64 (32 with skirts or geoable) and at 256 chunks.",
+            },
+            new InspectorField("Weight Resolution", "WeightResolutionMultiplier", InspectorEditor.Int) { ReadOnly = true, Key = "weight_resolution", Note = "Paint texels per cell edge." },
+            KN(IR("Lightmap Density", "LightmapDensity", AlpineTerrainRules.LightmapDensityMin, AlpineTerrainRules.LightmapDensityMax), "lightmap_density", "Baked light texels per cell edge."),
+            KN(Flag("Geoable", "Flags", AlpineTerrainRules.FlagGeoable), "geoable", "Closed solid chunks that geomod can carve (needs RF2-style geomod)."),
+            KN(Flag("Skirts", "Flags", AlpineTerrainRules.FlagSkirts), "skirts", "Walls hanging below the outer edges and hole rims (not geoable terrains)."),
+            KN(Flag("Fullbright", "Flags", AlpineTerrainRules.FlagFullbright), "fullbright", "Drawn at full brightness, with no baked light."),
+            KN(FR("Thickness (m)", "Thickness", AlpineTerrainRules.MinThickness, AlpineTerrainRules.MaxThickness, "Depth of a geoable terrain's solid below Height Min."), "thickness", null),
+            KN(FR("Skirt Depth (m)", "SkirtDepth", 0, AlpineTerrainRules.MaxSkirtDepth, "How far skirts hang below the edges and holes."), "skirt_depth", null),
+            KN(T("Underside Texture", "UndersideTexture"), "underside_texture", "Walls, skirts and the bottom of a geoable terrain."),
+            KN(T("Crater Texture", "CraterTexture"), "crater_texture", "Empty = the level's geomod texture."),
+            Virt("Layer Textures", InspectorEditor.Text, "layer_textures", "Up to 8 texture layers separated by ';' (the first is the base). Each cell's faces take its most painted layer."));
 
         // Room effects (room_effects): the type picks which block the section stores — the ambient colour
         // for Ambient Light, the liquid block for Liquid Room (InspectorPresence provisions it). The liquid
@@ -504,7 +651,25 @@ public static class ObjectInspectorCatalog
             B("Contains Plankton", "LiquidProperties.ContainsPlankton"),
             I("Liquid Pixels Per Meter U", "LiquidProperties.TexturePixelsPerMeterU"),
             I("Liquid Pixels Per Meter V", "LiquidProperties.TexturePixelsPerMeterV"),
-            F("Liquid Texture Angle", "LiquidProperties.TextureAngleDegrees"));
+            F("Liquid Texture Angle", "LiquidProperties.TextureAngleDegrees"),
+
+            // Alpine liquid emission (chunk 0x0AFBAE0F, keyed by the room effect's UID): the light a Liquid Room's
+            // surface bakes (editor_patch/liquid_emission.h:18-36; dialog liquid_emission.cpp:198-350).
+            new InspectorField("Liquid Emission", "Virtual.liquid_emission", InspectorEditor.Enum)
+            {
+                Virtual = true, Key = "liquid_emission", Options = new[] { "Off", "Up Only", "Up And Down" },
+                Note = "The light the liquid surface bakes: off, onto what is above it, or above and below.",
+            },
+            new InspectorField("Emission Color", "Virtual.emission_color", InspectorEditor.Color) { Virtual = true, Key = "emission_color" },
+            new InspectorField("Emission Intensity", "Virtual.emission_intensity", InspectorEditor.Float)
+            {
+                Virtual = true, Key = "emission_intensity", Min = 0, Max = AlpineLiquidEmissionLimits.MaxIntensity,
+            },
+            new InspectorField("Emission Distance (m)", "Virtual.emission_distance", InspectorEditor.Float)
+            {
+                Virtual = true, Key = "emission_distance", Min = 0, Max = AlpineLiquidEmissionLimits.MaxDistance,
+                Note = "How far from the surface the light reaches, falling off linearly to it.",
+            });
 
         return m;
     }
